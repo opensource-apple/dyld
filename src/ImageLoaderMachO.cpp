@@ -1397,12 +1397,16 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 						otherRelocsPPC(locationToFix, sreloc->r_type, reloc->r_address, slide);
 						break;
 		#endif
-		#if __ppc__ || __ppc64__
+		#if __ppc__ 
 					case PPC_RELOC_PB_LA_PTR:
 						// do nothing
 						break;
-		#endif
-		#if __i386__
+		#elif __ppc64__
+					case PPC_RELOC_PB_LA_PTR:
+						// these should never exist in ppc64, but the first ld64 had a bug and created them
+						*locationToFix = sreloc->r_value + slide;
+						break;
+		#elif __i386__
 					case GENERIC_RELOC_PB_LA_PTR:
 						// do nothing
 						break;
@@ -1752,6 +1756,12 @@ uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const s
 
 	if ( context.bindFlat || !twoLevel ) {
 		// flat lookup
+		if ( ((undefinedSymbol->n_type & N_PEXT) != 0) && ((undefinedSymbol->n_type & N_TYPE) == N_SECT) ) {
+			// is a multi-module private_extern internal reference that the linker did not optimize away
+			uintptr_t addr = undefinedSymbol->n_value + this->fSlide;
+			*foundIn = this;
+			return addr;
+		}
 		const Symbol* sym;
 		if ( context.flatExportFinder(symbolName, &sym, foundIn) )
 			return (*foundIn)->getExportedSymbolAddress(sym);
@@ -1761,13 +1771,6 @@ uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const s
 			sym = this->findExportedSymbol(symbolName, NULL, false, foundIn);
 			if ( sym != NULL )
 				return (*foundIn)->getExportedSymbolAddress(sym);
-		}
-		if ( ((undefinedSymbol->n_type & N_PEXT) != 0) || ((undefinedSymbol->n_type & N_TYPE) == N_SECT) ) {
-			// could be a multi-module private_extern internal reference
-			// the static linker squirrels away the target address in n_value
-			uintptr_t addr = undefinedSymbol->n_value + this->fSlide;
-			*foundIn = this;
-			return addr;
 		}
 		if ( (undefinedSymbol->n_desc & N_WEAK_REF) != 0 ) {
 			// definition can't be found anywhere
@@ -2326,7 +2329,10 @@ void ImageLoaderMachO::setupLazyPointerHandler(const LinkContext& context)
 bool ImageLoaderMachO::usablePrebinding(const LinkContext& context) const
 {
 	// if prebound and loaded at prebound address, and all libraries are same as when this was prebound, then no need to bind
-	if ( this->isPrebindable() && this->allDependentLibrariesAsWhenPreBound() && (this->getSlide() == 0) ) {
+	if ( this->isPrebindable() 
+		&& (this->getSlide() == 0) 
+		&& this->usesTwoLevelNameSpace()
+		&& this->allDependentLibrariesAsWhenPreBound() ) {
 		// allow environment variables to disable prebinding
 		if ( context.bindFlat )
 			return false;

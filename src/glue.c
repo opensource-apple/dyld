@@ -132,6 +132,18 @@ struct tm* localtime(const time_t* t)
 	return (struct tm*)NULL;
 }
 
+struct tm* localtime_r(const time_t* t, struct tm *result)
+{
+	return result;
+}
+
+time_t mktime(struct tm *timeptr)
+{
+	return 0;
+}
+
+
+
 
 /*
  * On ppc64, the C++ runtime references strftime & wcsftime, but they

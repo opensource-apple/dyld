@@ -21,8 +21,12 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#include <stdbool.h>
 
 int bar()
 {
 	return 1;
 }
+
+int barVar  = 1;
+int barVar2 = 1;

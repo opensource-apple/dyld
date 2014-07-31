@@ -164,8 +164,8 @@ __dyld_start:
 	addq	$16,%rsp	# remove the mh argument, and debugger end frame marker
 	movq	$0,%rbp		# restore ebp back to zero
 	jmp	*%rax		# jump to the entry point
-	
 #endif /* __x86_64__ */
+
 
 #if __ppc__ || __ppc64__
 #include <architecture/ppc/mode_independent_asm.h>

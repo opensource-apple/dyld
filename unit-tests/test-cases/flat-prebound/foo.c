@@ -20,10 +20,28 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
+#include <stdbool.h>
 
 extern int bar();
+extern int barVar;
+extern int barVar2;
 
-int foo()
+int* myBarVar = &barVar;
+
+
+bool foo()
 {
-	return bar();
+	// test non-lazy pointer
+	if ( barVar2 != 0 )
+		return false;
+
+	// test external relocation
+	if ( *myBarVar != 0 )
+		return false;
+	
+	// test lazy pointer
+	if ( bar() != 0 )
+		return false;
+		
+	return true;
 }

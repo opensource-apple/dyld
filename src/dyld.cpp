@@ -1054,7 +1054,6 @@ static bool fatFindRunsOnAllCPUs(cpu_type_t cpu, const fat_header* fh, uint64_t*
 						return true;
 					}
 					break;
-#ifdef CPU_TYPE_X86_64
 				case CPU_TYPE_X86_64:
 					if ( (cpu_subtype_t)OSSwapBigToHostInt32(archs[i].cpusubtype) == CPU_SUBTYPE_X86_64_ALL ) {
 						*offset = OSSwapBigToHostInt32(archs[i].offset);
@@ -1062,7 +1061,6 @@ static bool fatFindRunsOnAllCPUs(cpu_type_t cpu, const fat_header* fh, uint64_t*
 						return true;
 					}
 					break;
-#endif
 			}
 		}
 	}
@@ -1142,12 +1140,10 @@ bool isCompatibleMachO(const uint8_t* firstPage)
 					if ( mh->cpusubtype == CPU_SUBTYPE_I386_ALL ) 
 						return true;
 					break;					
-#ifdef CPU_TYPE_X86_64
 				case CPU_TYPE_X86_64:
 					if ( mh->cpusubtype == CPU_SUBTYPE_X86_64_ALL ) 
  						return true;
 					break;		
-#endif
 			}
 		}
 	}
