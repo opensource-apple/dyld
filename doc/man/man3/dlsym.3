@@ -1,0 +1,65 @@
+.Dd Sept 25, 2004
+.Dt DLSYM 3
+.Sh NAME
+.Nm dlsym
+.Nd get address of a symbol
+.Sh SYNOPSIS
+.In dlfcn.h
+.Ft void*
+.Fn dlsym "void* handle" "const char* symbol"
+.Sh DESCRIPTION
+.Fn dlsym
+returns the address of the code or data location 
+specified by the null-terminated character string
+.Fa symbol .
+Which libraries and bundles are searched depends on the  
+.Fa handle 
+parameter. 
+.Pp
+If
+.Fn dlsym
+is called with a
+.Fa handle ,
+returned by
+.Fn dlopen
+then only that image and any libraries it depends on are searched for
+.Fa symbol .
+.Pp
+If
+.Fn dlsym
+is called with the special
+.Fa handle
+.Dv RTLD_DEFAULT ,
+then every mach-o image in the process is searched in the order they were loaded.
+This can be a costly search and should be avoided.  
+.Pp
+If
+.Fn dlsym
+is called with the special
+.Fa handle
+.Dv RTLD_NEXT ,
+then the search for the symbol is limited to the images which were loaded
+after the one issuing the call to
+.Fn dlsym .
+.Pp
+.Sh RETURN VALUES
+The
+.Fn dlsym
+function
+returns a null pointer if the symbol cannot be found, and sets an error
+condition which may be queried with
+.Fn dlerror .
+.Pp
+.Sh NOTES
+Unlike other dyld API's, the symbol name passed to
+.Fn dlsym
+must NOT be prepended with an underscore.  
+.Sh SEE ALSO
+.Xr dlopen 3
+.Xr dlsym 3
+.Xr dlerror 3
+.Xr dyld 3
+.Xr NSModule 3
+.Xr NSObjectFileImage 3
+.Xr ld 1
+.Xr cc 1

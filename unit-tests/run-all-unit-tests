@@ -1,0 +1,28 @@
+#!/bin/sh
+
+# cd into test-cases directory
+cd `echo "$0" | sed 's/run-all-unit-tests/test-cases/'`
+
+echo ""
+echo " * * * Running all unit tests for 32-bits * * *"
+
+# make clean
+../bin/make-recursive.pl clean > /dev/null
+
+# build default architecture
+../bin/make-recursive.pl | ../bin/result-filter.pl
+
+# if G5, then also run all test cases built for ppc64
+if [ `machine` = "ppc970" ] 
+then
+	echo ""
+	echo " * * * Running all unit tests for 64-bits * * *"
+	
+	# make clean
+	../bin/make-recursive.pl clean > /dev/null
+
+	# build 64-bit architecture
+	../bin/make-recursive.pl ARCH="-arch ppc64" | ../bin/result-filter.pl
+fi
+
+

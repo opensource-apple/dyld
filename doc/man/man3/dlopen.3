@@ -1,0 +1,128 @@
+.Dd February 8, 2005
+.Os
+.Dt DLOPEN 3
+.Sh NAME
+.Nm dlopen 
+.Nd load and link a dynamic library or bundle
+.Sh SYNOPSIS
+.In dlfcn.h
+.Ft void*
+.Fn dlopen "const char* path" "int mode"
+.Sh DESCRIPTION
+.Fn dlopen
+examines the mach-o file specified by 
+.Fa path .
+If the file is compatible with the current process and has not already been 
+loaded into the current process, it is loaded and linked.  After being linked,
+if it contains any initializer functions, they are called, before
+.Fn dlopen
+returns.  
+.Fn dlopen
+can load dynamic libraries and bundles.  It returns a handle that can
+be used with 
+.Fn dlsym
+and
+.Fn dlclose .
+A second call to 
+.Fn dlopen
+with the same path will return the same handle, but the internal reference
+count for the handle will be incremented.  Therefore all 
+.Fn dlopen
+calls should be balanced with a 
+.Fn dlclose
+call.
+.Pp
+If a null pointer is passed in 
+.Fa path ,
+.Fn dlopen
+returns a handle equivalent to RTLD_DEFAULT.
+.Pp
+.Fa mode
+contains options to 
+.Fn dlopen .
+It must contain one or more of the following values, possibly ORed together:
+.Pp
+.Bl -tag -width RTLD_LAZYX
+.It Dv RTLD_LAZY
+Each external function reference is bound the first time the function is called.
+.It Dv RTLD_NOW
+All external function references are bound immediately during the call to
+.Fn dlopen .
+.El
+.Pp
+.Dv RTLD_LAZY
+is normally preferred, for reasons of efficiency.
+However,
+.Dv RTLD_NOW
+is useful to ensure that any undefined symbols are discovered during the
+call to
+.Fn dlopen .
+If neither 
+RTLD_LAZY nor RTLD_NOW is specified, the default is RTLD_LAZY.
+.Pp
+One of the following flags may be ORed into the
+.Fa mode
+argument:
+.Bl -tag -width RTLD_GLOBALX
+.It Dv RTLD_GLOBAL
+Symbols exported from this image (dynamic library or bundle) will be available to any 
+images build with -flat_namespace option to  
+.Xr ld 1
+or to calls to
+.Fn dlsym
+when using a special handle.
+.It Dv RTLD_LOCAL
+Symbols exported from this image (dynamic library or bundle) are generally hidden
+and only availble to
+.Fn dlsym
+when directly using the handle returned by this call to 
+.Fn dlopen .
+If neither 
+RTLD_GLOBAL nor RTLD_LOCAL is specified, the default is RTLD_GLOBAL.
+.El
+.Sh SEARCHING
+.Fn dlopen
+uses a series of steps to find a compatible mach-o file.  The first compatible file found is used.
+.Pp
+1) If the directory specified by 
+.Fa path 
+does not contain a slash '/' (i.e. it is a leaf name) then the environment variable LD_LIBRARY_PATH is 
+used.  LD_LIBRARY_PATH should be a colon seperated list of directories.  
+.Fn dlopen
+searches each directory, in the order specified, for the leaf name 
+.Fa path .
+.Pp
+2) If DYLD_LIBRARY_PATH is set, then those directories are searched, in order, 
+with the leaf name of 
+.Fa path .
+.Pp
+3) If DYLD_FALLBACK_LIBRARY_PATH is set, then those directories are searched, in order
+with the leaf name of 
+.Fa path .
+If DYLD_FALLBACK_LIBRARY_PATH is not set, then the following directories are searched: $HOME/lib, /usr/local/lib, /usr/lib
+.Pp
+4) Lastly, 
+.Fa path
+is tried as-is as a regular file path.  That means it might resolve relative to the current working directory. 
+.Pp
+Note: There are no configuration files to control dlopen searching.  
+.Pp
+Note: Mac OS X uses "fat" files to combine 32-bit and 64-bit libraries.  This means there are no separate 32-bit and 64-bit search paths.
+.Pp
+.Sh RETURN VALUES
+If 
+.Fn dlopen
+fails, it returns a null pointer, and sets an error condition which may be interrogated with 
+.Fn dlerror .
+.Sh AUTHORS
+Mac OS X 10.3 incorporated the dlcompat package written by Jorge Acereda <jacereda@users.sourceforge.net>
+and Peter O'Gorman <ogorman@users.sourceforge.net>.
+.Pp
+In Mac OS X 10.4, dlopen was rewritten to be a native part of dyld.
+.Pp
+.Sh SEE ALSO
+.Xr dlclose 3
+.Xr dlsym 3
+.Xr dlerror 3
+.Xr dyld 3
+.Xr ld 1
