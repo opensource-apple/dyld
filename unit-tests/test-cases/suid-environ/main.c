@@ -30,15 +30,34 @@
 // binaries set to run as some other user id never see any DYLD_ environment variables
 //
 
-int main(int argc, const char* argv[], const char* envp[])
+int main(int argc, const char* argv[], const char* envp[], const char* apple[])
 {
-	for(const char** p = envp; *p != NULL; p++) {
+	// verify no DYLD_ variables
+	const char** p;
+	for(p = envp; *p != NULL; p++) {
 		//fprintf(stderr, "%s\n", *p);
 		if ( strncmp(*p, "DYLD_", 5) == 0 ) {
 			FAIL("suid-environ: found %s", *p);
 			return EXIT_SUCCESS;
 		}
 	}
+	// verify same as apple parameter
+	++p;
+	if ( apple != p ) {
+		FAIL("suid-environ: apple parameter not at end of envp");
+		return EXIT_SUCCESS;
+	}
+	
+	// verify apple parameter is not NULL and ends in main
+	if ( *apple == NULL ) {
+		FAIL("suid-environ: apple parameter is empty");
+		return EXIT_SUCCESS;
+	}
+	if ( strstr(*apple, "/main") == NULL ) {
+		FAIL("suid-environ: apple parameter is not path to main");
+		return EXIT_SUCCESS;
+	}
+	
 	PASS("suid-environ");
 	return EXIT_SUCCESS;
 }

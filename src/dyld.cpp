@@ -397,37 +397,6 @@ static const char** parseColonList(const char* list)
 	return (const char**)result;
 }
 
-/*
- * Library path searching is not done for setuid programs
- * which are not run by the real user.  Futher the
- * evironment varaible for the library path is cleared so
- * that if this program executes a non-set uid program this
- * part of the evironment will not be passed along so that
- * that program also will not have it's libraries searched
- * for.
- */
- static bool riskyUser()
- {
-	static bool checked = false;
-	static bool risky = false;
-	if ( !checked ) {
-		risky = ( getuid() != 0 && (getuid() != geteuid() || getgid() != getegid()) );
-		checked = true;
-	}
-	return risky;
- }
- 
- 
-static bool disableIfBadUser(char* rhs)
-{
-	bool didDisable = false;
-	if ( riskyUser() ) {
-		*rhs ='\0';
-		didDisable = true;
-	}
-	return didDisable;
-}
-
 static void paths_expand_roots(const char **paths, const char *key, const char *val)
 {
 // 	assert(val != NULL);
@@ -492,42 +461,34 @@ static void printEnvironmentVariables(const char* envp[])
 void processDyldEnvironmentVarible(const char* key, const char* value)
 {
 	if ( strcmp(key, "DYLD_FRAMEWORK_PATH") == 0 ) {
-		if ( !disableIfBadUser((char*)value) )
-			sEnv.DYLD_FRAMEWORK_PATH = parseColonList(value);
+		sEnv.DYLD_FRAMEWORK_PATH = parseColonList(value);
 	}
 	else if ( strcmp(key, "DYLD_FALLBACK_FRAMEWORK_PATH") == 0 ) {
-		if ( !disableIfBadUser((char*)value) )
-			sEnv.DYLD_FALLBACK_FRAMEWORK_PATH = parseColonList(value);
+		sEnv.DYLD_FALLBACK_FRAMEWORK_PATH = parseColonList(value);
 	}
 	else if ( strcmp(key, "DYLD_LIBRARY_PATH") == 0 ) {
-		if ( !disableIfBadUser((char*)value) )
-			sEnv.DYLD_LIBRARY_PATH = parseColonList(value);
+		sEnv.DYLD_LIBRARY_PATH = parseColonList(value);
 	}
 	else if ( strcmp(key, "DYLD_FALLBACK_LIBRARY_PATH") == 0 ) {
-		if ( !disableIfBadUser((char*)value) )
-			sEnv.DYLD_FALLBACK_LIBRARY_PATH = parseColonList(value);
+		sEnv.DYLD_FALLBACK_LIBRARY_PATH = parseColonList(value);
 	}
 	else if ( (strcmp(key, "DYLD_ROOT_PATH") == 0) || (strcmp(key, "DYLD_PATHS_ROOT") == 0) ) {
-		if ( !disableIfBadUser((char*)value) ) {
-			if ( strcmp(value, "/") != 0 ) {
-				sEnv.DYLD_ROOT_PATH = parseColonList(value);
-				for (int i=0; sEnv.DYLD_ROOT_PATH[i] != NULL; ++i) {
-					if ( sEnv.DYLD_ROOT_PATH[i][0] != '/' ) {
-						fprintf(stderr, "dyld: warning DYLD_ROOT_PATH not used because it contains a non-absolute path\n");
-						sEnv.DYLD_ROOT_PATH = NULL;
-						break;
-					}
+		if ( strcmp(value, "/") != 0 ) {
+			sEnv.DYLD_ROOT_PATH = parseColonList(value);
+			for (int i=0; sEnv.DYLD_ROOT_PATH[i] != NULL; ++i) {
+				if ( sEnv.DYLD_ROOT_PATH[i][0] != '/' ) {
+					fprintf(stderr, "dyld: warning DYLD_ROOT_PATH not used because it contains a non-absolute path\n");
+					sEnv.DYLD_ROOT_PATH = NULL;
+					break;
 				}
 			}
 		}
 	} 
 	else if ( strcmp(key, "DYLD_IMAGE_SUFFIX") == 0 ) {
-		if ( !disableIfBadUser((char*)value) )
-			gLinkContext.imageSuffix = value;
+		gLinkContext.imageSuffix = value;
 	}
 	else if ( strcmp(key, "DYLD_INSERT_LIBRARIES") == 0 ) {
-		if ( !disableIfBadUser((char*)value) )
-			sEnv.DYLD_INSERT_LIBRARIES = parseColonList(value);
+		sEnv.DYLD_INSERT_LIBRARIES = parseColonList(value);
 	}
 	else if ( strcmp(key, "DYLD_DEBUG_TRACE") == 0 ) {
 		fprintf(stderr, "dyld: warning DYLD_DEBUG_TRACE not supported\n");
@@ -653,6 +614,48 @@ void processDyldEnvironmentVarible(const char* key, const char* value)
 	}
 }
 
+//
+// For security, setuid programs ignore DYLD_* environment variables.
+// Additionally, the DYLD_* enviroment variables are removed
+// from the environment, so that any child processes don't see them.
+//
+static void pruneEnvironmentVariables(const char* envp[], const char*** applep)
+{
+	// delete all DYLD_* and LD_LIBRARY_PATH environment variables
+	int removedCount = 0;
+	const char** d = envp;
+	for(const char** s = envp; *s != NULL; s++) {
+	    if ( (strncmp(*s, "DYLD_", 5) != 0) && (strncmp(*s, "LD_LIBRARY_PATH=", 16) != 0) ) {
+			*d++ = *s;
+		}
+		else {
+			++removedCount;
+		}
+	}
+	*d++ = NULL;
+	
+	// slide apple parameters
+	if ( removedCount > 0 ) {
+		*applep = d;
+		do {
+			*d = d[removedCount];
+		} while ( *d++ != NULL );
+	}
+	
+	// setup DYLD_FALLBACK_FRAMEWORK_PATH, if not set in environment
+	if ( sEnv.DYLD_FALLBACK_FRAMEWORK_PATH == NULL ) {
+		const char** paths = sFrameworkFallbackPaths;
+		removePathWithPrefix(paths, "$HOME");
+		sEnv.DYLD_FALLBACK_FRAMEWORK_PATH = paths;
+	}
+
+	// default value for DYLD_FALLBACK_LIBRARY_PATH, if not set in environment
+	if ( sEnv.DYLD_FALLBACK_LIBRARY_PATH == NULL ) {
+		const char** paths = sLibraryFallbackPaths;
+		removePathWithPrefix(paths, "$HOME");
+		sEnv.DYLD_FALLBACK_LIBRARY_PATH = paths;
+	}
+}
 
 static void checkEnvironmentVariables(const char* envp[], bool ignoreEnviron)
 {
@@ -676,8 +679,7 @@ static void checkEnvironmentVariables(const char* envp[], bool ignoreEnviron)
 		}
 		else if ( strncmp(keyEqualsValue, "LD_LIBRARY_PATH=", 16) == 0 ) {
 			const char* path = &keyEqualsValue[16];
-			if ( !disableIfBadUser((char*)path) )
-				sEnv.LD_LIBRARY_PATH = parseColonList(path);
+			sEnv.LD_LIBRARY_PATH = parseColonList(path);
 		}
 	}
 		
@@ -2001,7 +2003,10 @@ _main(const struct mach_header* mainExecutableMH, int argc, const char* argv[], 
 	}
 	uintptr_t result = 0;
 	sMainExecutableMachHeader = mainExecutableMH;
-	checkEnvironmentVariables(envp, isEmulated);
+	if ( issetugid() )
+		pruneEnvironmentVariables(envp, &apple);
+	else
+		checkEnvironmentVariables(envp, isEmulated);
 	if ( sEnv.DYLD_PRINT_OPTS ) 
 		printOptions(argv);
 	if ( sEnv.DYLD_PRINT_ENV ) 
