@@ -23,7 +23,7 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-FATFLAGS = $(shell lipo -detailed_info $(IOSROOT)/usr/lib/libSystem.B.dylib | grep architecture | sed -e 's/architecture/-arch/')
+FATFLAGS = $(shell ${LIPO} -detailed_info $(IOSROOT)/usr/lib/libSystem.B.dylib | grep architecture | sed -e 's/architecture/-arch/')
 
 all-check: all check
 

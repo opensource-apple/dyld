@@ -41,16 +41,17 @@ check-ios:
 
 check-macosx:
 	./main 10
-	export DYLD_VERSIONED_FRAMEWORK_PATH="${PWD}/alt11" && ./main 11
+	export DYLD_VERSIONED_FRAMEWORK_PATH="${PWD}/alt11" && ./main 11 "alt11/Foo.framework/Versions/A/Foo"
 	export DYLD_VERSIONED_FRAMEWORK_PATH="${PWD}/alt9" && ./main 10
 	export DYLD_VERSIONED_FRAMEWORK_PATH="${PWD}/alt9:${PWD}/alt11" && ./main 11
 	export DYLD_VERSIONED_FRAMEWORK_PATH="${PWD}/alt11:${PWD}/alt12" && ./main 12
 
 all: 
-	mkdir -p Foo.framework alt11/Foo.framework alt9/Foo.framework alt12/Foo.framework
+	mkdir -p Foo.framework alt11/Foo.framework/Versions/A alt9/Foo.framework alt12/Foo.framework
 	${CC} ${CCFLAGS} -dynamiclib foo.c -DRESULT=10 -current_version 10 -install_name "${PWD}/Foo.framework/Foo" -o Foo.framework/Foo
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c Foo.framework/Foo 
-	${CC} ${CCFLAGS} -dynamiclib foo.c -DRESULT=11 -current_version 11 -install_name "${PWD}/Foo.framework/Foo" -o alt11/Foo.framework/Foo  
+	${CC} ${CCFLAGS} -dynamiclib foo.c -DRESULT=11 -current_version 11 -install_name "${PWD}/Foo.framework/Foo" -o alt11/Foo.framework/Versions/A/Foo
+	cd alt11/Foo.framework && ln -sf Versions/A/Foo
 	${CC} ${CCFLAGS} -dynamiclib foo.c -DRESULT=9  -current_version 9  -install_name "${PWD}/Foo.framework/Foo" -o alt9/Foo.framework/Foo  
 	${CC} ${CCFLAGS} -dynamiclib foo.c -DRESULT=12 -current_version 12 -install_name "${PWD}/Foo.framework/Foo" -o alt12/Foo.framework/Foo  
 

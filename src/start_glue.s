@@ -28,13 +28,13 @@
     .align 2
     .globl _start
     .private_extern _start
-start:
-	nop		# <rdar://problem/10753356> backtraces of LC_MAIN binaries don't end in "start"
 _start:
+	nop		# <rdar://problem/10753356> backtraces of LC_MAIN binaries don't end in "start"
+Lstart:
 	movl	%eax,(%esp)	    # pass result from main() to exit() 
 	call	_exit
 	hlt
-
+	
 #endif /* __i386__ */
 
 
@@ -43,9 +43,9 @@ _start:
     .align 2
     .globl _start
     .private_extern _start
-start:
-	nop		# <rdar://problem/10753356> backtraces of LC_MAIN binaries don't end in "start"
 _start:
+	nop		# <rdar://problem/10753356> backtraces of LC_MAIN binaries don't end in "start"
+Lstart:
 	movl	%eax,%edi	    # pass result from main() to exit() 
 	call	_exit
 	hlt
@@ -56,13 +56,17 @@ _start:
 #if __arm__
  
     .align 2
+	.code	16  
     .globl _start
     .private_extern _start
-start:
-	nop					// <rdar://problem/10753356> backtraces of LC_MAIN binaries don't end in "start"
+	.thumb_func	_start
 _start:
+	nop					// <rdar://problem/10753356> backtraces of LC_MAIN binaries don't end in "start"
+Lstart:
 	bl	_exit			// result in r0 already in param reg r0
 	trap
  
 #endif /* __arm__ */
 
+	.subsections_via_symbols
+	

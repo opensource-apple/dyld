@@ -23,12 +23,19 @@ endif
 IOSROOT	= 
 
 ifeq "$(OS_NAME)" "iPhoneOS"
-	IOSROOT		= /Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS5.0.Internal.sdk
-	CC			= /Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/cc -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot $(IOSROOT)
-	CXX			= /Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/c++ -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot $(IOSROOT)
+	#IOSROOT		= $(shell xcodebuild -version -sdk iphoneos.internal Path)
+	IOSROOT		= /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS7.0.Internal.sdk
+	CC			= $(shell xcrun -sdk iphoneos.internal -find cc)  -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot $(IOSROOT)
+	CXX			= $(shell xcrun -sdk iphoneos.internal -find c++) -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot $(IOSROOT)
+	LIPO		= $(shell xcrun -sdk iphoneos.internal -find lipo)
+	STRIP		= $(shell xcrun -sdk iphoneos.internal -find strip)
+	INSTALL_NAME_TOOL = $(shell xcrun -sdk iphoneos.internal -find install_name_tool)
 else
-	CC			= cc -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION)
-	CXX			= c++ -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION)
+	CC			= $(shell xcrun -find cc)  -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION)
+	CXX			= $(shell xcrun -find c++) -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION)
+	LIPO		= $(shell xcrun -find lipo)
+	STRIP		= $(shell xcrun -find strip)
+	INSTALL_NAME_TOOL = $(shell xcrun -find install_name_tool)
 endif
 
 CCFLAGS		= -Wall -std=c99
@@ -66,3 +73,4 @@ ifeq ($(ARCH),thumb2)
 else
   FILEARCH = $(ARCH)
 endif
+

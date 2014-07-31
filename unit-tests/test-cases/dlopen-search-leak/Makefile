@@ -42,7 +42,7 @@ all-check: all check
 check: ${CHECK}
 
 check-real:
-	DYLD_LIBRARY_PATH=hide:other:places && ./main | grep '0 leaks for 0 total leaked bytes' > /dev/null && echo "PASS dlopen-search-leak"
+	DYLD_LIBRARY_PATH=hide:other:places && ./main 
 
 check-xfail:
 	echo "XFAIL dlopen-leak"; 

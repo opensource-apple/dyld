@@ -120,7 +120,7 @@ private:
 
 template <typename A>
 Rebaser<A>::Rebaser(const MachOLayoutAbstraction& layout)
- : 	fLayout(layout), fOrignalVMRelocBaseAddress(NULL), fLinkEditBase(NULL), 
+ : 	fLayout(layout), fOrignalVMRelocBaseAddress(0), fLinkEditBase(0), 
 	fSymbolTable(NULL), fDynamicSymbolTable(NULL), fDyldInfo(NULL), fSplittingSegments(false), 
 	fOrignalVMRelocBaseAddressValid(false), fSkipSplitSegInfoStart(0), fSkipSplitSegInfoEnd(0)
 {

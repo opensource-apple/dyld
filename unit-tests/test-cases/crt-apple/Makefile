@@ -45,7 +45,7 @@ main: main.c
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c -w
 
 main.stripped: main
-	strip main -o main.stripped
+	${STRIP} main -o main.stripped
 
 main-setuid: main
 	cp main main-setuid

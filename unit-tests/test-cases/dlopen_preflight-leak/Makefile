@@ -42,8 +42,8 @@ all-check: all check
 check: ${CHECK}
 
 check-real:
-	${TESTROOT}/bin/exit-zero-pass.pl "dlopen_preflight-leak" "dlopen_preflight-leak" "DYLD_LIBRARY_PATH=hide && ./main | grep '0 leaks for 0 total leaked bytes' > /dev/null"
-	${TESTROOT}/bin/exit-zero-pass.pl "dlopen_preflight-leak" "dlopen_preflight-leak" "./main | grep '0 leaks for 0 total leaked bytes' > /dev/null"
+	DYLD_LIBRARY_PATH=hide && ./main 
+	./main 
 
 check-xfail:
 	echo "XFAIL dlopen-leak"; 

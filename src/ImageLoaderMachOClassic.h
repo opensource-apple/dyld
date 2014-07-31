@@ -74,7 +74,7 @@ protected:
 	virtual	void						rebase(const LinkContext& context);
 	virtual const ImageLoader::Symbol*	findExportedSymbol(const char* name, const ImageLoader** foundIn) const;
 	virtual bool						containsSymbol(const void* addr) const;
-	virtual uintptr_t					exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, bool runResolver) const;
+	virtual uintptr_t					exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, const ImageLoader* requestor, bool runResolver) const;
 	virtual bool						exportedSymbolIsWeakDefintion(const Symbol* symbol) const;
 	virtual const char*					exportedSymbolName(const Symbol* symbol) const;
 	virtual unsigned int				exportedSymbolCount() const;

@@ -17,6 +17,7 @@
 				F908137111D3FB5000626CC1 /* usr|local|include|mach-o */,
 				F908137211D3FB5000626CC1 /* usr|share|man|man1 */,
 				F908137311D3FB5000626CC1 /* usr|share|man|man3 */,
+				F9F479FE152A63F2008F75C2 /* simulator clean up */,
 			);
 			dependencies = (
 				F9B4D78012AD9736000605A6 /* PBXTargetDependency */,
@@ -58,6 +59,8 @@
 		F908136D11D3FB3A00626CC1 /* dyld.3 in usr|share|man|man3 */ = {isa = PBXBuildFile; fileRef = EF799FF0070D27BB00F78484 /* dyld.3 */; };
 		F908136E11D3FB3A00626CC1 /* dlopen_preflight.3 in usr|share|man|man3 */ = {isa = PBXBuildFile; fileRef = F9E572000A66EF41007D9BE9 /* dlopen_preflight.3 */; };
 		F913FADA0630A8AE00B7AE9D /* dyldAPIsInLibSystem.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F913FAD90630A8AE00B7AE9D /* dyldAPIsInLibSystem.cpp */; };
+		F93666E0163B4C42002ECADA /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F93666DF163B4C42002ECADA /* CoreFoundation.framework */; };
+		F93666E2163B4C58002ECADA /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F93666E1163B4C58002ECADA /* Security.framework */; };
 		F93937470A94FC4700070A07 /* update_dyld_shared_cache.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F93937460A94FC4700070A07 /* update_dyld_shared_cache.cpp */; };
 		F94DB9040F0A9B1700323715 /* ImageLoaderMachOClassic.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F94DB9000F0A9B1700323715 /* ImageLoaderMachOClassic.cpp */; };
 		F94DB9050F0A9B1700323715 /* ImageLoaderMachOCompressed.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F94DB9020F0A9B1700323715 /* ImageLoaderMachOCompressed.cpp */; settings = {COMPILER_FLAGS = "-O3"; }; };
@@ -203,7 +206,7 @@
 		F908135111D3ED9000626CC1 /* usr|include|mach-o */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 8;
-			dstPath = "/usr/include/mach-o";
+			dstPath = "$(INSTALL_PATH_PREFIX)//usr/include/mach-o";
 			dstSubfolderSpec = 0;
 			files = (
 				F908134C11D3ED6200626CC1 /* dyld.h in usr|include|mach-o */,
@@ -215,7 +218,7 @@
 		F908137011D3FB5000626CC1 /* usr|include */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 8;
-			dstPath = /usr/include;
+			dstPath = "$(INSTALL_PATH_PREFIX)//usr/include";
 			dstSubfolderSpec = 0;
 			files = (
 				F908135911D3FA8700626CC1 /* dlfcn.h in usr|include */,
@@ -226,7 +229,7 @@
 		F908137111D3FB5000626CC1 /* usr|local|include|mach-o */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 8;
-			dstPath = "/usr/local/include/mach-o";
+			dstPath = "$(INSTALL_PATH_PREFIX)//usr/local/include/mach-o";
 			dstSubfolderSpec = 0;
 			files = (
 				F908135D11D3FACD00626CC1 /* dyld-interposing.h in usr|local|include|mach-o */,
@@ -280,7 +283,7 @@
 		F9C69EFC14EC8AB8009CAE2E /* usr|local|include */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 8;
-			dstPath = /usr/local/include;
+			dstPath = "$(INSTALL_PATH_PREFIX)//usr/local/include";
 			dstSubfolderSpec = 0;
 			files = (
 				F9C69EFE14EC8AD2009CAE2E /* objc-shared-cache.h in usr|local|include */,
@@ -314,6 +317,8 @@
 		F906E2230639E96400B13DB2 /* dyld_debug.c */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.c; name = dyld_debug.c; path = src/dyld_debug.c; sourceTree = "<group>"; };
 		F913FAD90630A8AE00B7AE9D /* dyldAPIsInLibSystem.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = dyldAPIsInLibSystem.cpp; path = src/dyldAPIsInLibSystem.cpp; sourceTree = "<group>"; };
 		F918691408B16D2500E0F9DB /* dyld-interposing.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = "dyld-interposing.h"; path = "include/mach-o/dyld-interposing.h"; sourceTree = "<group>"; };
+		F93666DF163B4C42002ECADA /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = /System/Library/Frameworks/CoreFoundation.framework; sourceTree = "<absolute>"; };
+		F93666E1163B4C58002ECADA /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = /System/Library/Frameworks/Security.framework; sourceTree = "<absolute>"; };
 		F93937320A94FAF700070A07 /* update_dyld_shared_cache */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = update_dyld_shared_cache; sourceTree = BUILT_PRODUCTS_DIR; };
 		F939373E0A94FC4700070A07 /* Architectures.hpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.h; path = Architectures.hpp; sourceTree = "<group>"; };
 		F939373F0A94FC4700070A07 /* CacheFileAbstraction.hpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.h; path = CacheFileAbstraction.hpp; sourceTree = "<group>"; };
@@ -321,14 +326,14 @@
 		F93937410A94FC4700070A07 /* FileAbstraction.hpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.h; path = FileAbstraction.hpp; sourceTree = "<group>"; };
 		F93937430A94FC4700070A07 /* MachOFileAbstraction.hpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.h; path = MachOFileAbstraction.hpp; sourceTree = "<group>"; };
 		F93937440A94FC4700070A07 /* MachOLayout.hpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.h; path = MachOLayout.hpp; sourceTree = "<group>"; };
-		F93937460A94FC4700070A07 /* update_dyld_shared_cache.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = update_dyld_shared_cache.cpp; sourceTree = "<group>"; };
-		F939F219078F1A2100AC144F /* dyld_debug.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = dyld_debug.h; path = "include/mach-o/dyld_debug.h"; sourceTree = "<group>"; };
+		F93937460A94FC4700070A07 /* update_dyld_shared_cache.cpp */ = {isa = PBXFileReference; fileEncoding = 30; indentWidth = 4; lastKnownFileType = sourcecode.cpp.cpp; path = update_dyld_shared_cache.cpp; sourceTree = "<group>"; tabWidth = 4; usesTabs = 1; };
 		F94DB9000F0A9B1700323715 /* ImageLoaderMachOClassic.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = ImageLoaderMachOClassic.cpp; path = src/ImageLoaderMachOClassic.cpp; sourceTree = "<group>"; };
 		F94DB9010F0A9B1700323715 /* ImageLoaderMachOClassic.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = ImageLoaderMachOClassic.h; path = src/ImageLoaderMachOClassic.h; sourceTree = "<group>"; };
 		F94DB9020F0A9B1700323715 /* ImageLoaderMachOCompressed.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = ImageLoaderMachOCompressed.cpp; path = src/ImageLoaderMachOCompressed.cpp; sourceTree = "<group>"; };
 		F94DB9030F0A9B1700323715 /* ImageLoaderMachOCompressed.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = ImageLoaderMachOCompressed.h; path = src/ImageLoaderMachOCompressed.h; sourceTree = "<group>"; };
 		F95C95160E994796007B7CB8 /* MachOTrie.hpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = MachOTrie.hpp; sourceTree = "<group>"; };
 		F976F548127B90F8004BA2A5 /* dyld.order */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; name = dyld.order; path = src/dyld.order; sourceTree = "<group>"; };
+		F981BB8B170FC24400A686D6 /* dyldSyscallInterface.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = dyldSyscallInterface.h; path = src/dyldSyscallInterface.h; sourceTree = "<group>"; };
 		F98935B90A9A412B00FB6228 /* MachOBinder.hpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.h; path = MachOBinder.hpp; sourceTree = "<group>"; };
 		F98935BA0A9A412B00FB6228 /* MachORebaser.hpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.h; path = MachORebaser.hpp; sourceTree = "<group>"; };
 		F98D274C0AA79D7400416316 /* dyld_images.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = dyld_images.h; path = "include/mach-o/dyld_images.h"; sourceTree = "<group>"; };
@@ -341,6 +346,7 @@
 		F9A6D70B116FBBD10051CC16 /* threadLocalHelpers.s */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.asm; name = threadLocalHelpers.s; path = src/threadLocalHelpers.s; sourceTree = "<group>"; };
 		F9AB709D0BA75730002F6068 /* dyldLibSystemInterface.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = dyldLibSystemInterface.h; path = src/dyldLibSystemInterface.h; sourceTree = "<group>"; };
 		F9AC7E930B7BB67700FEB38B /* version.c */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.c; path = version.c; sourceTree = BUILT_PRODUCTS_DIR; };
+		F9AFEA3216F15CE300CB5161 /* start_glue.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = start_glue.h; path = src/start_glue.h; sourceTree = "<group>"; };
 		F9B01E3D0739ABDE00CF981B /* dyld.exp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.exports; name = dyld.exp; path = src/dyld.exp; sourceTree = SOURCE_ROOT; };
 		F9C69EFD14EC8ABF009CAE2E /* objc-shared-cache.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = "objc-shared-cache.h"; path = "include/objc-shared-cache.h"; sourceTree = "<group>"; };
 		F9CE30781208F1B50098B590 /* dsc_extractor.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = dsc_extractor.cpp; sourceTree = "<group>"; };
@@ -380,6 +386,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F93666E2163B4C58002ECADA /* Security.framework in Frameworks */,
+				F93666E0163B4C42002ECADA /* CoreFoundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -445,6 +453,8 @@
 		F939373D0A94FC4700070A07 /* launch-cache */ = {
 			isa = PBXGroup;
 			children = (
+				F93666E1163B4C58002ECADA /* Security.framework */,
+				F93666DF163B4C42002ECADA /* CoreFoundation.framework */,
 				F939373E0A94FC4700070A07 /* Architectures.hpp */,
 				F939373F0A94FC4700070A07 /* CacheFileAbstraction.hpp */,
 				F93937400A94FC4700070A07 /* dyld_cache_format.h */,
@@ -475,7 +485,10 @@
 				F9ED4C990630A76000DF4E74 /* Products */,
 				F939373D0A94FC4700070A07 /* launch-cache */,
 			);
+			indentWidth = 4;
 			sourceTree = "<group>";
+			tabWidth = 4;
+			usesTabs = 1;
 		};
 		F9ED4C990630A76000DF4E74 /* Products */ = {
 			isa = PBXGroup;
@@ -506,8 +519,10 @@
 				F9ED4CCE0630A7F100DF4E74 /* dyldNew.cpp */,
 				F9ED4CCF0630A7F100DF4E74 /* dyldStartup.s */,
 				F9D49CCB1458B95200F86ADD /* start_glue.s */,
+				F9AFEA3216F15CE300CB5161 /* start_glue.h */,
 				F99EFC0D0EAD60E8001032B8 /* dyld_stub_binder.s */,
 				F9ED4CD00630A7F100DF4E74 /* glue.c */,
+				F981BB8B170FC24400A686D6 /* dyldSyscallInterface.h */,
 				F9ED4CD10630A7F100DF4E74 /* ImageLoader.cpp */,
 				F9ED4CD20630A7F100DF4E74 /* ImageLoader.h */,
 				F9ED4CD30630A7F100DF4E74 /* ImageLoaderMachO.cpp */,
@@ -535,7 +550,6 @@
 				F98D274C0AA79D7400416316 /* dyld_images.h */,
 				F9ED4CE80630A80600DF4E74 /* dyld_gdb.h */,
 				F9ED4CE90630A80600DF4E74 /* dyld_priv.h */,
-				F939F219078F1A2100AC144F /* dyld_debug.h */,
 				F9ED4CEA0630A80600DF4E74 /* dyld.h */,
 				F99EE6AE06B48D4200BF1992 /* dlfcn.h */,
 				F9C69EFD14EC8ABF009CAE2E /* objc-shared-cache.h */,
@@ -568,6 +582,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F93937340A94FB2900070A07 /* Build configuration list for PBXNativeTarget "update_dyld_shared_cache" */;
 			buildPhases = (
+				F91083C91702592700831889 /* create dyld_cache_config.h */,
 				F939372F0A94FAF700070A07 /* Sources */,
 				F93937300A94FAF700070A07 /* Frameworks */,
 				F9D238DD0A9E2FEE002B55C7 /* usr|share|man|man1 */,
@@ -725,6 +740,22 @@
 			shellScript = "if [ \"${PLATFORM_NAME}\" = \"iphoneos\" ] \nthen\n\tmkdir -p ${DSTROOT}//System/Library/Caches/com.apple.dyld\n\techo \"existence of this file enables dyld to have dylibs override shared cache\" > ${DSTROOT}//System/Library/Caches/com.apple.dyld/enable-dylibs-to-override-cache\nfi\n";
 			showEnvVarsInLog = 0;
 		};
+		F91083C91702592700831889 /* create dyld_cache_config.h */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "create dyld_cache_config.h";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/dyld_cache_config.h",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "echo \"\" > ${DERIVED_FILE_DIR}/dyld_cache_config.h\n\nif [ -n \"${ARM_SDK}\" ]; then\n\techo -n \"#define ARM_SHARED_REGION_START \"  >> ${DERIVED_FILE_DIR}/dyld_cache_config.h\n\tawk '/define SHARED_REGION_BASE_ARM[ \\t]/ { print $3;}' \"${ARM_SDK}/usr/include/mach/shared_region.h\" >> ${DERIVED_FILE_DIR}/dyld_cache_config.h\n\techo \"\"  >> ${DERIVED_FILE_DIR}/dyld_cache_config.h\n\n\techo -n \"#define ARM_SHARED_REGION_SIZE \"  >> ${DERIVED_FILE_DIR}/dyld_cache_config.h\n\tawk '/define SHARED_REGION_SIZE_ARM[ \\t]/ { print $3;}' \"${ARM_SDK}/usr/include/mach/shared_region.h\" >> ${DERIVED_FILE_DIR}/dyld_cache_config.h\n\techo \"\"  >> ${DERIVED_FILE_DIR}/dyld_cache_config.h\nelse\n\tif [ -z ${RC_PURPLE} ]; then \n\t\techo \"#define ARM_SHARED_REGION_START 0x30000000 \" >> ${DERIVED_FILE_DIR}/dyld_cache_config.h\n\t\techo \"#define ARM_SHARED_REGION_SIZE  0x10000000 \" >> ${DERIVED_FILE_DIR}/dyld_cache_config.h\n\tfi\nfi\n\n";
+			showEnvVarsInLog = 0;
+		};
 		F991E3030FF1A4EC0082CCC9 /* do not install duplicates */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 8;
@@ -737,7 +768,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 1;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"${INSTALL_LOCATION}\" = \"\" ] \nthen\n     # on iOS, libdyld builds arm libdsc.a and u_d_s_c builds intel libdsc.a\n     # on MacOSX, to avoid collision, u_d_s_c does not install libdsc.a\n\trm -rf ${DSTROOT}/usr/local/include\n\trm -rf ${DSTROOT}/usr/local/lib\nfi\n\nif [ -n \"${RC_PURPLE}\" ]\nthen\n    mkdir -p \"${DSTROOT}/Developer/Platforms/iPhoneOS.platform/usr/lib\"\n    mv \"${DSTROOT}/Developer/Platforms/iPhoneOS.platform/usr/local/lib/dsc_extractor.bundle\" \"${DSTROOT}/Developer/Platforms/iPhoneOS.platform/usr/lib/dsc_extractor.bundle\"\nfi";
+			shellScript = "if [ \"${INSTALL_LOCATION}\" = \"\" ] \nthen\n     # on iOS, libdyld builds arm libdsc.a and u_d_s_c builds intel libdsc.a\n     # on MacOSX, to avoid collision, u_d_s_c does not install libdsc.a\n\trm -rf ${DSTROOT}/usr/local/include\n\trm -rf ${DSTROOT}/usr/local/lib\nfi\n\nif [ -n \"${RC_PURPLE}\" ]\nthen\n    mkdir -p \"${DSTROOT}/${DEVELOPER_DIR}/Platforms/iPhoneOS.platform/usr/lib\"\n    mv \"${DSTROOT}/${DEVELOPER_DIR}/Platforms/iPhoneOS.platform/usr/local/lib/dsc_extractor.bundle\" \"${DSTROOT}/${DEVELOPER_DIR}/Platforms/iPhoneOS.platform/usr/lib/dsc_extractor.bundle\"\nfi";
 			showEnvVarsInLog = 0;
 		};
 		F99B8EB60FEC236500701838 /* suppress macosx dyld_shared_cache_util */ = {
@@ -768,7 +799,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# link with all .a files in /usr/local/lib/dyld\nls -1 ${SDKROOT}/usr/local/lib/dyld/*.a > ${DERIVED_SOURCES_DIR}/archives.txt \n\n# link with crash report archive if it exists\nif [ -f ${SDKROOT}/usr/local/lib/libCrashReporterClient.a ]\nthen\n  echo \\\"${SDKROOT}/usr/local/lib/libCrashReporterClient.a\\\" >> ${DERIVED_SOURCES_DIR}/archives.txt \nfi\n";
+			shellScript = "# link with all .a files in /usr/local/lib/dyld\nls -1 ${SDKROOT}/usr/local/lib/dyld/*.a > ${DERIVED_SOURCES_DIR}/archives.txt \n\n# link with crash report archive if it exists\nif [ -f ${SDKROOT}/usr/local/lib/libCrashReporterClient.a ]\nthen\n  echo \\\"${SDKROOT}/usr/local/lib/libCrashReporterClient.a\\\" >> ${DERIVED_SOURCES_DIR}/archives.txt \nfi\n\n";
+			showEnvVarsInLog = 0;
+		};
+		F9F479FE152A63F2008F75C2 /* simulator clean up */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "simulator clean up";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# simulator needs just headers and dylib\nif [ \"${PLATFORM_NAME}\" = \"iphonesimulator\" ] \nthen\n\tmkdir -p ${DSTROOT}/${SDKROOT}/usr/lib/system/\n\tmv ${DSTROOT}/usr/lib/system/libdyld_sim.dylib   ${DSTROOT}/${SDKROOT}/usr/lib/system/\n\tmkdir -p ${DSTROOT}/${SDKROOT}/usr/local/include/mach-o\n\tmv ${DSTROOT}/usr/local/include/mach-o/dsc_iterator.h   ${DSTROOT}/${SDKROOT}/usr/local/include/mach-o/dsc_iterator.h\n\trm -rf ${DSTROOT}/usr/\n\tmkdir ${DSTROOT}/${SDKROOT}/usr/lib/system/host\n\tln -s /usr/lib/system/libdyld.dylib ${DSTROOT}/${SDKROOT}/usr/lib/system/host/libdyld.dylib\n\tinstall_name_tool -change /usr/lib/system/libdyld.dylib /usr/lib/system/host/libdyld.dylib ${DSTROOT}/${SDKROOT}/usr/lib/system/libdyld_sim.dylib\nfi\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -902,6 +948,8 @@
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_OPTIMIZATION_LEVEL = 0;
 				INSTALLHDRS_COPY_PHASE = YES;
+				INSTALL_PATH_PREFIX = "$(INSTALL_PATH_PREFIX_$(PLATFORM_NAME))";
+				INSTALL_PATH_PREFIX_iphonesimulator = "$(SDKROOT)";
 				PRODUCT_NAME = libdyld;
 			};
 			name = Debug;
@@ -912,6 +960,8 @@
 				COPY_PHASE_STRIP = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				INSTALLHDRS_COPY_PHASE = YES;
+				INSTALL_PATH_PREFIX = "$(INSTALL_PATH_PREFIX_$(PLATFORM_NAME))";
+				INSTALL_PATH_PREFIX_iphonesimulator = "$(SDKROOT)";
 				PRODUCT_NAME = libdyld;
 				ZERO_LINK = NO;
 			};
@@ -927,6 +977,7 @@
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GCC_OPTIMIZATION_LEVEL = 0;
 				GCC_THREADSAFE_STATICS = NO;
+				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				GCC_WARN_CHECK_SWITCH_STATEMENTS = YES;
 				GCC_WARN_EFFECTIVE_CPLUSPLUS_VIOLATIONS = NO;
 				GCC_WARN_MISSING_PARENTHESES = YES;
@@ -935,6 +986,11 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/include";
+				OTHER_CPLUSPLUSFLAGS = (
+					"-stdlib=libc++",
+					"$(OTHER_CFLAGS)",
+				);
+				OTHER_LDFLAGS = "-stdlib=libc++";
 				PRODUCT_NAME = update_dyld_shared_cache;
 				VALID_ARCHS = "x86_64 i386";
 			};
@@ -951,11 +1007,17 @@
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_OPTIMIZATION_LEVEL = s;
 				GCC_THREADSAFE_STATICS = NO;
+				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				GCC_WARN_TYPECHECK_CALLS_TO_PRINTF = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/include";
 				INSTALL_PATH = "$(INSTALL_LOCATION)/usr/$(LOCAL)/bin";
 				LOCAL = "$(LOCAL_$(RC_TARGET_CONFIG))";
 				LOCAL_iPhone = local;
+				OTHER_CPLUSPLUSFLAGS = (
+					"-stdlib=libc++",
+					"$(OTHER_CFLAGS)",
+				);
+				OTHER_LDFLAGS = "-stdlib=libc++";
 				PRODUCT_NAME = update_dyld_shared_cache;
 				STRIP_INSTALLED_PRODUCT = YES;
 				STRIP_STYLE = debugging;
@@ -984,6 +1046,7 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				COPY_PHASE_STRIP = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_WARN_TYPECHECK_CALLS_TO_PRINTF = YES;
 				INSTALL_PATH = "$(INSTALL_LOCATION)/usr/local/bin";
 				PRODUCT_NAME = dyld_shared_cache_util;
@@ -1004,7 +1067,14 @@
 				GCC_OPTIMIZATION_LEVEL = 0;
 				INSTALL_PATH = "$(INSTALL_LOCATION)/usr/local/lib";
 				MACH_O_TYPE = mh_bundle;
-				OTHER_LDFLAGS = "-Wl,-exported_symbol,_dyld_shared_cache_extract_dylibs_progress";
+				OTHER_CPLUSPLUSFLAGS = (
+					"-stdlib=libc++",
+					"$(OTHER_CFLAGS)",
+				);
+				OTHER_LDFLAGS = (
+					"-stdlib=libc++",
+					"-Wl,-exported_symbol,_dyld_shared_cache_extract_dylibs_progress",
+				);
 				PRODUCT_NAME = dsc_extractor;
 			};
 			name = Debug;
@@ -1021,7 +1091,14 @@
 				GCC_INLINES_ARE_PRIVATE_EXTERN = YES;
 				INSTALL_PATH = "$(INSTALL_LOCATION)/usr/local/lib";
 				MACH_O_TYPE = mh_bundle;
-				OTHER_LDFLAGS = "-Wl,-exported_symbol,_dyld_shared_cache_extract_dylibs_progress";
+				OTHER_CPLUSPLUSFLAGS = (
+					"-stdlib=libc++",
+					"$(OTHER_CFLAGS)",
+				);
+				OTHER_LDFLAGS = (
+					"-stdlib=libc++",
+					"-Wl,-exported_symbol,_dyld_shared_cache_extract_dylibs_progress",
+				);
 				PRODUCT_NAME = dsc_extractor;
 				ZERO_LINK = NO;
 			};
@@ -1038,6 +1115,7 @@
 				BASE_ADDRESS_armv7 = 0x2fe00000;
 				BASE_ADDRESS_armv7f = 0x2fe00000;
 				BASE_ADDRESS_armv7k = 0x2fe00000;
+				BASE_ADDRESS_armv7s = 0x2fe00000;
 				BASE_ADDRESS_i386 = 0x8fe00000;
 				BASE_ADDRESS_ppc = 0x8fe00000;
 				BASE_ADDRESS_x86_64 = 0x7fff5fc00000;
@@ -1045,7 +1123,13 @@
 				CURRENT_PROJECT_VERSION = "$(RC_ProjectSourceVersion)";
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				EXPORTED_SYMBOLS_FILE = "$(SRCROOT)/src/dyld.exp";
+				ENTRY_iphoneos = "-Wl,-e,__dyld_start";
+				ENTRY_iphonesimulator = "-Wl,-e,_start_sim";
+				ENTRY_macosx = "-Wl,-e,__dyld_start";
+				EXPORTED_SYMBOLS_FILE = "$(EXPORTS_$(PLATFORM_NAME))";
+				EXPORTS_iphoneos = "$(SRCROOT)/src/dyld.exp";
+				EXPORTS_iphonesimulator = "$(SRCROOT)/src/dyld_sim.exp";
+				EXPORTS_macosx = "$(SRCROOT)/src/dyld.exp";
 				GCC_C_LANGUAGE_STANDARD = c99;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_ENABLE_BUILTIN_FUNCTIONS = NO;
@@ -1062,17 +1146,27 @@
 					"./launch-cache",
 				);
 				INSTALL_PATH = /usr/lib;
+				LD_GENERATE_MAP_FILE = YES;
 				OTHER_CFLAGS = "";
+				OTHER_CPLUSPLUSFLAGS = (
+					"-stdlib=libc++",
+					"$(OTHER_CFLAGS)",
+				);
 				OTHER_LDFLAGS = (
 					"-seg1addr",
 					"$(BASE_ADDRESS_$(CURRENT_ARCH))",
 					"@$(DERIVED_SOURCES_DIR)/archives.txt",
 					"-nostdlib",
-					"-Wl,-e,__dyld_start",
 					"-Wl,-dylinker",
 					"-Wl,-dylinker_install_name,/usr/lib/dyld",
+					"-stdlib=libc++",
+					"$(ALIGNMENT_$(CURRENT_ARCH))",
+					"$(ENTRY_$(PLATFORM_NAME))",
 				);
-				PRODUCT_NAME = dyld;
+				PRODUCT_NAME = "$(PRODUCT_NAME_$(PLATFORM_NAME))";
+				PRODUCT_NAME_iphoneos = dyld;
+				PRODUCT_NAME_iphonesimulator = dyld_sim;
+				PRODUCT_NAME_macosx = dyld;
 				STRIPFLAGS = "-S";
 				UNSTRIPPED_PRODUCT = NO;
 				VERSIONING_SYSTEM = "apple-generic";
@@ -1093,6 +1187,7 @@
 				BASE_ADDRESS_armv7 = 0x2fe00000;
 				BASE_ADDRESS_armv7f = 0x2fe00000;
 				BASE_ADDRESS_armv7k = 0x2fe00000;
+				BASE_ADDRESS_armv7s = 0x2fe00000;
 				BASE_ADDRESS_i386 = 0x8fe00000;
 				BASE_ADDRESS_ppc = 0x8fe00000;
 				BASE_ADDRESS_x86_64 = 0x7fff5fc00000;
@@ -1100,7 +1195,13 @@
 				CURRENT_PROJECT_VERSION = "$(RC_ProjectSourceVersion)";
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				EXPORTED_SYMBOLS_FILE = "$(SRCROOT)/src/dyld.exp";
+				ENTRY_iphoneos = "-Wl,-e,__dyld_start";
+				ENTRY_iphonesimulator = "-Wl,-e,_start_sim";
+				ENTRY_macosx = "-Wl,-e,__dyld_start";
+				EXPORTED_SYMBOLS_FILE = "$(EXPORTS_$(PLATFORM_NAME))";
+				EXPORTS_iphoneos = "$(SRCROOT)/src/dyld.exp";
+				EXPORTS_iphonesimulator = "$(SRCROOT)/src/dyld_sim.exp";
+				EXPORTS_macosx = "$(SRCROOT)/src/dyld.exp";
 				GCC_C_LANGUAGE_STANDARD = c99;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_ENABLE_CPP_RTTI = NO;
@@ -1114,18 +1215,28 @@
 					"./launch-cache",
 				);
 				INSTALL_PATH = /usr/lib;
+				LD_GENERATE_MAP_FILE = YES;
 				ORDER_FILE = "$(SRCROOT)/src/dyld.order";
 				"OTHER_CFLAGS[arch=armv6]" = "-mthumb";
+				OTHER_CPLUSPLUSFLAGS = (
+					"-stdlib=libc++",
+					"$(OTHER_CFLAGS)",
+				);
 				OTHER_LDFLAGS = (
 					"-seg1addr",
 					"$(BASE_ADDRESS_$(CURRENT_ARCH))",
 					"@$(DERIVED_SOURCES_DIR)/archives.txt",
 					"-nostdlib",
-					"-Wl,-e,__dyld_start",
 					"-Wl,-dylinker",
 					"-Wl,-dylinker_install_name,/usr/lib/dyld",
+					"-stdlib=libc++",
+					"$(ALIGNMENT_$(CURRENT_ARCH))",
+					"$(ENTRY_$(PLATFORM_NAME))",
 				);
-				PRODUCT_NAME = dyld;
+				PRODUCT_NAME = "$(PRODUCT_NAME_$(PLATFORM_NAME))";
+				PRODUCT_NAME_iphoneos = dyld;
+				PRODUCT_NAME_iphonesimulator = dyld_sim;
+				PRODUCT_NAME_macosx = dyld;
 				STRIPFLAGS = "-S";
 				UNSTRIPPED_PRODUCT = NO;
 				VERSIONING_SYSTEM = "apple-generic";
@@ -1141,7 +1252,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ARCHS = "$(ARCHS_STANDARD_32_64_BIT)";
+				DEAD_CODE_STRIPPING = YES;
 				EXECUTABLE_PREFIX = lib;
+				EXPORT_OPTIONS_iphonesimulator = "-exported_symbols_list $(SRCROOT)/src/libdyld_sim.exp";
 				GCC_C_LANGUAGE_STANDARD = gnu99;
 				GCC_ENABLE_CPP_EXCEPTIONS = NO;
 				GCC_ENABLE_CPP_RTTI = NO;
@@ -1149,7 +1262,22 @@
 				GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS = NO;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/include";
 				INSTALL_PATH = /usr/lib/system;
-				PRODUCT_NAME = dyld;
+				LIBSYSTEM_LIBS = "$(LIBSYSTEM_LIBS_$(PLATFORM_NAME))";
+				LIBSYSTEM_LIBS_iphoneos = "-Wl,-upward-lsystem_platform -Wl,-upward-lsystem_malloc -Wl,-upward-lsystem_c -Wl,-upward-lsystem_pthread -Wl,-upward-llaunch -Wl,-upward-lsystem_blocks -Wl,-upward-lsystem_kernel";
+				LIBSYSTEM_LIBS_iphonesimulator = "-Wl,-upward-lsystem_sim_c  -Wl,-upward-lSystem -Wl,-reexport_library,/usr/lib/system/libdyld.dylib -Wl,-allow_simulator_linking_to_macosx_dylibs";
+				LIBSYSTEM_LIBS_macosx = "-Wl,-upward-lsystem_platform -Wl,-upward-lsystem_malloc -Wl,-upward-lsystem_c -Wl,-upward-lsystem_pthread -Wl,-upward-llaunch -Wl,-upward-lsystem_blocks -Wl,-upward-lsystem_kernel";
+				OTHER_LDFLAGS = (
+					"-nostdlib",
+					"$(LIBSYSTEM_LIBS)",
+					"-umbrella",
+					System,
+					"$(EXPORT_OPTIONS_$(PLATFORM_NAME))",
+					"-L$(SDKROOT)/usr/lib/system",
+				);
+				PRODUCT_NAME = "$(PRODUCT_NAME_$(PLATFORM_NAME))";
+				PRODUCT_NAME_iphoneos = dyld;
+				PRODUCT_NAME_iphonesimulator = dyld_sim;
+				PRODUCT_NAME_macosx = dyld;
 				WARNING_CFLAGS = (
 					"-Wmost",
 					"-Wno-four-char-constants",
@@ -1167,9 +1295,11 @@
 				);
 				COPY_PHASE_STRIP = YES;
 				CURRENT_PROJECT_VERSION = "$(RC_ProjectSourceVersion)";
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DYLIB_CURRENT_VERSION = "$(RC_ProjectSourceVersion)";
 				EXECUTABLE_PREFIX = lib;
+				EXPORT_OPTIONS_iphonesimulator = "-exported_symbols_list $(SRCROOT)/src/libdyld_sim.exp";
 				GCC_C_LANGUAGE_STANDARD = gnu99;
 				GCC_ENABLE_CPP_EXCEPTIONS = NO;
 				GCC_ENABLE_CPP_RTTI = NO;
@@ -1178,13 +1308,26 @@
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/include";
 				INSTALLHDRS_COPY_PHASE = YES;
 				INSTALL_PATH = /usr/lib/system;
+				LIBSYSTEM_LIBS = "$(LIBSYSTEM_LIBS_$(PLATFORM_NAME))";
+				LIBSYSTEM_LIBS_iphoneos = "-Wl,-upward-lsystem_platform -Wl,-upward-lsystem_malloc -Wl,-upward-lsystem_c -Wl,-upward-lsystem_pthread -Wl,-upward-llaunch -Wl,-upward-lsystem_blocks -Wl,-upward-lsystem_kernel";
+				LIBSYSTEM_LIBS_iphonesimulator = "-Wl,-upward-lsystem_sim_c  -Wl,-upward-lSystem -Wl,-reexport_library,/usr/lib/system/libdyld.dylib -Wl,-allow_simulator_linking_to_macosx_dylibs";
+				LIBSYSTEM_LIBS_macosx = "-Wl,-upward-lsystem_platform -Wl,-upward-lsystem_malloc -Wl,-upward-lsystem_c -Wl,-upward-lsystem_pthread -Wl,-upward-llaunch -Wl,-upward-lsystem_blocks -Wl,-upward-lsystem_kernel";
+				OTHER_CPLUSPLUSFLAGS = (
+					"-fno-exceptions",
+					"$(OTHER_CFLAGS)",
+				);
 				OTHER_LDFLAGS = (
-					"-nodefaultlibs",
-					"-Wl,-upward-lSystem",
+					"-nostdlib",
+					"$(LIBSYSTEM_LIBS)",
 					"-umbrella",
 					System,
+					"$(EXPORT_OPTIONS_$(PLATFORM_NAME))",
+					"-L$(SDKROOT)/usr/lib/system",
 				);
-				PRODUCT_NAME = dyld;
+				PRODUCT_NAME = "$(PRODUCT_NAME_$(PLATFORM_NAME))";
+				PRODUCT_NAME_iphoneos = dyld;
+				PRODUCT_NAME_iphonesimulator = dyld_sim;
+				PRODUCT_NAME_macosx = dyld;
 				SEPARATE_STRIP = YES;
 				STRIP_INSTALLED_PRODUCT = YES;
 				VERSIONING_SYSTEM = "apple-generic";
@@ -1235,6 +1378,10 @@
 				GCC_OPTIMIZATION_LEVEL = 0;
 				GCC_SYMBOLS_PRIVATE_EXTERN = YES;
 				INSTALL_PATH = /usr/local/lib;
+				OTHER_CPLUSPLUSFLAGS = (
+					"-stdlib=libc++",
+					"$(OTHER_CFLAGS)",
+				);
 				PRODUCT_NAME = dsc;
 			};
 			name = Debug;
@@ -1258,6 +1405,10 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				INSTALLHDRS_COPY_PHASE = YES;
 				INSTALL_PATH = "$(INSTALL_LOCATION)/usr/local/lib";
+				OTHER_CPLUSPLUSFLAGS = (
+					"-stdlib=libc++",
+					"$(OTHER_CFLAGS)",
+				);
 				PRODUCT_NAME = dsc;
 				ZERO_LINK = NO;
 			};

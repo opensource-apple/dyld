@@ -23,6 +23,7 @@
  */
 
 #include <stdint.h>
+#include <sys/stat.h>
 
 #include "ImageLoader.h"
 #include "mach-o/dyld_priv.h"
@@ -58,8 +59,11 @@ namespace dyld {
 
 
 	extern ImageLoader::LinkContext			gLinkContext;
+	extern struct dyld_all_image_infos*		gProcessInfo;
 	extern bool								gLogAPIs;
+#if DYLD_SHARED_CACHE_SUPPORT
 	extern bool								gSharedCacheOverridden;
+#endif
 	extern const struct LibSystemHelpers*	gLibSystemHelpers;
 #if SUPPORT_OLD_CRT_INITIALIZATION
 	extern bool								gRunInitializersOldWay;
@@ -69,9 +73,10 @@ namespace dyld {
 	extern void					registerUndefinedHandler(UndefinedHandler);
 	extern void					initializeMainExecutable();
 	extern void					preflight(ImageLoader* image, const ImageLoader::RPathChain& loaderRPaths);
-	extern void					link(ImageLoader* image, bool forceLazysBound, const ImageLoader::RPathChain& loaderRPaths);
+	extern void					link(ImageLoader* image, bool forceLazysBound, bool neverUnload, const ImageLoader::RPathChain& loaderRPaths);
 	extern void					runInitializers(ImageLoader* image);
 	extern void					runTerminators(void*);
+	extern void					runImageTerminators(ImageLoader* image);
 	extern const char*			getExecutablePath();
 	extern bool					validImage(const ImageLoader*);
 	extern ImageLoader*			getIndexedImage(uint32_t index);
@@ -89,7 +94,7 @@ namespace dyld {
 	extern ImageLoader*			cloneImage(ImageLoader* image);
 	extern void					forEachImageDo( void (*)(ImageLoader*, void*), void*);
 	extern uintptr_t			_main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int argc, const char* argv[], const char* envp[], 
-										const char* apple[], uintptr_t* startGlue);
+									  const char* apple[], uintptr_t* startGlue) __attribute__((noinline));  // <rdar://problem/11340356>
 	extern void					halt(const char* message)  __attribute__((noreturn));
 	extern void					setErrorMessage(const char* msg);
 	extern const char*			getErrorMessage();
@@ -103,9 +108,14 @@ namespace dyld {
 	extern int					openSharedCacheFile();
 	extern const void*			imMemorySharedCacheHeader();
 	extern uintptr_t			fastBindLazySymbol(ImageLoader** imageLoaderCache, uintptr_t lazyBindingInfoOffset);
+#if DYLD_SHARED_CACHE_SUPPORT
 	extern bool					inSharedCache(const char* path);
+#endif
 #if LOG_BINDINGS
 	extern void					logBindings(const char* format, ...);
 #endif
-};
+	extern bool					processIsRestricted();
+	extern int					my_stat(const char* path, struct stat* buf);
+	extern int					my_open(const char* path, int flag, int other);
+}
 

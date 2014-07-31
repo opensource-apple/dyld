@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2004-2012 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -47,7 +47,6 @@
 //	}
 //
 
-#define DYLD_LOCK_INITIALIZER			dyldGlobalLockInitialize()
 #define DYLD_LOCK_THIS_BLOCK			LockHelper _dyld_lock;
 #define DYLD_NO_LOCK_THIS_BLOCK
 

@@ -73,7 +73,12 @@
 	#define MH_HAS_TLV_DESCRIPTORS 0x800000
 #endif
 
-#if __i386__ || __x86_64__
+
+typedef void (*TermFunc)(void*);
+
+
+
+#if __has_feature(tls)
 
 typedef struct TLVHandler {
 	struct TLVHandler *next;
@@ -165,9 +170,12 @@ __attribute__((visibility("hidden")))
 void* tlv_allocate_and_initialize_for_key(pthread_key_t key)
 {
 	const struct mach_header* mh = tlv_get_image_for_key(key);
+	if ( mh == NULL )
+		return NULL;	// if data structures are screwed up, don't crash
+	
 	// first pass, find size and template
 	uint8_t*		start = NULL;
-	unsigned long	size;
+	unsigned long	size = 0;
 	intptr_t		slide = 0;
 	bool			slideComputed = false;
 	bool			hasInitializers = false;
@@ -360,7 +368,6 @@ void dyld_enumerate_tlv_storage(dyld_tlv_state_change_handler handler)
 // destructor key to come before the deallocation key.
 //
 
-typedef void (*TermFunc)(void*);
 struct TLVTerminatorListEntry
 {
     TermFunc    termFunc;
@@ -411,18 +418,29 @@ void _tlv_atexit(TermFunc func, void* objAddr)
     }
 }
 
-// called by pthreads when the current thread is going way and 
+// called by pthreads when the current thread is going away and 
 // _tlv_atexit() has been called on the thread.
 static void tlv_finalize(void* storage)
 {
     struct TLVTerminatorList* list = (struct TLVTerminatorList*)storage;
-    for(uint32_t i=0; i < list->useCount; ++i) {
-        struct TLVTerminatorListEntry* entry = &list->entries[i];
+    // destroy in reverse order of construction
+    for(uint32_t i=list->useCount; i > 0 ; --i) {
+        struct TLVTerminatorListEntry* entry = &list->entries[i-1];
         if ( entry->termFunc != NULL ) {
             (*entry->termFunc)(entry->objAddr);
         }
     }
     free(storage);
+}
+
+// <rdar://problem/13741816>
+// called by exit() before it calls cxa_finalize() so that thread_local
+// objects are destroyed before global objects.
+void _tlv_exit()
+{
+	void* termFuncs = pthread_getspecific(tlv_terminators_key);
+	if ( termFuncs != NULL )
+		tlv_finalize(termFuncs);
 }
 
 
@@ -446,9 +464,9 @@ void _tlv_bootstrap()
 }
 
 
-// __i386__ || __x86_64__
+
 #else
-// !(__i386__ || __x86_64__)
+
 
 
 void dyld_register_tlv_state_change_handler(enum dyld_tlv_states state, dyld_tlv_state_change_handler handler)
@@ -459,13 +477,21 @@ void dyld_enumerate_tlv_storage(dyld_tlv_state_change_handler handler)
 {
 }
 
+void _tlv_exit()
+{
+}
+
+void _tlv_atexit(TermFunc func, void* objAddr)
+{
+}
+
 __attribute__((visibility("hidden")))
 void tlv_initializer()
 {
 }
 
 
-// !(__i386__ || __x86_64__)
-#endif
+
+#endif // __has_feature(tls)
 
 

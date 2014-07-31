@@ -76,7 +76,7 @@ protected:
 	virtual	void						rebase(const LinkContext& context);
 	virtual const ImageLoader::Symbol*	findExportedSymbol(const char* name, const ImageLoader** foundIn) const;
 	virtual bool						containsSymbol(const void* addr) const;
-	virtual uintptr_t					exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, bool runResolver) const;
+	virtual uintptr_t					exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, const ImageLoader* requestor, bool runResolver) const;
 	virtual bool						exportedSymbolIsWeakDefintion(const Symbol* symbol) const;
 	virtual const char*					exportedSymbolName(const Symbol* symbol) const;
 	virtual unsigned int				exportedSymbolCount() const;
@@ -130,7 +130,7 @@ private:
 												uint8_t, intptr_t, int, const char*, LastLookup*, bool runResolver);
 	static const uint8_t*				trieWalk(const uint8_t* start, const uint8_t* end, const  char* s);
     void                                updateOptimizedLazyPointers(const LinkContext& context);
-    void                                updateAlternateLazyPointer(uint8_t* stub, void** originalLazyPointerAddr);
+    void                                updateAlternateLazyPointer(uint8_t* stub, void** originalLazyPointerAddr, const LinkContext& context);
 		
 	const struct dyld_info_command*			fDyldInfo;
 };

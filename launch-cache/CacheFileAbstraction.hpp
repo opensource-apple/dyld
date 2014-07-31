@@ -62,6 +62,15 @@ public:
 	uint64_t		slideInfoSize() const					INLINE { return E::get64(fields.slideInfoSize); }
 	void			set_slideInfoSize(uint64_t value)		INLINE { E::set64(fields.slideInfoSize, value); }
 
+	uint64_t		localSymbolsOffset() const				INLINE { return E::get64(fields.localSymbolsOffset); }
+	void			set_localSymbolsOffset(uint64_t value)	INLINE { E::set64(fields.localSymbolsOffset, value); }
+
+	uint64_t		localSymbolsSize() const				INLINE { return E::get64(fields.localSymbolsSize); }
+	void			set_localSymbolsSize(uint64_t value)	INLINE { E::set64(fields.localSymbolsSize, value); }
+
+	const uint8_t*	uuid() const							INLINE { return fields.uuid; }
+	void			set_uuid(const uint8_t value[16])		INLINE { memcpy(fields.uuid, value, 16); }
+
 private:
 	dyld_cache_header			fields;
 };
@@ -141,6 +150,51 @@ private:
 struct dyldCacheSlideInfoEntry {
 	uint8_t  bits[4096/(8*4)]; // 128-byte bitmap
 };
+
+
+
+template <typename E>
+class dyldCacheLocalSymbolsInfo {
+public:		
+	uint32_t		nlistOffset() const							INLINE { return E::get32(fields.nlistOffset); }
+	void			set_nlistOffset(uint32_t value)				INLINE { E::set32(fields.nlistOffset, value); }
+
+	uint32_t		nlistCount() const							INLINE { return E::get32(fields.nlistCount); }
+	void			set_nlistCount(uint32_t value)				INLINE { E::set32(fields.nlistCount, value); }
+
+	uint32_t		stringsOffset() const						INLINE { return E::get32(fields.stringsOffset); }
+	void			set_stringsOffset(uint32_t value)			INLINE { E::set32(fields.stringsOffset, value); }
+	
+	uint32_t		stringsSize() const							INLINE { return E::get32(fields.stringsSize); }
+	void			set_stringsSize(uint32_t value)				INLINE { E::set32(fields.stringsSize, value); }
+
+	uint32_t		entriesOffset() const						INLINE { return E::get32(fields.entriesOffset); }
+	void			set_entriesOffset(uint32_t value)			INLINE { E::set32(fields.entriesOffset, value); }
+
+	uint32_t		entriesCount() const						INLINE { return E::get32(fields.entriesCount); }
+	void			set_entriesCount(uint32_t value)			INLINE { E::set32(fields.entriesCount, value); }
+
+private:
+	dyld_cache_local_symbols_info			fields;
+};
+
+
+template <typename E>
+class dyldCacheLocalSymbolEntry {
+public:		
+	uint32_t		dylibOffset() const							INLINE { return E::get32(fields.dylibOffset); }
+	void			set_dylibOffset(uint32_t value)				INLINE { E::set32(fields.dylibOffset, value); }
+
+	uint32_t		nlistStartIndex() const						INLINE { return E::get32(fields.nlistStartIndex); }
+	void			set_nlistStartIndex(uint32_t value)			INLINE { E::set32(fields.nlistStartIndex, value); }
+
+	uint32_t		nlistCount() const							INLINE { return E::get32(fields.nlistCount); }
+	void			set_nlistCount(uint32_t value)				INLINE { E::set32(fields.nlistCount, value); }
+	
+private:
+	dyld_cache_local_symbols_entry			fields;
+};
+
 
 
 

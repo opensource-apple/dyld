@@ -38,6 +38,9 @@
 #include "ImageLoaderMachOCompressed.h"
 #include "mach-o/dyld_images.h"
 
+#ifndef EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE
+	#define EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE			0x02
+#endif
 
 // relocation_info.r_length field has value 3 for 64-bit executables and value 2 for 32-bit executables
 #if __LP64__
@@ -110,7 +113,6 @@ ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateMainExecutabl
 	if ( slide != 0 )
 		fgNextPIEDylibAddress = (uintptr_t)image->getEnd();
 	
-	image->setNeverUnload();
 	image->instantiateFinish(context);
 	image->setMapped(context);
 	
@@ -140,14 +142,14 @@ ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateFromFile(cons
 		// record info about file  
 		image->setFileInfo(info.st_dev, info.st_ino, info.st_mtime);
 
-	#if CODESIGNING_SUPPORT
 		// if this image is code signed, let kernel validate signature before mapping any pages from image
-		if ( codeSigCmd != NULL )
-			image->loadCodeSignature(codeSigCmd, fd, offsetInFat);
-	#endif
+		image->loadCodeSignature(codeSigCmd, fd, offsetInFat, context);
 		
 		// mmap segments
 		image->mapSegments(fd, offsetInFat, lenInFat, info.st_size, context);
+
+		// probe to see if code signed correctly
+		image->crashIfInvalidCodeSignature();
 
 		// finish construction
 		image->instantiateFinish(context);
@@ -628,7 +630,7 @@ bool ImageLoaderMachOCompressed::containsSymbol(const void* addr) const
 }
 
 
-uintptr_t ImageLoaderMachOCompressed::exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, bool runResolver) const
+uintptr_t ImageLoaderMachOCompressed::exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, const ImageLoader* requestor, bool runResolver) const
 {
 	const uint8_t* exportNode = (uint8_t*)symbol;
 	const uint8_t* exportTrieStart = fLinkEditBase + fDyldInfo->export_off;
@@ -637,37 +639,41 @@ uintptr_t ImageLoaderMachOCompressed::exportedSymbolAddress(const LinkContext& c
 		throw "symbol is not in trie";
 	//dyld::log("exportedSymbolAddress(): node=%p, nodeOffset=0x%04X in %s\n", symbol, (int)((uint8_t*)symbol - exportTrieStart), this->getShortName());
 	uint32_t flags = read_uleb128(exportNode, exportTrieEnd);
-	if ( (flags & EXPORT_SYMBOL_FLAGS_KIND_MASK) == EXPORT_SYMBOL_FLAGS_KIND_REGULAR ) {
-		if ( runResolver && (flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) ) {
-			// this node has a stub and resolver, run the resolver to get target address
-			uintptr_t stub = read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData; // skip over stub
-			// <rdar://problem/10657737> interposing dylibs have the stub address as their replacee
-			for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
-				// replace all references to 'replacee' with 'replacement'
-				if ( stub == it->replacee ) {
-					if ( context.verboseInterposing ) {
-						dyld::log("dyld interposing: lazy replace 0x%lX with 0x%lX from %s\n", 
-								  it->replacee, it->replacement, this->getPath());
+	switch ( flags & EXPORT_SYMBOL_FLAGS_KIND_MASK ) {
+		case EXPORT_SYMBOL_FLAGS_KIND_REGULAR:
+			if ( runResolver && (flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) ) {
+				// this node has a stub and resolver, run the resolver to get target address
+				uintptr_t stub = read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData; // skip over stub
+				// <rdar://problem/10657737> interposing dylibs have the stub address as their replacee
+				for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
+					// replace all references to 'replacee' with 'replacement'
+					if ( (stub == it->replacee) && (requestor != it->replacementImage) ) {
+						if ( context.verboseInterposing ) {
+							dyld::log("dyld interposing: lazy replace 0x%lX with 0x%lX from %s\n",
+									  it->replacee, it->replacement, this->getPath());
+						}
+						return it->replacement;
 					}
-					return it->replacement;
 				}
+				typedef uintptr_t (*ResolverProc)(void);
+				ResolverProc resolver = (ResolverProc)(read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData);
+				uintptr_t result = (*resolver)();
+				if ( context.verboseBind )
+					dyld::log("dyld: resolver at %p returned 0x%08lX\n", resolver, result);
+				return result;
 			}
-			typedef uintptr_t (*ResolverProc)(void);
-			ResolverProc resolver = (ResolverProc)(read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData);
-			uintptr_t result = (*resolver)();
-			if ( context.verboseBind )
-				dyld::log("dyld: resolver at %p returned 0x%08lX\n", resolver, result);
-			return result;
-		}
-		return read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData;
-	}
-	else if ( (flags & EXPORT_SYMBOL_FLAGS_KIND_MASK) == EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL ) {
-		if ( flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER )
+			return read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData;
+		case EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL:
+			if ( flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER )
+				dyld::throwf("unsupported exported symbol kind. flags=%d at node=%p", flags, symbol);
+			return read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData;
+		case EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE:
+			if ( flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER )
+				dyld::throwf("unsupported exported symbol kind. flags=%d at node=%p", flags, symbol);
+			return read_uleb128(exportNode, exportTrieEnd);
+		default:
 			dyld::throwf("unsupported exported symbol kind. flags=%d at node=%p", flags, symbol);
-		return read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData;
 	}
-	else
-		dyld::throwf("unsupported exported symbol kind. flags=%d at node=%p", flags, symbol);
 }
 
 bool ImageLoaderMachOCompressed::exportedSymbolIsWeakDefintion(const Symbol* symbol) const
@@ -719,8 +725,8 @@ uintptr_t ImageLoaderMachOCompressed::resolveFlat(const LinkContext& context, co
 {
 	const Symbol* sym;
 	if ( context.flatExportFinder(symbolName, &sym, foundIn) ) {
-		if ( (*foundIn != this) && !(*foundIn)->neverUnload() )
-				this->addDynamicReference(*foundIn);
+		if ( *foundIn != this )
+			context.addDynamicReference(this, const_cast<ImageLoader*>(*foundIn));
 		return (*foundIn)->getExportedSymbolAddress(sym, context, this, runResolver);
 	}
 	// if a bundle is loaded privately the above will not find its exports
@@ -1070,7 +1076,7 @@ void ImageLoaderMachOCompressed::eachLazyBind(const LinkContext& context, bind_h
 				case BIND_OPCODE_DO_BIND:
 					if ( address >= segmentEndAddress ) 
 						throwBadBindingAddress(address, segmentEndAddress, segmentIndex, start, end, p);
-					(this->*handler)(context, address, type, symbolName, symboFlags, addend, libraryOrdinal, "lazy forced", NULL, true);
+					(this->*handler)(context, address, type, symbolName, symboFlags, addend, libraryOrdinal, "forced lazy ", NULL, false);
 					address += sizeof(intptr_t);
 					break;
 				case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
@@ -1336,7 +1342,7 @@ bool ImageLoaderMachOCompressed::incrementCoalIterator(CoalIterator& it)
 				}
 				break;
 			default:
-				dyld::throwf("bad weak bind opcode %d", *p);
+				dyld::throwf("bad weak bind opcode '%d' found after processing %d bytes in '%s'", *p, (int)(p-start), this->getPath());
 		}
 	}
 	/// hmmm, BIND_OPCODE_DONE is missing...
@@ -1430,9 +1436,10 @@ void ImageLoaderMachOCompressed::updateUsesCoalIterator(CoalIterator& it, uintpt
 			default:
 				dyld::throwf("bad bind opcode %d in weak binding info", *p);
 		}
-	}	
-	if ( boundSomething && (targetImage != this) && !targetImage->neverUnload() )
-		this->addDynamicReference(targetImage);
+	}
+	// C++ weak coalescing cannot be tracked by reference counting.  Error on side of never unloading.
+	if ( boundSomething && (targetImage != this) )
+		context.addDynamicReference(this, targetImage);
 }
 
 uintptr_t ImageLoaderMachOCompressed::interposeAt(const LinkContext& context, uintptr_t addr, uint8_t type, const char*, 
@@ -1551,7 +1558,7 @@ void ImageLoaderMachOCompressed::resetPreboundLazyPointers(const LinkContext& co
 
 
 #if __arm__ || __x86_64__
-void ImageLoaderMachOCompressed::updateAlternateLazyPointer(uint8_t* stub, void** originalLazyPointerAddr)
+void ImageLoaderMachOCompressed::updateAlternateLazyPointer(uint8_t* stub, void** originalLazyPointerAddr, const LinkContext& context)
 {
 #if __arm__ 
 	uint32_t* instructions = (uint32_t*)stub;
@@ -1571,8 +1578,17 @@ void ImageLoaderMachOCompressed::updateAlternateLazyPointer(uint8_t* stub, void*
 
    // if stub does not use original lazy pointer (meaning it was optimized by update_dyld_shared_cache)
     if ( lazyPointerAddr != originalLazyPointerAddr ) {
+		// <rdar://problem/12928448> only de-optimization lazy pointers if they are part of shared cache not loaded (because overridden)
+		const ImageLoader* lazyPointerImage = context.findImageContainingAddress(lazyPointerAddr);
+		if ( lazyPointerImage != NULL )
+			return;
+		
         // copy newly re-bound lazy pointer value to shared lazy pointer
         *lazyPointerAddr = *originalLazyPointerAddr;
+		
+		if ( context.verboseBind )
+			dyld::log("dyld: alter bind: %s: *0x%08lX = 0x%08lX \n",
+					  this->getShortName(), (long)lazyPointerAddr, (long)*originalLazyPointerAddr);
     }
 }
 #endif
@@ -1635,7 +1651,7 @@ void ImageLoaderMachOCompressed::updateOptimizedLazyPointers(const LinkContext& 
         // sanity check symbol index of stub and lazy pointer match
 		if ( indirectTable[stubsIndirectTableOffset+i] != indirectTable[lazyPointersIndirectTableOffset+i] ) 
 			continue;
-		this->updateAlternateLazyPointer(stub, lpa);
+		this->updateAlternateLazyPointer(stub, lpa, context);
 	}
 	
 #endif

@@ -25,6 +25,7 @@
 #include <dlfcn.h>
 #include <string.h>
 #include <stdlib.h> // for atoi()
+#include <mach-o/dyld.h>
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
@@ -35,6 +36,21 @@ extern int foo();
 int main(int argc, const char* argv[])
 {
 #if __MAC_OS_X_VERSION_MIN_REQUIRED
+	if ( argc > 2 ) {
+		bool found = false;
+		uint32_t count = _dyld_image_count();
+		for(uint32_t i=0; i < count; ++i) {
+			const char*  name = _dyld_get_image_name(i);
+			if ( strstr(name, argv[2]) != NULL )
+				found = true;
+			//fprintf(stderr, "image[%d]=%s\n", i, name);
+		}
+		if ( !found ) {
+			FAIL("DYLD_VERSIONED_FRAMEWORK_PATH-basic dylib has wrong path");
+			return EXIT_SUCCESS;
+		}
+	}
+	
 	int expectedResult = atoi(argv[1]);
 	int actualResult = foo();
 	//fprintf(stderr, "foo() returned %d, expected %d\n", actualResult, expectedResult);

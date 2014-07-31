@@ -71,7 +71,7 @@ extern int32_t NSVersionOfRunTimeLibrary(const char* libraryName)            __O
 
 
 /*
- * NSVersionOfRunTimeLibrary() returns the current_version number that the main executable was linked
+ * NSVersionOfLinkTimeLibrary() returns the current_version number that the main executable was linked
  * against at build time.  The libraryName parameter would be "bar" for /path/libbar.3.dylib and
  * "Foo" for /path/Foo.framework/Versions/A/Foo.  It returns -1 if the main executable did not link
  * against the specified library.

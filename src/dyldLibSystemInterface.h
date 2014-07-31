@@ -63,9 +63,16 @@ namespace dyld {
 		void		(*cxa_finalize)(const void*);
 		// added in version 9
 		void*		startGlueToCallExit;
+		// added in version 10
+		bool		(*hasPerThreadBufferFor_dlerror)();
+		// added in version 11
+		bool		(*isLaunchdOwned)();
+		// added in version 12
+		kern_return_t (*vm_alloc)(vm_map_t task, vm_address_t* addr, vm_size_t size, int flags);
+		void*		(*mmap)(void* addr, size_t len, int prot, int flags, int fd, off_t offset);
 	};
 #if __cplusplus
-};
+}
 #endif
 
 

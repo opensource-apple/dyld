@@ -178,12 +178,36 @@ extern const char* dyld_image_path_containing_address(const void* addr);
 
 
 
+// Convienence constants for return values from dyld_get_sdk_version() and friends.
+#define DYLD_MACOSX_VERSION_10_4		0x000A0400
+#define DYLD_MACOSX_VERSION_10_5		0x000A0500
+#define DYLD_MACOSX_VERSION_10_6		0x000A0600
+#define DYLD_MACOSX_VERSION_10_7		0x000A0700
+#define DYLD_MACOSX_VERSION_10_8		0x000A0800
+#define DYLD_MACOSX_VERSION_10_9		0x000A0900
+
+#define DYLD_IOS_VERSION_2_0		0x00020000
+#define DYLD_IOS_VERSION_2_1		0x00020100
+#define DYLD_IOS_VERSION_2_2		0x00020200
+#define DYLD_IOS_VERSION_3_0		0x00030000
+#define DYLD_IOS_VERSION_3_1		0x00030100
+#define DYLD_IOS_VERSION_3_2		0x00030200
+#define DYLD_IOS_VERSION_4_0		0x00040000
+#define DYLD_IOS_VERSION_4_1		0x00040100
+#define DYLD_IOS_VERSION_4_2		0x00040200
+#define DYLD_IOS_VERSION_4_3		0x00040300
+#define DYLD_IOS_VERSION_5_0		0x00050000
+#define DYLD_IOS_VERSION_5_1		0x00050100
+#define DYLD_IOS_VERSION_6_0		0x00060000
+#define DYLD_IOS_VERSION_6_1		0x00060100
+#define DYLD_IOS_VERSION_7_0		0x00070000
 
 //
 // This is finds the SDK version a binary was built against.
 // Returns zero on error, or if SDK version could not be determined.
 //
 // Exists in Mac OS X 10.8 and later 
+// Exists in iOS 6.0 and later
 extern uint32_t dyld_get_sdk_version(const struct mach_header* mh);
 
 
@@ -192,6 +216,7 @@ extern uint32_t dyld_get_sdk_version(const struct mach_header* mh);
 // Returns zero on error, or if SDK version could not be determined.
 //
 // Exists in Mac OS X 10.8 and later 
+// Exists in iOS 6.0 and later
 extern uint32_t dyld_get_program_sdk_version();
 
 
@@ -200,6 +225,7 @@ extern uint32_t dyld_get_program_sdk_version();
 // Returns zero on error, or if no min OS recorded in binary.
 //
 // Exists in Mac OS X 10.8 and later 
+// Exists in iOS 6.0 and later
 extern uint32_t dyld_get_min_os_version(const struct mach_header* mh);
 
 
@@ -208,6 +234,7 @@ extern uint32_t dyld_get_min_os_version(const struct mach_header* mh);
 // Returns zero on error, or if no min OS recorded in binary.
 //
 // Exists in Mac OS X 10.8 and later 
+// Exists in iOS 6.0 and later
 extern uint32_t dyld_get_program_min_os_version();
 
 
@@ -220,6 +247,21 @@ extern uint32_t dyld_get_program_min_os_version();
 // Exists in iPhoneOS 3.1 and later 
 extern bool dyld_shared_cache_some_image_overridden();
 #endif
+
+	
+	
+//
+// Returns if the process is setuid or is code signed with entitlements.
+//
+// Exists in Mac OS X 10.9 and later
+extern bool dyld_process_is_restricted();
+
+
+//
+// <rdar://problem/13820686> for OpenGL to tell dyld it is ok to deallocate a memory based image when done.
+//
+// Exists in Mac OS X 10.9 and later
+#define NSLINKMODULE_OPTION_CAN_UNLOAD                  0x20
 
 
 

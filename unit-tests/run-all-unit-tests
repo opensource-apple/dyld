@@ -8,7 +8,7 @@ CRSTATE=`defaults read com.apple.CrashReporter DialogType`
 defaults write com.apple.CrashReporter DialogType basic
 
 # run test targeting different OS versions
-for OSVERSION in 10.8 10.7 10.6 10.5 10.4
+for OSVERSION in 10.9 10.8 10.7 10.6 10.5 10.4
 do 
 	echo ""
 	echo " * * * Running all unit tests i386 built for $OSVERSION * * *"

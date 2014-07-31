@@ -23,6 +23,7 @@
 #include <stdio.h>  // fprintf(), NULL
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <string.h> // strcmp(), strncmp()
+#include <mach-o/dyld_priv.h> // dyld_process_is_restricted()
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
@@ -57,6 +58,13 @@ int main(int argc, const char* argv[], const char* envp[], const char* apple[])
 		FAIL("restrict-environ: apple parameter is not path to main");
 		return EXIT_SUCCESS;
 	}
+	
+	// verify SPI says process is restricted
+	if ( !dyld_process_is_restricted() ) {
+		FAIL("restrict-environ: dyld_process_is_restrictet() returns false");
+		return EXIT_SUCCESS;
+	}
+	
 	
 	PASS("restrict-environ");
 	return EXIT_SUCCESS;

@@ -63,7 +63,7 @@ extern "C" {
  *
  */
 
-enum dyld_image_mode { dyld_image_adding=0, dyld_image_removing=1 };
+enum dyld_image_mode { dyld_image_adding=0, dyld_image_removing=1, dyld_image_info_change=2 };
 
 struct dyld_image_info {
 	const struct mach_header*	imageLoadAddress;	/* base address image is mapped into */
@@ -122,17 +122,11 @@ struct dyld_all_image_infos {
 	const char*						errorSymbol;
 	/* the following field is only in version 12 (Mac OS X 10.7, iOS 4.3) and later */
 	uintptr_t						sharedCacheSlide;
+	/* the following field is only in version 13 (Mac OS X 10.9, iOS 7.0) and later */
+	uint8_t							sharedCacheUUID[16];
+	/* the following field is only in version 14 (Mac OS X 10.9, iOS 7.0) and later */
+	uintptr_t						reserved[16];
 };
-extern struct dyld_all_image_infos  dyld_all_image_infos;
-
-/*
- * Beginning in Mac OS X 10.6, rather than looking up the symbol "_dyld_all_image_infos"
- * in dyld's symbol table, you can add DYLD_ALL_IMAGE_INFOS_OFFSET_OFFSET to the mach_header
- * for dyld and read the 32-bit unsigned int at that location.  Adding that value to dyld's
- * mach_header address gets you the address of dyld_all_image_infos in dyld.
- */
-#define DYLD_ALL_IMAGE_INFOS_OFFSET_OFFSET 0x1010
-
 
 
 /*

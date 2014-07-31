@@ -41,7 +41,7 @@
 
 #include <vector>
 #include <set>
-#include <ext/hash_map>
+#include <unordered_map>
 
 #include "MachOFileAbstraction.hpp"
 #include "Architectures.hpp"
@@ -151,6 +151,7 @@ public:
 	// need getDyldInfoExports because export info uses ULEB encoding and size could grow
 	virtual const uint8_t*						getDyldInfoExports() const = 0;
 	virtual void								setDyldInfoExports(const uint8_t* newExports) const = 0;
+	virtual void								uuid(uuid_t u) const = 0;
 };
 
 
@@ -195,6 +196,7 @@ public:
 	virtual uint64_t							getReadOnlyVMSize() const		{ return fVMReadOnlySize; }
 	virtual const uint8_t*						getDyldInfoExports() const		{ return fDyldInfoExports; }
 	virtual void								setDyldInfoExports(const uint8_t* newExports) const { fDyldInfoExports = newExports; }
+	virtual void								uuid(uuid_t u) const { memcpy(u, fUUID, 16); }
 	
 private:
 	typedef typename A::P					P;
@@ -230,6 +232,7 @@ private:
 	bool										fIsDylib;
 	bool										fHasDyldInfo;
 	mutable const uint8_t*						fDyldInfoExports;
+	uuid_t										fUUID;
 };
 
 
@@ -245,10 +248,19 @@ public:
 	const std::vector<MachOLayoutAbstraction*>&	allLayouts() const { return fLayouts; }
 
 private:
+	class CStringHash {
+	public:
+		size_t operator()(const char* __s) const {
+			size_t __h = 0;
+			for ( ; *__s; ++__s)
+				__h = 5 * __h + *__s;
+			return __h;
+		};
+	};
 	struct CStringEquals {
 		bool operator()(const char* left, const char* right) const { return (strcmp(left, right) == 0); }
 	};
-	typedef __gnu_cxx::hash_map<const char*, const UniversalMachOLayout*, __gnu_cxx::hash<const char*>, CStringEquals> PathToNode;
+	typedef std::unordered_map<const char*, const UniversalMachOLayout*, CStringHash, CStringEquals> PathToNode;
 
 	static bool					requestedSlice(const std::set<ArchPair>* onlyArchs, cpu_type_t cpuType, cpu_subtype_t cpuSubType);
 
@@ -422,7 +434,8 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 	fDylibID.name = NULL;
 	fDylibID.currentVersion = 0;
 	fDylibID.compatibilityVersion = 0;
-
+	bzero(fUUID, sizeof(fUUID));
+	
 	const macho_header<P>* mh = (const macho_header<P>*)machHeader;
 	if ( mh->cputype() != arch() )
 		throw "Layout object is wrong architecture";
@@ -495,6 +508,12 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 			case LC_DYLD_INFO_ONLY:
 				fHasDyldInfo = true;
 				dyldInfo = (struct macho_dyld_info_command<P>*)cmd;
+				break;
+			case LC_UUID:
+				{
+					const macho_uuid_command<P>* uc = (macho_uuid_command<P>*)cmd;
+					memcpy(&fUUID, uc->uuid(), 16);
+				}
 				break;
 		}
 		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());

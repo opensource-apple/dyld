@@ -136,11 +136,8 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromFile(const char
 		// record info about file  
 		image->setFileInfo(info.st_dev, info.st_ino, info.st_mtime);
 
-	#if CODESIGNING_SUPPORT
 		// if this image is code signed, let kernel validate signature before mapping any pages from image
-		if ( codeSigCmd != NULL )
-			image->loadCodeSignature(codeSigCmd, fd, offsetInFat);
-	#endif
+		image->loadCodeSignature(codeSigCmd, fd, offsetInFat, context);
 		
 		// mmap segments
 		image->mapSegmentsClassic(fd, offsetInFat, lenInFat, info.st_size, context);
@@ -953,7 +950,7 @@ bool ImageLoaderMachOClassic::containsSymbol(const void* addr) const
 }
 
 
-uintptr_t ImageLoaderMachOClassic::exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, bool runResolver) const
+uintptr_t ImageLoaderMachOClassic::exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, const ImageLoader* requestor, bool runResolver) const
 {
 	const struct macho_nlist* sym = (macho_nlist*)symbol;
 	uintptr_t result = sym->n_value + fSlide;
@@ -1058,8 +1055,8 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 		}
 		const Symbol* sym;
 		if ( context.flatExportFinder(symbolName, &sym, foundIn) ) {
-			if ( (*foundIn != this) && !(*foundIn)->neverUnload() )
-					this->addDynamicReference(*foundIn);
+			if ( *foundIn != this )
+				context.addDynamicReference(this, const_cast<ImageLoader*>(*foundIn));
 			return (*foundIn)->getExportedSymbolAddress(sym, context, this);
 		}
 		// if a bundle is loaded privately the above will not find its exports
@@ -1081,8 +1078,8 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 		if ( !context.prebinding && !dontCoalesce && (symbolIsWeakReference(undefinedSymbol) || symbolIsWeakDefinition(undefinedSymbol)) ) {
 			const Symbol* sym;
 			if ( context.coalescedExportFinder(symbolName, &sym, foundIn) ) {
-				if ( (*foundIn != this) && !(*foundIn)->neverUnload() )
-					this->addDynamicReference(*foundIn);
+				if ( *foundIn != this )
+					context.addDynamicReference(this, const_cast<ImageLoader*>(*foundIn));
 				return (*foundIn)->getExportedSymbolAddress(sym, context, this);
 			}
 			//throwSymbolNotFound(context, symbolName, this->getPath(), "coalesced namespace");
@@ -1686,8 +1683,9 @@ void ImageLoaderMachOClassic::updateUsesCoalIterator(CoalIterator& it, uintptr_t
 		}
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 	}
-	if ( boundSomething && (targetImage != this) && !targetImage->neverUnload() )
-		this->addDynamicReference(targetImage);
+	if ( boundSomething && (targetImage != this) ) {
+		context.addDynamicReference(this, targetImage);
+	}
 	
 	// mark that this symbol has already been bound, so we don't try to bind again
 	it.type = 1;

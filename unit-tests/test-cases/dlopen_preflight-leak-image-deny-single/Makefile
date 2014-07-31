@@ -45,7 +45,7 @@ all-check: all check
 check: ${CHECK}
 
 check-real:
-	${TESTROOT}/bin/exit-zero-pass.pl "dlopen_preflight-leak-image-deny-single" "dlopen_preflight-leak-image-deny-single" "./main | grep '0 leaks for 0 total leaked bytes' > /dev/null"
+	./main 
 
 check-xfail:
 	echo "XFAIL dlopen-leak"; 

@@ -27,10 +27,23 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <mach/mach_error.h>
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <TargetConditionals.h>
+#include <libkern/OSAtomic.h>
+#include <errno.h>
+#include <pthread.h>
+#if TARGET_IPHONE_SIMULATOR
+	#include "dyldSyscallInterface.h"
+#endif
 
 // from _simple.h in libc
 typedef struct _SIMPLE*	_SIMPLE_STRING;
@@ -167,8 +180,9 @@ void __cxa_atexit()
 // make our own custom ones.
 //
 long __stack_chk_guard = 0;
-static __attribute__((constructor)) 
-void __guard_setup(int argc, const char* argv[], const char* envp[], const char* apple[])
+
+
+void __guard_setup(const char* apple[])
 {
 	for (const char** p = apple; *p != NULL; ++p) {
 		if ( strncmp(*p, "stack_guard=", 12) == 0 ) {
@@ -189,13 +203,15 @@ void __guard_setup(int argc, const char* argv[], const char* envp[], const char*
 				return;
 		}
 	}
-	
+#if !TARGET_IPHONE_SIMULATOR	
 #if __LP64__
 	__stack_chk_guard = ((long)arc4random() << 32) | arc4random();
 #else
 	__stack_chk_guard = arc4random();
 #endif
+#endif
 }
+
 extern void _ZN4dyld4haltEPKc(const char*);
 void __stack_chk_fail()
 {
@@ -276,4 +292,176 @@ void* memset(void* b, int c, size_t len)
 		*p++ = c;
 	return b;
 }
+
+
+// <rdar://problem/10111032> wrap calls to stat() with check for EAGAIN
+int _ZN4dyld7my_statEPKcP4stat(const char* path, struct stat* buf)
+{
+	int result;
+	do {
+		result = stat(path, buf);
+	} while ((result == -1) && (errno == EAGAIN));
+	
+	return result;
+}
+
+// <rdar://problem/13805025> dyld should retry open() if it gets an EGAIN
+int _ZN4dyld7my_openEPKcii(const char* path, int flag, int other)
+{
+	int result;
+	do {
+		result = open(path, flag, other);
+	} while ((result == -1) && (errno == EAGAIN));
+	
+	return result;
+}
+
+
+//
+// The dyld in the iOS simulator cannot do syscalls, so it calls back to 
+// host dyld.
+//
+
+#if TARGET_IPHONE_SIMULATOR
+int myopen(const char* path, int oflag, int extra) __asm("_open");
+int myopen(const char* path, int oflag, int extra) {
+	return gSyscallHelpers->open(path, oflag, extra);
+}
+
+int close(int fd) {
+	return gSyscallHelpers->close(fd);
+}
+
+ssize_t pread(int fd, void* buf, size_t nbytes, off_t offset) {
+	return gSyscallHelpers->pread(fd, buf , nbytes, offset);
+}
+
+ssize_t write(int fd, const void *buf, size_t nbytes) {
+	return gSyscallHelpers->write(fd, buf , nbytes);
+}
+
+void* mmap(void* addr, size_t len, int prot, int flags, int fd, off_t offset) {
+	return gSyscallHelpers->mmap(addr, len, prot, flags, fd, offset);
+}
+
+int munmap(void* addr, size_t len) {
+	return gSyscallHelpers->munmap(addr, len);
+}
+
+int madvise(void* addr, size_t len, int advice) {
+	return gSyscallHelpers->madvise(addr, len, advice);
+}
+
+int stat(const char* path, struct stat* buf) {
+	return gSyscallHelpers->stat(path, buf);
+}
+
+int myfcntl(int fd, int cmd, void* result) __asm("_fcntl");
+int myfcntl(int fd, int cmd, void* result) {
+	return gSyscallHelpers->fcntl(fd, cmd, result);
+}
+
+int myioctl(int fd, unsigned long request, void* result) __asm("_ioctl");
+int myioctl(int fd, unsigned long request, void* result) {
+	return gSyscallHelpers->ioctl(fd, request, result);
+}
+
+int issetugid() {
+	return gSyscallHelpers->issetugid();
+}
+
+char* getcwd(char* buf, size_t size) {
+	return gSyscallHelpers->getcwd(buf, size);
+}
+
+char* realpath(const char* file_name, char* resolved_name) {
+	return gSyscallHelpers->realpath(file_name, resolved_name);
+}
+
+
+
+kern_return_t vm_allocate(vm_map_t target_task, vm_address_t *address,
+						  vm_size_t size, int flags) {
+	return gSyscallHelpers->vm_allocate(target_task, address, size, flags);
+}
+
+kern_return_t vm_deallocate(vm_map_t target_task, vm_address_t address,
+							vm_size_t size) {
+	return gSyscallHelpers->vm_deallocate(target_task, address, size);
+}
+
+kern_return_t vm_protect(vm_map_t target_task, vm_address_t address,
+							vm_size_t size, boolean_t max, vm_prot_t prot) {
+	return gSyscallHelpers->vm_protect(target_task, address, size, max, prot);
+}
+
+
+void _ZN4dyld3logEPKcz(const char* format, ...) {
+	va_list	list;
+	va_start(list, format);
+	gSyscallHelpers->vlog(format, list);
+	va_end(list);
+}
+
+void _ZN4dyld4warnEPKcz(const char* format, ...) {
+	va_list	list;
+	va_start(list, format);
+	gSyscallHelpers->vwarn(format, list);
+	va_end(list);
+}
+
+
+int pthread_mutex_lock(pthread_mutex_t* m) {
+	return gSyscallHelpers->pthread_mutex_lock(m);
+}
+
+int pthread_mutex_unlock(pthread_mutex_t* m) {
+	return gSyscallHelpers->pthread_mutex_unlock(m);
+}
+
+mach_port_t mach_thread_self() {
+	return gSyscallHelpers->mach_thread_self();
+}
+
+kern_return_t mach_port_deallocate(ipc_space_t task, mach_port_name_t name) {
+	return gSyscallHelpers->mach_port_deallocate(task, name);
+}
+
+mach_port_name_t task_self_trap() {
+	return gSyscallHelpers->task_self_trap();
+}
+
+kern_return_t mach_timebase_info(mach_timebase_info_t info) {
+	return gSyscallHelpers->mach_timebase_info(info);
+}
+
+bool OSAtomicCompareAndSwapPtrBarrier(void* old, void* new, void * volatile *value) {
+	return gSyscallHelpers->OSAtomicCompareAndSwapPtrBarrier(old, new, value);
+}
+
+void OSMemoryBarrier()  {
+	return gSyscallHelpers->OSMemoryBarrier();
+}
+
+uint64_t mach_absolute_time(void) {
+	return gSyscallHelpers->mach_absolute_time();
+} 
+
+int* __error(void) {
+	return gSyscallHelpers->errnoAddress();
+} 
+
+void mach_init() {
+	mach_task_self_ = task_self_trap();
+	//_task_reply_port = _mach_reply_port();
+	
+}
+
+mach_port_t mach_task_self_ = MACH_PORT_NULL;
+
+extern int myerrno_fallback  __asm("_errno");
+int myerrno_fallback = 0;
+
+#endif  // TARGET_IPHONE_SIMULATOR
+
 

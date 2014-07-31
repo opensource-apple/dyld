@@ -44,9 +44,11 @@ dyld-200.3
 <rdar://problem/9855733> genCaches fails: "header size miscalculation 0x00006000"
 
 dyld-200.2
+<rdar://problem/9818687> ARCH_NAME for armv7k is defined as "armv7s"
 <rdar://problem/9784634> dsc_iterator.cpp needs cases for v7 variants
 
 dyld-200
+<rdar://problem/9673497> dyld fails to build for armv7s
 <rdar://problem/8942979> update_dyld_shared_cache should accept an 'overlay' along with a 'root' directory option
 Remove PowerPC support
 

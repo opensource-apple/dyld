@@ -27,6 +27,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
+#include <Availability.h>
 #include <mach/mach.h>
 #include <mach-o/loader.h>
 #include <mach-o/ldsyms.h>
@@ -35,11 +36,18 @@
 	#include <mach-o/x86_64/reloc.h>
 #endif
 #include "dyld.h"
+#include "dyldSyscallInterface.h"
+
+// from dyld_gdb.cpp 
+extern void addImagesToAllImages(uint32_t infoCount, const dyld_image_info info[]);
+extern void syncProcessInfo();
 
 #ifndef MH_PIE
 	#define MH_PIE 0x200000 
 #endif
 
+// currently dyld has no initializers, but if some come back, set this to non-zero
+#define DYLD_INITIALIZER_SUPPORT  0
 
 #if __LP64__
 	#define LC_SEGMENT_COMMAND		LC_SEGMENT_64
@@ -59,8 +67,10 @@
 	#define POINTER_RELOC GENERIC_RELOC_VANILLA
 #endif
 
-// from dyld.cpp
-namespace dyld { extern bool isRosetta(); };
+
+#if TARGET_IPHONE_SIMULATOR
+const dyld::SyscallHelpers* gSyscallHelpers = NULL;
+#endif
 
 
 //
@@ -71,7 +81,13 @@ namespace dyld { extern bool isRosetta(); };
 namespace dyldbootstrap {
 
 
+
+#if DYLD_INITIALIZER_SUPPORT
+
 typedef void (*Initializer)(int argc, const char* argv[], const char* envp[], const char* apple[]);
+
+extern const Initializer  inits_start  __asm("section$start$__DATA$__mod_init_func");
+extern const Initializer  inits_end    __asm("section$end$__DATA$__mod_init_func");
 
 //
 // For a regular executable, the crt code calls dyld to run the executables initializers.
@@ -81,33 +97,11 @@ typedef void (*Initializer)(int argc, const char* argv[], const char* envp[], co
 //
 static void runDyldInitializers(const struct macho_header* mh, intptr_t slide, int argc, const char* argv[], const char* envp[], const char* apple[])
 {
-	const uint32_t cmd_count = mh->ncmds;
-	const struct load_command* const cmds = (struct load_command*)(((char*)mh)+sizeof(macho_header));
-	const struct load_command* cmd = cmds;
-	for (uint32_t i = 0; i < cmd_count; ++i) {
-		switch (cmd->cmd) {
-			case LC_SEGMENT_COMMAND:
-				{
-					const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
-					const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
-					const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
-					for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
-						const uint8_t type = sect->flags & SECTION_TYPE;
-						if ( type == S_MOD_INIT_FUNC_POINTERS ){
-							Initializer* inits = (Initializer*)(sect->addr + slide);
-							const uint32_t count = sect->size / sizeof(uintptr_t);
-							for (uint32_t i=0; i < count; ++i) {
-								Initializer func = inits[i];
-								func(argc, argv, envp, apple);
-							}
-						}
-					}
-				}
-				break;
-		}
-		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	for (const Initializer* p = &inits_start; p < &inits_end; ++p) {
+		(*p)(argc, argv, envp, apple);
 	}
 }
+#endif // DYLD_INITIALIZER_SUPPORT
 
 
 //
@@ -202,17 +196,7 @@ static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 
 
 extern "C" void mach_init();
-
-//
-// _pthread_keys is partitioned in a lower part that dyld will use; libSystem
-// will use the upper part.  We set __pthread_tsd_first to 1 as the start of
-// the lower part.  Libc will take #1 and c++ exceptions will take #2.  There
-// is one free key=3 left.
-//
-extern "C" {
-	extern int __pthread_tsd_first;
-	extern void _pthread_keys_init();
-}
+extern "C" void __guard_setup(const char* apple[]);
 
 
 //
@@ -229,12 +213,6 @@ uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char*
 		rebaseDyld(dyldsMachHeader, slide);
 	}
 
-#if __IPHONE_OS_VERSION_MIN_REQUIRED		
-	// set pthread keys to dyld range
-	__pthread_tsd_first = 1;
-	_pthread_keys_init();
-#endif
-
 	// allow dyld to use mach messaging
 	mach_init();
 
@@ -246,15 +224,55 @@ uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char*
 	while(*apple != NULL) { ++apple; }
 	++apple;
 
+	// set up random value for stack canary
+	__guard_setup(apple);
+
+#if DYLD_INITIALIZER_SUPPORT
 	// run all C++ initializers inside dyld
 	runDyldInitializers(dyldsMachHeader, slide, argc, argv, envp, apple);
-		
+#endif
+
 	// now that we are done bootstrapping dyld, call dyld's main
 	uintptr_t appsSlide = slideOfMainExecutable(appsMachHeader);
 	return dyld::_main(appsMachHeader, appsSlide, argc, argv, envp, apple, startGlue);
 }
 
 
+#if TARGET_IPHONE_SIMULATOR
+
+extern "C" uintptr_t start_sim(int argc, const char* argv[], const char* envp[], const char* apple[],
+							const macho_header* mainExecutableMH, const macho_header* dyldMH, uintptr_t dyldSlide,
+							const dyld::SyscallHelpers*, uintptr_t* startGlue);
+					
+					
+uintptr_t start_sim(int argc, const char* argv[], const char* envp[], const char* apple[],
+					const macho_header* mainExecutableMH, const macho_header* dyldMH, uintptr_t dyldSlide,
+					const dyld::SyscallHelpers* sc, uintptr_t* startGlue)
+{
+	// if simulator dyld loaded slid, it needs to rebase itself
+	// we have to do this before using any global variables
+	if ( dyldSlide != 0 ) {
+		rebaseDyld(dyldMH, dyldSlide);
+	}
+
+	// save table of syscall pointers
+	gSyscallHelpers = sc;
+	
+	// allow dyld to use mach messaging
+	mach_init();
+
+	// set up random value for stack canary
+	__guard_setup(apple);
+
+	// setup gProcessInfo to point to host dyld's struct
+	dyld::gProcessInfo = (struct dyld_all_image_infos*)(sc->getProcessInfo());
+	syncProcessInfo();
+
+	// now that we are done bootstrapping dyld, call dyld's main
+	uintptr_t appsSlide = slideOfMainExecutable(mainExecutableMH);
+	return dyld::_main(mainExecutableMH, appsSlide, argc, argv, envp, apple, startGlue);
+}
+#endif
 
 
 } // end of namespace

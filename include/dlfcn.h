@@ -38,7 +38,7 @@ extern "C" {
 
 #if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
 #include <stdbool.h>
-#include <AvailabilityMacros.h>
+#include <Availability.h>
 /*
  * Structure filled in by dladdr().
  */
@@ -58,7 +58,7 @@ extern void * dlopen(const char * __path, int __mode);
 extern void * dlsym(void * __handle, const char * __symbol);
 
 #if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-extern bool dlopen_preflight(const char* __path) AVAILABLE_MAC_OS_X_VERSION_10_5_AND_LATER;
+extern bool dlopen_preflight(const char* __path) __OSX_AVAILABLE_STARTING(__MAC_10_5, __IPHONE_2_0);
 #endif /* not POSIX */
 
 

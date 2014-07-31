@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2013 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -21,7 +21,13 @@
  * @APPLE_LICENSE_HEADER_END@
  */
  
+#include <TargetConditionals.h>
  
+#include <System/machine/cpu_capabilities.h>
+
+// simulator does not have full libdyld.dylib - just a small libdyld_sim.dylib
+#if ! TARGET_IPHONE_SIMULATOR
+
 
 #ifdef __i386__
 
@@ -54,7 +60,7 @@ dyld_stub_binder:
 	movl		%eax,LP_LOCAL(%esp)	
 	movl		%ebp,LP_OLD_BP_SAVE(%esp)   # store epb back chain
 	movl		%esp,%ebp		    # set epb to be this frame
-	add		$LP_OLD_BP_SAVE,%ebp
+	add 		$LP_OLD_BP_SAVE,%ebp
 	movl		%ecx,ECX_SAVE(%esp)
 	movl		%edx,EDX_SAVE(%esp)
 	.align 0,0x90
@@ -97,16 +103,24 @@ dyld_stub_binder_:
 #define R8_SAVE				32
 #define R9_SAVE				40
 #define RAX_SAVE			48
-#define XMMM0_SAVE			64    /* 16-byte align */
-#define XMMM1_SAVE			80
-#define XMMM2_SAVE			96
-#define XMMM3_SAVE			112
-#define XMMM4_SAVE			128
-#define XMMM5_SAVE			144
-#define XMMM6_SAVE			160
-#define XMMM7_SAVE			176
-#define STACK_SIZE			192 /*  (XMMM7_SAVE+16) must be 16 byte aligned too */
-    
+#define XMM0_SAVE			64    /* 16-byte align */
+#define XMM1_SAVE			80
+#define XMM2_SAVE			96
+#define XMM3_SAVE			112
+#define XMM4_SAVE			128
+#define XMM5_SAVE			144
+#define XMM6_SAVE			160
+#define XMM7_SAVE			176
+#define YMM0_SAVE			64
+#define YMM1_SAVE			96
+#define YMM2_SAVE			128
+#define YMM3_SAVE			160
+#define YMM4_SAVE			192
+#define YMM5_SAVE			224
+#define YMM6_SAVE			256
+#define YMM7_SAVE			288
+#define STACK_SIZE			320 
+ 
 
  /*    
  * sp+4	lazy binding info offset
@@ -126,28 +140,55 @@ dyld_stub_binder:
 	movq		%r9,R9_SAVE(%rsp)
 	movq		%rax,RAX_SAVE(%rsp)
 misaligned_stack_error_entering_dyld_stub_binder:
-	movdqa		%xmm0,XMMM0_SAVE(%rsp)
-	movdqa		%xmm1,XMMM1_SAVE(%rsp)
-	movdqa		%xmm2,XMMM2_SAVE(%rsp)
-	movdqa		%xmm3,XMMM3_SAVE(%rsp)
-	movdqa		%xmm4,XMMM4_SAVE(%rsp)
-	movdqa		%xmm5,XMMM5_SAVE(%rsp)
-	movdqa		%xmm6,XMMM6_SAVE(%rsp)
-	movdqa		%xmm7,XMMM7_SAVE(%rsp)
+	movq		$(_COMM_PAGE_CPU_CAPABILITIES), %rax
+	movl		(%rax), %eax
+	testl		$kHasAVX1_0, %eax
+	jne		L2
+	movdqa		%xmm0,XMM0_SAVE(%rsp)
+	movdqa		%xmm1,XMM1_SAVE(%rsp)
+	movdqa		%xmm2,XMM2_SAVE(%rsp)
+	movdqa		%xmm3,XMM3_SAVE(%rsp)
+	movdqa		%xmm4,XMM4_SAVE(%rsp)
+	movdqa		%xmm5,XMM5_SAVE(%rsp)
+	movdqa		%xmm6,XMM6_SAVE(%rsp)
+	movdqa		%xmm7,XMM7_SAVE(%rsp)
+	jmp		L3
+L2:	vmovdqu		%ymm0,YMM0_SAVE(%rsp)	# stack is only 16-byte aligned, so must use unaligned stores for avx registers
+	vmovdqu		%ymm1,YMM1_SAVE(%rsp)
+	vmovdqu		%ymm2,YMM2_SAVE(%rsp)
+	vmovdqu		%ymm3,YMM3_SAVE(%rsp)
+	vmovdqu		%ymm4,YMM4_SAVE(%rsp)
+	vmovdqu		%ymm5,YMM5_SAVE(%rsp)
+	vmovdqu		%ymm6,YMM6_SAVE(%rsp)
+	vmovdqu		%ymm7,YMM7_SAVE(%rsp)
+L3:
 dyld_stub_binder_:
 	movq		MH_PARAM_BP(%rbp),%rdi	# call fastBindLazySymbol(loadercache, lazyinfo)
 	movq		LP_PARAM_BP(%rbp),%rsi
 	call		__Z21_dyld_fast_stub_entryPvl
 	movq		%rax,%r11		# save target
-	movdqa		XMMM0_SAVE(%rsp),%xmm0	# restore registers
-	movdqa		XMMM1_SAVE(%rsp),%xmm1
-	movdqa		XMMM2_SAVE(%rsp),%xmm2
-	movdqa		XMMM3_SAVE(%rsp),%xmm3
-	movdqa		XMMM4_SAVE(%rsp),%xmm4
-	movdqa		XMMM5_SAVE(%rsp),%xmm5
-	movdqa		XMMM6_SAVE(%rsp),%xmm6
-	movdqa		XMMM7_SAVE(%rsp),%xmm7
-	movq		RDI_SAVE(%rsp),%rdi
+	movq		$(_COMM_PAGE_CPU_CAPABILITIES), %rax
+	movl		(%rax), %eax
+	testl		$kHasAVX1_0, %eax
+	jne		L4
+	movdqa		XMM0_SAVE(%rsp),%xmm0
+	movdqa		XMM1_SAVE(%rsp),%xmm1
+	movdqa		XMM2_SAVE(%rsp),%xmm2
+	movdqa		XMM3_SAVE(%rsp),%xmm3
+	movdqa		XMM4_SAVE(%rsp),%xmm4
+	movdqa		XMM5_SAVE(%rsp),%xmm5
+	movdqa		XMM6_SAVE(%rsp),%xmm6
+	movdqa		XMM7_SAVE(%rsp),%xmm7
+	jmp		L5
+L4:	vmovdqu		YMM0_SAVE(%rsp),%ymm0
+	vmovdqu		YMM1_SAVE(%rsp),%ymm1
+	vmovdqu		YMM2_SAVE(%rsp),%ymm2
+	vmovdqu		YMM3_SAVE(%rsp),%ymm3
+	vmovdqu		YMM4_SAVE(%rsp),%ymm4
+	vmovdqu		YMM5_SAVE(%rsp),%ymm5
+	vmovdqu		YMM6_SAVE(%rsp),%ymm6
+	vmovdqu		YMM7_SAVE(%rsp),%ymm7
+L5: movq		RDI_SAVE(%rsp),%rdi
 	movq		RSI_SAVE(%rsp),%rsi
 	movq		RDX_SAVE(%rsp),%rdx
 	movq		RCX_SAVE(%rsp),%rcx
@@ -189,3 +230,7 @@ dyld_stub_binder:
 
 #endif /* __arm__ */
 
+	
+	
+// simulator does not have full libdyld.dylib - just a small libdyld_sim.dylib
+#endif // ! TARGET_IPHONE_SIMULATOR

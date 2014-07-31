@@ -147,6 +147,7 @@ static struct dyld_func dyld_funcs[] = {
 #if __IPHONE_OS_VERSION_MIN_REQUIRED	
 	{"__dyld_shared_cache_some_image_overridden",		(void*)dyld_shared_cache_some_image_overridden },
 #endif
+	{"__dyld_process_is_restricted",					(void*)dyld::processIsRestricted },
 
 	// deprecated
 #if DEPRECATED_APIS_SUPPORTED
@@ -239,6 +240,9 @@ struct __NSObjectFileImage
 	const void*		imageBaseAddress;	// not used with OFI created from files
 	size_t			imageLength;		// not used with OFI created from files
 };
+
+
+VECTOR_NEVER_DESTRUCTED(NSObjectFileImage);
 static std::vector<NSObjectFileImage> sObjectFileImages;
 
 
@@ -542,7 +546,7 @@ const struct mach_header* addImage(void* callerAddress, const char* path, bool s
 		if ( image != NULL ) {
 			if ( context.matchByInstallName )
 				image->setMatchInstallPath(true);
-			dyld::link(image, false, callersRPaths);
+			dyld::link(image, false, false, callersRPaths);
 			dyld::runInitializers(image);
 			// images added with NSAddImage() can never be unloaded
 			image->setNeverUnload(); 
@@ -972,6 +976,9 @@ NSModule NSLinkModule(NSObjectFileImage objectFileImage, const char* moduleName,
 	
 	dyld::clearErrorMessage();
 	try {
+		if ( (options & NSLINKMODULE_OPTION_CAN_UNLOAD) != 0 )
+			objectFileImage->image->setCanUnload();
+
 		// NSLinkModule allows a bundle to be link multpile times
 		// each link causes the bundle to be copied to a new address
 		if ( objectFileImage->image->isLinked() ) {
@@ -998,7 +1005,7 @@ NSModule NSLinkModule(NSObjectFileImage objectFileImage, const char* moduleName,
 		bool forceLazysBound = ( (options & NSLINKMODULE_OPTION_BINDNOW) != 0 );
 		
 		// load libraries, rebase, bind, to make this image usable
-		dyld::link(objectFileImage->image, forceLazysBound, ImageLoader::RPathChain(NULL,NULL));
+		dyld::link(objectFileImage->image, forceLazysBound, false, ImageLoader::RPathChain(NULL,NULL));
 		
 		// bump reference count to keep this bundle from being garbage collected
 		objectFileImage->image->incrementDlopenReferenceCount();
@@ -1044,7 +1051,7 @@ static NSModule _dyld_link_module(NSObjectFileImage object_addr, size_t object_s
 			bool forceLazysBound = ( (options & NSLINKMODULE_OPTION_BINDNOW) != 0 );
 			
 			// load libraries, rebase, bind, to make this image usable
-			dyld::link(image, forceLazysBound, ImageLoader::RPathChain(NULL,NULL));
+			dyld::link(image, forceLazysBound, false, ImageLoader::RPathChain(NULL,NULL));
 			
 			// run initializers unless magic flag says not to
 			if ( (options & NSLINKMODULE_OPTION_DONT_CALL_MOD_INIT_ROUTINES) == 0 )
@@ -1107,6 +1114,7 @@ bool NSUnLinkModule(NSModule module, uint32_t options)
 	ImageLoader* image = NSModuleToImageLoader(module);
 	if ( image == NULL ) 
 		return false;
+	dyld::runImageTerminators(image);
 	dyld::removeImage(image);
 	
 	if ( (options & NSUNLINKMODULE_OPTION_KEEP_MEMORY_MAPPED) != 0 )
@@ -1182,9 +1190,9 @@ void _dyld_fork_child()
 	// If dyld is sending load/unload notices to CoreSymbolication, the shared memory
 	// page is not copied on fork. <rdar://problem/6797342>
  	// NULL the CoreSymbolication shared memory pointer to prevent a crash.
- 	dyld_all_image_infos.coreSymbolicationShmPage = NULL;
+ 	dyld::gProcessInfo->coreSymbolicationShmPage = NULL;
 	// for safety, make sure child starts with clean systemOrderFlag
-	dyld_all_image_infos.systemOrderFlag = 0;
+	dyld::gProcessInfo->systemOrderFlag = 0;
 }
 
 typedef void (*MonitorProc)(char *lowpc, char *highpc);
@@ -1262,7 +1270,7 @@ static void registerThreadHelpers(const dyld::LibSystemHelpers* helpers)
 	dyld::gLibSystemHelpers = helpers;
 	
 	// let gdb know it is safe to run code in inferior that might call malloc()
-	dyld_all_image_infos.libSystemInitialized = true;	
+	dyld::gProcessInfo->libSystemInitialized = true;	
 	
 #if __arm__
 	if ( helpers->version >= 5 )  {
@@ -1279,6 +1287,13 @@ static void registerThreadHelpers(const dyld::LibSystemHelpers* helpers)
 static void dlerrorClear()
 {
 	if ( dyld::gLibSystemHelpers != NULL ) {
+		// <rdar://problem/10595338> dlerror buffer leak
+		// dlerrorClear() should not force allocation, but zero it if already allocated
+		if ( dyld::gLibSystemHelpers->version >= 10 ) {
+			if ( ! (*dyld::gLibSystemHelpers->hasPerThreadBufferFor_dlerror)() )
+				return;
+		}
+
 		// first char of buffer is flag whether string (starting at second char) is valid
 		char* buffer = (*dyld::gLibSystemHelpers->getThreadBufferFor_dlerror)(2);
 		buffer[0] = '\0';
@@ -1468,7 +1483,7 @@ void* dlopen(const char* path, int mode)
 			if ( (mode & RTLD_NOLOAD) == 0 ) {
 				bool alreadyLinked = image->isLinked();
 				bool forceLazysBound = ( (mode & RTLD_NOW) != 0 );
-				dyld::link(image, forceLazysBound, callersRPaths);
+				dyld::link(image, forceLazysBound, false, callersRPaths);
 				if ( ! alreadyLinked ) {
 					// only hide exports if image is not already in use
 					if ( (mode & RTLD_LOCAL) != 0 )
@@ -1514,9 +1529,12 @@ void* dlopen(const char* path, int mode)
 			// load() succeeded but, link() failed
 			// back down reference count and do GC
 			image->decrementDlopenReferenceCount();
-			dyld::garbageCollectImages();
+			if ( image->dlopenCount() == 0 )
+				dyld::garbageCollectImages();
 		}
 		const char* str = dyld::mkstringf("dlopen(%s, %d): %s", path, mode, msg);
+		if ( dyld::gLogAPIs )
+			dyld::log("  %s() failed, error: '%s'\n", __func__, str);
 		dlerrorSet(str);
 		free((void*)str);
 		free((void*)msg); 	// our free() will do nothing if msg is a string literal
@@ -1537,6 +1555,8 @@ void* dlopen(const char* path, int mode)
 		CRSetCrashLogMessage(NULL);
 		dyld::gLibSystemHelpers->releaseGlobalDyldLock();
 	}
+	if ( dyld::gLogAPIs && (result != NULL) )
+		dyld::log("  %s(%s) ==> %p\n", __func__, path, result);
 	return result;
 }
 
@@ -1562,7 +1582,8 @@ int dlclose(void* handle)
 			return -1;
 		}
 		// remove image if reference count went to zero
-		dyld::garbageCollectImages();
+		if ( image->dlopenCount() == 0 )
+			dyld::garbageCollectImages();
 		return 0;
 	}
 	else {
@@ -1622,6 +1643,12 @@ char* dlerror()
 		dyld::log("%s()\n", __func__);
 
 	if ( dyld::gLibSystemHelpers != NULL ) {
+		// if using newer libdyld.dylib and buffer if buffer not yet allocated, return NULL
+		if ( dyld::gLibSystemHelpers->version >= 10 ) {
+			if ( ! (*dyld::gLibSystemHelpers->hasPerThreadBufferFor_dlerror)() )
+				return NULL;
+		}
+
 		// first char of buffer is flag whether string (starting at second char) is valid
 		char* buffer = (*dyld::gLibSystemHelpers->getThreadBufferFor_dlerror)(2);
 		if ( buffer[0] != '\0' ) {	// if valid buffer
@@ -1741,7 +1768,7 @@ void* dlsym(void* handle, const char* symbolName)
 
 const struct dyld_all_image_infos* _dyld_get_all_image_infos()
 {
-	return &dyld_all_image_infos;
+	return dyld::gProcessInfo;
 }
 
 #if !__arm__
@@ -1787,7 +1814,11 @@ const char* dyld_image_path_containing_address(const void* address)
 #if __IPHONE_OS_VERSION_MIN_REQUIRED	
 bool dyld_shared_cache_some_image_overridden()
 {
+ #if DYLD_SHARED_CACHE_SUPPORT
 	return dyld::gSharedCacheOverridden;
+ #else
+    return true;
+ #endif
 }
 #endif
 

@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2009 Apple Inc. All rights reserved.
+ * Copyright (c) 2004-2012 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -25,14 +25,17 @@
 #include <stddef.h>
 #include <string.h>
 #include <malloc/malloc.h>
+#include <sys/mman.h>
 
 #include <crt_externs.h>
 #include <Availability.h>
+#include <vproc_priv.h>
 
 #include "mach-o/dyld.h"
 #include "mach-o/dyld_priv.h"
 
 #include "dyldLock.h"
+#include "start_glue.h"
 
 extern "C" int  __cxa_atexit(void (*func)(void *), void *arg, void *dso);
 extern "C" void __cxa_finalize(const void *dso);
@@ -423,6 +426,8 @@ const char* libraryName)
 	return(-1);
 }
 
+#define PACKED_VERSION(major, minor, tiny) ((((major) & 0xffff) << 16) | (((minor) & 0xff) << 8) | ((tiny) & 0xff))
+
 
 /*
  * Returns the sdk version (encode as nibble XXXX.YY.ZZ) the
@@ -435,68 +440,118 @@ const char* libraryName)
  */
 uint32_t dyld_get_sdk_version(const mach_header* mh)
 {
-#if __LP64__
-	const load_command* cmds = (load_command*)((char *)mh + sizeof(mach_header_64));
-#else
-	const load_command* cmds = (load_command*)((char *)mh + sizeof(mach_header));
-#endif
+	const load_command* cmds = NULL;
+	if ( mh->magic == MH_MAGIC_64 )
+		cmds = (load_command*)((char *)mh + sizeof(mach_header_64));
+	else if ( mh->magic == MH_MAGIC )
+		cmds = (load_command*)((char *)mh + sizeof(mach_header));
+	else
+		return 0;  // not a mach-o file, or wrong endianness
+		
 	const version_min_command* versCmd;
 	const dylib_command* dylibCmd;
 	const load_command* cmd = cmds;
+	const char* dylibName;
+#if __IPHONE_OS_VERSION_MIN_REQUIRED 
+	uint32_t foundationVers = 0;
+#else
 	uint32_t libSystemVers = 0;
+#endif
 	for(uint32_t i = 0; i < mh->ncmds; ++i) {
 		switch ( cmd->cmd ) { 
-			case LC_VERSION_MIN_MACOSX:
+#if __IPHONE_OS_VERSION_MIN_REQUIRED 
 			case LC_VERSION_MIN_IPHONEOS:
+#else
+			case LC_VERSION_MIN_MACOSX:
+#endif
 				versCmd = (version_min_command*)cmd;
+#ifdef DICE_KIND_DATA
 				if ( versCmd->sdk != 0 )
 					return versCmd->sdk;	// found explicit SDK version
+#else
+				if ( versCmd->reserved != 0 )
+					return versCmd->reserved;	// found explicit SDK version
+#endif
 				break;
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
 			case LC_LOAD_UPWARD_DYLIB:
 				dylibCmd = (dylib_command*)cmd;
-				if ( strcmp((char*)dylibCmd + dylibCmd->dylib.name.offset, "/usr/lib/libSystem.B.dylib") == 0 )
+				dylibName = (char*)dylibCmd + dylibCmd->dylib.name.offset;
+#if __IPHONE_OS_VERSION_MIN_REQUIRED          
+				if ( strcmp(dylibName, "/System/Library/Frameworks/Foundation.framework/Foundation") == 0 )
+					foundationVers = dylibCmd->dylib.current_version;
+#else
+				if ( strcmp(dylibName, "/usr/lib/libSystem.B.dylib") == 0 )
 					libSystemVers = dylibCmd->dylib.current_version;
-				else if ( strcmp((char*)dylibCmd + dylibCmd->dylib.name.offset, "/usr/lib/libSystem.dylib") == 0 )
-					return 0x00040000; // all iOS simulator have same libSystem.dylib version
+#endif
 				break;
 		}
 	    cmd = (load_command*)((char *)cmd + cmd->cmdsize);
 	}
+
+	struct DylibToOSMapping {
+		uint32_t dylibVersion;
+		uint32_t osVersion;
+	};
 	
-	if ( libSystemVers != 0 ) {
-		// found linked libSystem.B.dylib version linked against
 #if __IPHONE_OS_VERSION_MIN_REQUIRED
-		// convert libSystem.B.dylib version to iOS sdk version
-		if ( libSystemVers < 0x006F0010 )       // libSystem 111.0.16 in 3.0
-			return 0x00020000;		// 2.0  
-		else if ( libSystemVers < 0x006F0201 )	// libSystem 111.2.1 in 3.1
-			return 0x00030000;		// 3.0  
-		else if ( libSystemVers < 0x007D020B )	// libSystem 125.2.11 in 4.0
-			return 0x00030100;		// 3.1  
-		else if ( libSystemVers < 0x007D0400 )	// libSystem 125.4 in 4.1 and in 4.2
-			return 0x00040000;		// 4.0  
-		else if ( libSystemVers < 0x009F0000 )	// libSystem 159 in 4.3
-			return 0x00040100;		// 4.1  
-		else if ( libSystemVers < 0x00A10000 )	// libSystem 161 in 5.0
-			return 0x00040300;		// 4.3  
-		else
-			return 0x00050000;
-#else
-		// convert libSystem.B.dylib version to MacOSX sdk version
-		if ( libSystemVers < 0x006F0000 )       // libSystem 111 in 10.5
-			return 0x000A0400;		// 10.4  
-		else if ( libSystemVers < 0x007B0000 )	// libSystem 123 in 10.6
-			return 0x000A0500;		// 10.5  
-		else if ( libSystemVers < 0x009F0000 )	// libSystem 159 in 10.7
-			return 0x000A0600;		// 10.6  
-		else if ( libSystemVers < 0x00A10000 )  // libSystem 161 in 10.8
-			return 0x000A0700;		// 10.7  
-		else 
-			return 0x000A0800;		// 10.8  
-#endif
+	static const DylibToOSMapping foundationMapping[] = {
+		{ PACKED_VERSION(678,24,0), DYLD_IOS_VERSION_2_0 },
+		{ PACKED_VERSION(678,26,0), DYLD_IOS_VERSION_2_1 },
+		{ PACKED_VERSION(678,29,0), DYLD_IOS_VERSION_2_2 },
+		{ PACKED_VERSION(678,47,0), DYLD_IOS_VERSION_3_0 },
+		{ PACKED_VERSION(678,51,0), DYLD_IOS_VERSION_3_1 },
+		{ PACKED_VERSION(678,60,0), DYLD_IOS_VERSION_3_2 },
+		{ PACKED_VERSION(751,32,0), DYLD_IOS_VERSION_4_0 },
+		{ PACKED_VERSION(751,37,0), DYLD_IOS_VERSION_4_1 },
+		{ PACKED_VERSION(751,49,0), DYLD_IOS_VERSION_4_2 },
+		{ PACKED_VERSION(751,58,0), DYLD_IOS_VERSION_4_3 },
+		{ PACKED_VERSION(881,0,0),  DYLD_IOS_VERSION_5_0 },
+		{ PACKED_VERSION(890,1,0),  DYLD_IOS_VERSION_5_1 },
+		{ PACKED_VERSION(992,0,0),  DYLD_IOS_VERSION_6_0 },
+		{ PACKED_VERSION(993,0,0),  DYLD_IOS_VERSION_6_1 },  
+		{ PACKED_VERSION(1038,14,0),DYLD_IOS_VERSION_7_0 }, // check final
+		{ PACKED_VERSION(0,0,0),    DYLD_IOS_VERSION_7_0 } 
+	};
+
+	if ( foundationVers != 0 ) {
+		uint32_t lastOsVersion = 0;
+		for (const DylibToOSMapping* p=foundationMapping; ; ++p) {
+			if ( p->dylibVersion == 0 )
+				return p->osVersion;
+			if ( foundationVers < p->dylibVersion )
+				return lastOsVersion;
+			lastOsVersion = p->osVersion;
+		}
 	}
+
+#else
+	// Note: versions are for the GM release.  The last entry should
+	// always be zero.  At the start of the next major version,
+	// a new last entry needs to be added and the previous zero
+	// updated to the GM dylib version.
+	static const DylibToOSMapping libSystemMapping[] = {
+		{ PACKED_VERSION(88,1,3),   DYLD_MACOSX_VERSION_10_4 },
+		{ PACKED_VERSION(111,0,0),  DYLD_MACOSX_VERSION_10_5 },
+		{ PACKED_VERSION(123,0,0),  DYLD_MACOSX_VERSION_10_6 },
+		{ PACKED_VERSION(159,0,0),  DYLD_MACOSX_VERSION_10_7 },
+		{ PACKED_VERSION(169,3,0),  DYLD_MACOSX_VERSION_10_8 },
+		{ PACKED_VERSION(1197,0,0), DYLD_MACOSX_VERSION_10_9 },
+		{ PACKED_VERSION(0,0,0),    DYLD_MACOSX_VERSION_10_9 }
+	};
+
+	if ( libSystemVers != 0 ) {
+		uint32_t lastOsVersion = 0;
+		for (const DylibToOSMapping* p=libSystemMapping; ; ++p) {
+			if ( p->dylibVersion == 0 )
+				return p->osVersion;
+			if ( libSystemVers < p->dylibVersion )
+				return lastOsVersion;
+			lastOsVersion = p->osVersion;
+		}
+	}
+#endif
 	
 	return 0;
 }
@@ -509,17 +564,23 @@ uint32_t dyld_get_program_sdk_version()
 
 uint32_t dyld_get_min_os_version(const struct mach_header* mh)
 {
-#if __LP64__
-	const load_command* cmds = (load_command*)((char *)mh + sizeof(mach_header_64));
-#else
-	const load_command* cmds = (load_command*)((char *)mh + sizeof(mach_header));
-#endif
+	const load_command* cmds = NULL;
+	if ( mh->magic == MH_MAGIC_64 )
+		cmds = (load_command*)((char *)mh + sizeof(mach_header_64));
+	else if ( mh->magic == MH_MAGIC )
+		cmds = (load_command*)((char *)mh + sizeof(mach_header));
+	else
+		return 0;  // not a mach-o file, or wrong endianness
+		
 	const version_min_command* versCmd;
 	const load_command* cmd = cmds;
 	for(uint32_t i = 0; i < mh->ncmds; ++i) {
 		switch ( cmd->cmd ) { 
-			case LC_VERSION_MIN_MACOSX:
+#if __IPHONE_OS_VERSION_MIN_REQUIRED          
 			case LC_VERSION_MIN_IPHONEOS:
+#else
+			case LC_VERSION_MIN_MACOSX:
+#endif
 				versCmd = (version_min_command*)cmd;
 				return versCmd->version;	// found explicit min OS version
 				break;
@@ -1192,6 +1253,32 @@ static char* getPerThreadBufferFor_dlerror(uint32_t sizeRequired)
 	return data->message;
 }
 
+// <rdar://problem/10595338> dlerror buffer leak
+// Only allocate buffer if an actual error message needs to be set
+static bool hasPerThreadBufferFor_dlerror()
+{
+	if (!dlerrorPerThreadKeyInitialized ) 
+		return false;
+		
+	return (pthread_getspecific(dlerrorPerThreadKey) != NULL);
+}
+
+// use non-lazy pointer to vproc_swap_integer so that lazy binding does not recurse
+typedef vproc_err_t (*vswapproc)(vproc_t vp, vproc_gsk_t key,int64_t *inval, int64_t *outval);
+static vswapproc swapProc = &vproc_swap_integer;
+
+static bool isLaunchdOwned() {
+	static bool first = true;
+	static bool result;
+	if ( first ) {
+		int64_t val = 0;
+		(*swapProc)(NULL, VPROC_GSK_IS_MANAGED, NULL, &val);
+		result = ( val != 0 );
+		first = false;
+	}
+	return result;
+}
+
 
 #if DYLD_SHARED_CACHE_SUPPORT
 static void shared_cache_missing()
@@ -1205,10 +1292,9 @@ static void shared_cache_out_of_date()
 }
 #endif // DYLD_SHARED_CACHE_SUPPORT
 
-extern void* start;
 
 // the table passed to dyld containing thread helpers
-static dyld::LibSystemHelpers sHelpers = { 9, &dyldGlobalLockAcquire, &dyldGlobalLockRelease,  
+static dyld::LibSystemHelpers sHelpers = { 12, &dyldGlobalLockAcquire, &dyldGlobalLockRelease,
 									&getPerThreadBufferFor_dlerror, &malloc, &free, &__cxa_atexit,
 						#if DYLD_SHARED_CACHE_SUPPORT
 									&shared_cache_missing, &shared_cache_out_of_date,
@@ -1220,7 +1306,11 @@ static dyld::LibSystemHelpers sHelpers = { 9, &dyldGlobalLockAcquire, &dyldGloba
 									&malloc_size,
 									&pthread_getspecific,
 									&__cxa_finalize,
-									&start};
+									address_of_start,
+									&hasPerThreadBufferFor_dlerror,
+									&isLaunchdOwned,
+									&vm_allocate,
+									&mmap};
 
 
 //
@@ -1230,9 +1320,7 @@ static dyld::LibSystemHelpers sHelpers = { 9, &dyldGlobalLockAcquire, &dyldGloba
 extern "C" void tlv_initializer();
 extern "C" void _dyld_initializer();
 void _dyld_initializer()
-{
-	DYLD_LOCK_INITIALIZER;
-	
+{	
    void (*p)(dyld::LibSystemHelpers*);
 
 	_dyld_func_lookup("__dyld_register_thread_helpers", (void**)&p);
@@ -1381,6 +1469,19 @@ bool dyld_shared_cache_some_image_overridden()
 	return p();
 }
 #endif
+
+
+bool dyld_process_is_restricted()
+{
+	DYLD_NO_LOCK_THIS_BLOCK;
+    static bool (*p)() = NULL;
+	
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_process_is_restricted", (void**)&p);
+	return p();
+}
+
+
 
 
 // SPI called __fork

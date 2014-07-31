@@ -67,7 +67,7 @@ static char							sPreMainCxaGlobals[2*sizeof(long)];
 char* __cxa_get_globals() 
 {	
 	// if libSystem.dylib not yet initialized, or is old libSystem, use shared global
-	if ( (_ZN4dyld17gLibSystemHelpersE == NULL) || (_ZN4dyld17gLibSystemHelpersE->version < 5) )
+	if ( (_ZN4dyld17gLibSystemHelpersE == NULL) || (_ZN4dyld17gLibSystemHelpersE->version < 7) )
 		return sPreMainCxaGlobals;
 
 	if ( sCxaKey == 0 ) {
@@ -75,7 +75,7 @@ char* __cxa_get_globals()
 		// we don't need a lock because only one thread can be in dyld at a time
 		_ZN4dyld17gLibSystemHelpersE->pthread_key_create(&sCxaKey, &free);
 	}
-	char* data = (char*)pthread_getspecific(sCxaKey);
+	char* data = (char*)_ZN4dyld17gLibSystemHelpersE->pthread_getspecific(sCxaKey);
 	if ( data == NULL ) {
 		data = calloc(2,sizeof(void*));
 		_ZN4dyld17gLibSystemHelpersE->pthread_setspecific(sCxaKey, data);
@@ -87,10 +87,10 @@ char* __cxa_get_globals()
 char* __cxa_get_globals_fast() 
 { 
 	// if libSystem.dylib not yet initialized, or is old libSystem, use shared global
-	if ( (_ZN4dyld17gLibSystemHelpersE == NULL) || (_ZN4dyld17gLibSystemHelpersE->version < 5) )
+	if ( (_ZN4dyld17gLibSystemHelpersE == NULL) || (_ZN4dyld17gLibSystemHelpersE->version < 7) )
 		return sPreMainCxaGlobals;
 
-	return pthread_getspecific(sCxaKey); 
+	return _ZN4dyld17gLibSystemHelpersE->pthread_getspecific(sCxaKey); 
 }
 
 

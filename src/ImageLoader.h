@@ -28,16 +28,19 @@
 
 #include <sys/types.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <mach/mach_time.h> // struct mach_timebase_info
 #include <mach/mach_init.h> // struct mach_thread_self
 #include <mach/shared_region.h>
 #include <mach-o/loader.h> 
 #include <mach-o/nlist.h> 
 #include <stdint.h>
+#include <stdlib.h>
+#include <TargetConditionals.h>
 #include <vector>
 #include <new>
 
-#if (__i386__ || __x86_64__)
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	#include <CrashReporterClient.h>
 #else
 	// work around until iOS has CrashReporterClient.h
@@ -78,26 +81,50 @@
 	};
 #endif
 
-#define SPLIT_SEG_SHARED_REGION_SUPPORT __arm__
-#define SPLIT_SEG_DYLIB_SUPPORT (__i386__ || __arm__)
-#define PREBOUND_IMAGE_SUPPORT (__i386__ || __arm__)
-#define TEXT_RELOC_SUPPORT (__i386__ || __arm__)
-#define DYLD_SHARED_CACHE_SUPPORT (__i386__ ||  __x86_64__ || __arm__)
-#define SUPPORT_OLD_CRT_INITIALIZATION (__i386__)
-#define SUPPORT_LC_DYLD_ENVIRONMENT  (__i386__ || __x86_64__)
-#define SUPPORT_VERSIONED_PATHS  (__i386__ || __x86_64__)
-#if __IPHONE_OS_VERSION_MIN_REQUIRED
-	#define CORESYMBOLICATION_SUPPORT 1
+#if __IPHONE_OS_VERSION_MIN_REQUIRED          
+	#define SPLIT_SEG_SHARED_REGION_SUPPORT 0
+	#define SPLIT_SEG_DYLIB_SUPPORT			0
+	#define PREBOUND_IMAGE_SUPPORT			0
+	#define TEXT_RELOC_SUPPORT				__i386__
+	#define DYLD_SHARED_CACHE_SUPPORT		__arm__
+	#define SUPPORT_OLD_CRT_INITIALIZATION	0
+	#define SUPPORT_LC_DYLD_ENVIRONMENT		0
+	#define SUPPORT_VERSIONED_PATHS			0
+	#define SUPPORT_CLASSIC_MACHO			__arm__
+	#define CORESYMBOLICATION_SUPPORT		__arm__
+	#define INITIAL_IMAGE_COUNT				256
 #else
-	#define CORESYMBOLICATION_SUPPORT   (__i386__ || __x86_64__)
-#endif
-#if __arm__
-	#define INITIAL_IMAGE_COUNT 256
-#else
-	#define INITIAL_IMAGE_COUNT 200
+	#define SPLIT_SEG_SHARED_REGION_SUPPORT 0
+	#define SPLIT_SEG_DYLIB_SUPPORT			__i386__
+	#define PREBOUND_IMAGE_SUPPORT			__i386__
+	#define TEXT_RELOC_SUPPORT				__i386__
+	#define DYLD_SHARED_CACHE_SUPPORT		1
+	#define SUPPORT_OLD_CRT_INITIALIZATION	__i386__
+	#define SUPPORT_LC_DYLD_ENVIRONMENT		(__i386__ || __x86_64__)
+	#define SUPPORT_VERSIONED_PATHS			1
+	#define SUPPORT_CLASSIC_MACHO			1
+	#define CORESYMBOLICATION_SUPPORT		1
+	#define INITIAL_IMAGE_COUNT				200
 #endif
 
-#define CODESIGNING_SUPPORT __arm__
+
+
+// <rdar://problem/13590567> optimize away dyld's initializers
+#define VECTOR_NEVER_DESTRUCTED(type) \
+	namespace std { \
+		template <> \
+		__vector_base<type, std::allocator<type> >::~__vector_base() { } \
+	}
+#define VECTOR_NEVER_DESTRUCTED_EXTERN(type) \
+       namespace std { \
+               template <> \
+               __vector_base<type, std::allocator<type> >::~__vector_base(); \
+       }
+#define VECTOR_NEVER_DESTRUCTED_IMPL(type) \
+       namespace std { \
+               template <> \
+               __vector_base<type, std::allocator<type> >::~__vector_base() { } \
+       }
 
 // utilities
 namespace dyld {
@@ -108,7 +135,9 @@ namespace dyld {
 #if LOG_BINDINGS
 	extern void logBindings(const char* format, ...)  __attribute__((format(printf, 1, 2)));
 #endif
-};
+}
+extern "C" 	int   vm_alloc(vm_address_t* addr, vm_size_t size, uint32_t flags);
+extern "C" 	void* xmmap(void* addr, size_t len, int prot, int flags, int fd, off_t offset);
 
 
 #if __LP64__
@@ -176,6 +205,11 @@ public:
 		const char*			imageShortName;
 	};
 
+	struct DynamicReference {
+		ImageLoader* from;
+		ImageLoader* to;
+	};
+	
 	struct LinkContext {
 		ImageLoader*	(*loadLibrary)(const char* libraryName, bool search, const char* origin, const RPathChain* rpaths);
 		void			(*terminationRecorder)(ImageLoader* image);
@@ -196,6 +230,9 @@ public:
 		bool			(*inSharedCache)(const char* path);
 		void			(*setErrorStrings)(unsigned errorCode, const char* errorClientOfDylibPath,
 										const char* errorTargetDylibPath, const char* errorSymbol);
+		ImageLoader*	(*findImageContainingAddress)(const void* addr);
+		void			(*addDynamicReference)(ImageLoader* from, ImageLoader* to);
+		
 #if SUPPORT_OLD_CRT_INITIALIZATION
 		void			(*setRunInitialzersOldWay)();
 #endif
@@ -211,7 +248,9 @@ public:
 		const char**	rootPaths;
 		PrebindMode		prebindUsage;
 		SharedRegionMode sharedRegionMode;
-		bool			dyldLoadedAtSameAddressNeededBySharedCache; 
+		bool			dyldLoadedAtSameAddressNeededBySharedCache;
+		bool			codeSigningEnforced;
+		bool			mainExecutableCodeSigned;
 		bool			preFetchDisabled;
 		bool			prebinding;
 		bool			bindFlat;
@@ -231,6 +270,7 @@ public:
 		bool			verboseWarnings;
 		bool			verboseRPaths;
 		bool			verboseInterposing;
+		bool			verboseCodeSignatures;
 	};
 	
 	struct CoalIterator
@@ -269,7 +309,7 @@ public:
 	
 										// link() takes a newly instantiated ImageLoader and does all 
 										// fixups needed to make it usable by the process
-	void								link(const LinkContext& context, bool forceLazysBound, bool preflight, const RPathChain& loaderRPaths);
+	void								link(const LinkContext& context, bool forceLazysBound, bool preflight, bool neverUnload, const RPathChain& loaderRPaths);
 	
 										// runInitializers() is normally called in link() but the main executable must 
 										// run crt code before initializers
@@ -464,12 +504,16 @@ public:
 	virtual uintptr_t					segActualEndAddress(unsigned int) const = 0;
 
 	
+	virtual uint32_t					sdkVersion() const = 0;
+	
 										// if the image contains interposing functions, register them
 	virtual void						registerInterposing() = 0;
 
 										// when resolving symbols look in subImage if symbol can't be found
 	void								reExport(ImageLoader* subImage);
 	
+	void								weakBind(const LinkContext& context);
+
 	void								applyInterposing(const LinkContext& context);
 
 	dyld_image_states					getState() { return (dyld_image_states)fState; }
@@ -483,15 +527,17 @@ public:
 	
 	void								printReferenceCounts();
 
-	uint32_t							referenceCount() const { return fDlopenReferenceCount + fStaticReferenceCount + fDynamicReferenceCount; }
+	uint32_t							dlopenCount() const { return fDlopenReferenceCount; }
+
+	void								setCanUnload() { fNeverUnload = false; fLeaveMapped = false; }
 
 	bool								neverUnload() const { return fNeverUnload; }
 
 	void								setNeverUnload() { fNeverUnload = true; fLeaveMapped = true; }
+	void								setNeverUnloadRecursive();
 	
 	bool								isReferencedDownward() { return fIsReferencedDownward; }
 
-	bool								isReferencedUpward() { return fIsReferencedUpward; }
 	
 										// triggered by DYLD_PRINT_STATISTICS to write info on work done and how fast
 	static void							printStatistics(unsigned int imageCount, const InitializerTimingList& timingInfo);
@@ -504,7 +550,9 @@ public:
 										// used instead of directly deleting image
 	static void							deleteImage(ImageLoader*);
 		
-			void						setPath(const char* path);
+			bool						dependsOn(ImageLoader* image);
+			
+ 			void						setPath(const char* path);
 			void						setPaths(const char* path, const char* realPath);
 			void						setPathUnowned(const char* path);
 						
@@ -514,15 +562,25 @@ public:
 			void						setBeingRemoved() { fBeingRemoved = true; }
 			bool						isBeingRemoved() const { return fBeingRemoved; }
 			
+			void						markNotUsed() { fMarkedInUse = false; }
+			void						markedUsedRecursive(const std::vector<DynamicReference>&);
+			bool						isMarkedInUse() const	{ return fMarkedInUse; }
+		
 			void						setAddFuncNotified() { fAddFuncNotified = true; }
 			bool						addFuncNotified() const { return fAddFuncNotified; }
 	
+	struct InterposeTuple { 
+		uintptr_t		replacement; 
+		ImageLoader*	replacementImage;	// don't apply replacement to this image
+		uintptr_t		replacee; 
+	};
+
 protected:			
 	// abstract base class so all constructors protected
 					ImageLoader(const char* path, unsigned int libCount); 
 					ImageLoader(const ImageLoader&);
 	void			operator=(const ImageLoader&);
-	void			operator delete(void* image) throw() { free(image); } 
+	void			operator delete(void* image) throw() { ::free(image); }
 	
 
 	struct LibraryInfo {
@@ -548,12 +606,6 @@ protected:
 	};
 
 
-	struct InterposeTuple { 
-		uintptr_t		replacement; 
-		ImageLoader*	replacementImage;	// don't apply replacement to this image
-		uintptr_t		replacee; 
-	};
-
 	typedef void (*Initializer)(int argc, const char* argv[], const char* envp[], const char* apple[], const ProgramVars* vars);
 	typedef void (*Terminator)(void);
 	
@@ -565,7 +617,6 @@ protected:
 	virtual bool			libIsUpward(unsigned int) const = 0;
 	virtual void			setLibImage(unsigned int, ImageLoader*, bool, bool) = 0;
 
-
 						// To link() an image, its dependent libraries are loaded, it is rebased, bound, and initialized.
 						// These methods do the above, exactly once, and it the right order
 	void				recursiveLoadLibraries(const LinkContext& context, bool preflightOnly, const RPathChain& loaderRPaths);
@@ -573,8 +624,7 @@ protected:
 	unsigned int		recursiveUpdateDepth(unsigned int maxDepth);
 	void				recursiveValidate(const LinkContext& context);
 	void				recursiveRebase(const LinkContext& context);
-	void				recursiveBind(const LinkContext& context, bool forceLazysBound);
-	void				weakBind(const LinkContext& context);
+	void				recursiveBind(const LinkContext& context, bool forceLazysBound, bool neverUnload);
 	void				recursiveApplyInterposing(const LinkContext& context);
 	void				recursiveGetDOFSections(const LinkContext& context, std::vector<DOFInfo>& dofs);
 	void				recursiveInitialization(const LinkContext& context, mach_port_t this_thread, ImageLoader::InitializerTimingList&);
@@ -626,10 +676,7 @@ protected:
 	
 								// set fState to dyld_image_state_memory_mapped
 	void						setMapped(const LinkContext& context);
-	
-								// mark that target should not be unloaded unless this is also unloaded
-	void						addDynamicReference(const ImageLoader* target);
-	
+		
 	void						setFileInfo(dev_t device, ino_t inode, time_t modDate);
 	
 	static uintptr_t			fgNextPIEDylibAddress;
@@ -653,6 +700,7 @@ protected:
 	static uint64_t				fgTotalDOF;
 	static uint64_t				fgTotalInitTime;
 	static std::vector<InterposeTuple>	fgInterposingTuples;
+	
 	const char*					fPath;
 	const char*					fRealPath;
 	dev_t						fDevice;
@@ -660,9 +708,6 @@ protected:
 	time_t						fLastModified;
 	uint32_t					fPathHash;
 	uint32_t					fDlopenReferenceCount;	// count of how many dlopens have been done on this image
-	uint32_t					fStaticReferenceCount;	// count of images that have a fLibraries entry pointing to this image
-	uint32_t					fDynamicReferenceCount;	// count of images that have a fDynamicReferences entry pointer to this image
-	std::vector<const ImageLoader*>* fDynamicReferences;	// list of all images this image used because of a flat/coalesced lookup
 
 private:
 	struct recursive_lock {
@@ -691,17 +736,18 @@ private:
 								fInterposed : 1,
 								fRegisteredDOF : 1,
 								fAllLazyPointersBound : 1,
+								fMarkedInUse : 1,
 								fBeingRemoved : 1,
 								fAddFuncNotified : 1,
 								fPathOwnedByImage : 1,
 								fIsReferencedDownward : 1,
-								fIsReferencedUpward : 1,
 								fWeakSymbolsBound : 1;
 
 	static uint16_t				fgLoadOrdinal;
 };
 
 
+VECTOR_NEVER_DESTRUCTED_EXTERN(ImageLoader::InterposeTuple);
 
 
 #endif

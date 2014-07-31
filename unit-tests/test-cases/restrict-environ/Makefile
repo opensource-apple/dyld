@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2009 Apple Inc. All rights reserved.
+# Copyright (c) 2009-2013 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -27,8 +27,10 @@ SHELL = bash # use bash shell so we can redirect just stderr
 
 ifeq "$(OS_NAME)" "iPhoneOS"
 	RUN_AS_USER = login -f -l mobile
+	RUN_AS_ROOT =
 else
 	RUN_AS_USER = 
+	RUN_AS_ROOT = sudo
 endif
 
 PWD = `pwd`
@@ -37,6 +39,7 @@ all-check: all check
 
 check:
 	${RUN_AS_USER} $(PWD)/main-with-env 2>/dev/null
+	${RUN_AS_ROOT} $(PWD)/main-with-env 2>/dev/null
 
 all: main
 

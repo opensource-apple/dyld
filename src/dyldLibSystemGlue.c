@@ -24,7 +24,13 @@
 
 #include <Availability.h>
 #include <stddef.h>
+#include <TargetConditionals.h>
 
+
+// simulator does not have full libdyld.dylib - just a small libdyld_sim.dylib
+#if ! TARGET_IPHONE_SIMULATOR
+
+ 
 //
 // This is the temporary private interface between libSystem.B.dylib and dyld
 //
@@ -72,4 +78,5 @@ int _dyld_func_lookup(const char* dyld_func_name, void **address)
 	return (*myDyldSection.lookup)(dyld_func_name, address);
 }
 
+#endif //! TARGET_IPHONE_SIMULATOR
 

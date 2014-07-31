@@ -92,7 +92,7 @@ int main()
 		FAIL("dlclose-unload-c++: libfoo should have been unloaded");
 		exit(0);
 	}
-		
+	
 	PASS("dlclose-unload-c++");
 	return EXIT_SUCCESS;
 }

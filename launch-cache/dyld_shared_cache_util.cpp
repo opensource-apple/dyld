@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2009-2010 Apple Inc. All rights reserved.
+ * Copyright (c) 2009-2012 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -34,9 +34,7 @@
 #include <mach-o/arch.h>
 #include <mach-o/loader.h>
 
-#include <vector>
 #include <map>
-#include <set>
 
 #include "dsc_iterator.h"
 #include "dyld_cache_format.h"
@@ -45,29 +43,37 @@
 #include "CacheFileAbstraction.hpp"
 
 
-#define OP_NULL 0
-#define OP_LIST_DEPENDENCIES 1
-#define OP_LIST_DYLIBS 2
-#define OP_LIST_LINKEDIT 3
-
-#define UUID_BYTES 16
-
-// Define this here so we can work with or without block support
-typedef void (*segment_callback_t)(const char* dylib, const char* segName, uint64_t offset, uint64_t sizem, 
-													uint64_t mappedddress, uint64_t slide, void* userData);
-
-struct seg_callback_args {
-	char *target_path;
-	uint32_t target_found;
-	void *mapped_cache;
-	uint32_t op;
-	uint8_t print_uuids;
-	uint8_t print_vmaddrs;
-    uint8_t print_dylib_versions;
+enum Mode {
+	modeNone,
+	modeList,
+	modeMap,
+	modeDependencies,
+	modeSlideInfo,
+	modeLinkEdit,
+	modeInfo
 };
 
+struct Options {
+	Mode		mode;
+	const char*	dependentsOfPath;
+	const void*	mappedCache;
+	bool		printUUIDs;
+	bool		printVMAddrs;
+    bool		printDylibVersions;
+};
+
+struct Results {
+	std::map<uint32_t, const char*>	pageToContent;
+	uint64_t						linkeditBase;
+	bool							dependentTargetFound;
+};
+
+
+
+
+
 void usage() {
-	fprintf(stderr, "Usage: dscutil -list [ -uuid ] [-vmaddr] | -dependents <dylib-path> [ -versions ] | -linkedit [ shared-cache-file ]\n");
+	fprintf(stderr, "Usage: dyld_shared_cache_util -list [ -uuid ] [-vmaddr] | -dependents <dylib-path> [ -versions ] | -linkedit | -map [ shared-cache-file ] | -slide_info | -info\n");
 }
 
 /*
@@ -86,6 +92,8 @@ static const char* default_shared_cache_path() {
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7";
 #elif __ARM_ARCH_7F__ 
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7f";
+#elif __ARM_ARCH_7S__ 
+	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7s";
 #elif __ARM_ARCH_7K__ 
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7k";
 #else
@@ -93,132 +101,112 @@ static const char* default_shared_cache_path() {
 #endif
 }
 
-/*
- * Get a vector of all the load commands from the header pointed to by headerAddr
- */
-template <typename A>
-std::vector<macho_load_command<typename A::P>* > get_load_cmds(void *headerAddr) {
-	typedef typename A::P		P;
-	typedef typename A::P::E	E;
-	
-	std::vector<macho_load_command<P>* > cmd_vector;
-	
-	const macho_header<P>* mh = (const macho_header<P>*)headerAddr;
-	uint32_t ncmds = mh->ncmds();
-	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((long)mh + sizeof(macho_header<P>));
-	const macho_load_command<P>* cmd = cmds;
-	
-	for (uint32_t i = 0; i < ncmds; i++) {
-		cmd_vector.push_back((macho_load_command<P>*)cmd);
-		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
-	}
-	return cmd_vector;
-}
+typedef void (*segment_callback_t)(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared_cache_segment_info* segInfo,
+									const Options& options, Results& results);
+
+
 
 /*
  * List dependencies from the mach-o header at headerAddr
  * in the same format as 'otool -L'
  */
 template <typename A>
-void list_dependencies(const char *dylib, void *headerAddr, uint8_t print_dylib_versions) {
+void print_dependencies(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared_cache_segment_info* segInfo, 
+																	const Options& options, Results& results) {
 	typedef typename A::P		P;
 	typedef typename A::P::E	E;
 	
-	std::vector< macho_load_command<P>* > cmds;
-	cmds = get_load_cmds<A>(headerAddr);
-	for(typename std::vector<macho_load_command<P>*>::iterator it = cmds.begin(); it != cmds.end(); ++it) {
-		uint32_t cmdType = (*it)->cmd();
-		if (cmdType == LC_LOAD_DYLIB || 
-			cmdType == LC_ID_DYLIB || 
-			cmdType == LC_LOAD_WEAK_DYLIB ||
-			cmdType == LC_REEXPORT_DYLIB ||
-			cmdType == LC_LOAD_UPWARD_DYLIB) {
-			macho_dylib_command<P>* dylib_cmd = (macho_dylib_command<P>*)*it;
-			const char *name = dylib_cmd->name();
-			uint32_t compat_vers = dylib_cmd->compatibility_version();
-			uint32_t current_vers = dylib_cmd->current_version();
-			
-            if (print_dylib_versions) {
-                printf("\t%s", name);
-                if ( compat_vers != 0xFFFFFFFF )
-                    printf("(compatibility version %u.%u.%u, current version %u.%u.%u)\n", 
-                       (compat_vers >> 16),
-                       (compat_vers >> 8) & 0xff,
-                       (compat_vers) & 0xff,
-                       (current_vers >> 16),
-                       (current_vers >> 8) & 0xff,
-                       (current_vers) & 0xff);
-                else
-                    printf("\n");
-            } else {
-                printf("\t%s\n", name);
-            }			
+	if ( strcmp(options.dependentsOfPath, dylibInfo->path) != 0 ) 
+		return;
+	if ( strcmp(segInfo->name, "__TEXT") != 0 )
+		return;
+
+	const macho_dylib_command<P>* dylib_cmd;
+	const macho_header<P>* mh = (const macho_header<P>*)dylibInfo->machHeader;
+	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uintptr_t)dylibInfo->machHeader + sizeof(macho_header<P>));
+	const uint32_t cmd_count = mh->ncmds();
+	const macho_load_command<P>* cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		switch ( cmd->cmd() ) {
+			case LC_LOAD_DYLIB:
+			case LC_ID_DYLIB:
+			case LC_REEXPORT_DYLIB:
+			case LC_LOAD_WEAK_DYLIB:
+			case LC_LOAD_UPWARD_DYLIB:
+				dylib_cmd = (macho_dylib_command<P>*)cmd;
+				if ( options.printDylibVersions ) {
+					uint32_t compat_vers = dylib_cmd->compatibility_version();
+					uint32_t current_vers = dylib_cmd->current_version();
+					printf("\t%s", dylib_cmd->name());
+					if ( compat_vers != 0xFFFFFFFF ) {
+						printf("(compatibility version %u.%u.%u, current version %u.%u.%u)\n", 
+						   (compat_vers >> 16),
+						   (compat_vers >> 8) & 0xff,
+						   (compat_vers) & 0xff,
+						   (current_vers >> 16),
+						   (current_vers >> 8) & 0xff,
+						   (current_vers) & 0xff);
+					}
+					else {
+						printf("\n");
+					}
+				} 
+				else {
+					printf("\t%s\n", dylib_cmd->name());
+				}
+				break;
 		}
+		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
 	}
+	results.dependentTargetFound = true;
 }
 
 /*
- * Print out a dylib from the shared cache, optionally including the UUID
+ * Print out a dylib from the shared cache, optionally including the UUID or unslid load address
  */
 template <typename A>
-void print_dylib(const char *dylib, void *headerAddr, uint64_t slide, struct seg_callback_args *args) {
-	typedef typename A::P		P;
-	typedef typename A::P::E	E;
-	char uuid_str[UUID_BYTES*3];
-	uint8_t got_uuid = 0;
-	uint64_t vmaddr = 0;
-		
-	std::vector< macho_load_command<P>* > cmds;
-	cmds = get_load_cmds<A>(headerAddr);
-	for(typename std::vector<macho_load_command<P>*>::iterator it = cmds.begin(); it != cmds.end(); ++it) {
-		uint32_t cmdType = (*it)->cmd();
-		if (cmdType == LC_UUID) {
-			macho_uuid_command<P>* uuid_cmd = (macho_uuid_command<P>*)*it;
-			const uint8_t *uuid = uuid_cmd->uuid();
-			sprintf(uuid_str, "<%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X>",
-    				uuid[0], uuid[1],  uuid[2],  uuid[3],  uuid[4],  uuid[5],  uuid[6], uuid[7], 
-    				uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]);
-			got_uuid = 1;
-		} 
-		else if (cmdType == LC_SEGMENT) {
-			macho_segment_command<P>* seg_cmd = (macho_segment_command<P>*)*it;
-			if (strcmp(seg_cmd->segname(), "__TEXT") == 0) {
-				vmaddr = seg_cmd->vmaddr();
-			}
-		}			
-	}
+void print_list(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared_cache_segment_info* segInfo, 
+																		const Options& options, Results& results) 
+{
+	if ( strcmp(segInfo->name, "__TEXT") != 0 )
+		return;
 
-	if (args->print_vmaddrs)
-		printf("0x%08llX ", vmaddr+slide);
-	if (args->print_uuids) {
-		if (got_uuid)
-			printf("%s ", uuid_str);
+	if ( options.printVMAddrs )
+		printf("0x%08llX ", segInfo->address);
+	if ( options.printUUIDs ) {
+		if ( dylibInfo->uuid != NULL ) {
+			const uint8_t* uuid = (uint8_t*)dylibInfo->uuid;;
+			printf("<%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X> ",
+    				uuid[0],  uuid[1],  uuid[2],  uuid[3],  
+					uuid[4],  uuid[5],  uuid[6],  uuid[7], 
+    				uuid[8],  uuid[9],  uuid[10], uuid[11], 
+					uuid[12], uuid[13], uuid[14], uuid[15]);
+		}
 	    else
 			printf("<     no uuid in dylib               > ");
     }
-	printf("%s\n", dylib);
+	if ( dylibInfo->isAlias )
+		printf("[alias] %s\n", dylibInfo->path);
+	else
+		printf("%s\n", dylibInfo->path);
 }
 
 
-uint64_t					sLinkeditBase = 0;
-std::map<uint32_t, char*>	sPageToContent;
 
 
-
-
-static void add_linkedit(uint32_t pageStart, uint32_t pageEnd, char* message) 
+static void add_linkedit(uint32_t pageStart, uint32_t pageEnd, const char* message, Results& results) 
 {	
 	for (uint32_t p = pageStart; p <= pageEnd; p += 4096) {
-		std::map<uint32_t, char*>::iterator pos = sPageToContent.find(p);
-		if ( pos == sPageToContent.end() ) {
-			sPageToContent[p] = strdup(message);
+		std::map<uint32_t, const char*>::iterator pos = results.pageToContent.find(p);
+		if ( pos == results.pageToContent.end() ) {
+			results.pageToContent[p] = strdup(message);
 		}
 		else {
-			char* oldMessage = pos->second;
+			const char* oldMessage = pos->second;
 			char* newMesssage;
 			asprintf(&newMesssage, "%s, %s", oldMessage, message);
-			sPageToContent[p] = newMesssage;
-			free(oldMessage);
+			results.pageToContent[p] = newMesssage;
+			::free((void*)oldMessage);
 		}
 	}
 }
@@ -228,15 +216,14 @@ static void add_linkedit(uint32_t pageStart, uint32_t pageEnd, char* message)
  * get LINKEDIT info for dylib
  */
 template <typename A>
-void process_linkedit(const char* dylib, void* headerAddr) {	
+void process_linkedit(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared_cache_segment_info* segInfo, 
+																			const Options& options, Results& results) {
 	typedef typename A::P		P;
 	typedef typename A::P::E	E;
-	// filter out symlinks by only handling first path found for each mach header
-	static std::set<void*> seenImages;
-	if ( seenImages.count(headerAddr) != 0 )
+	// filter out symlinks 
+	if ( dylibInfo->isAlias )
 		return;
-	seenImages.insert(headerAddr);
-	const macho_header<P>* mh = (const macho_header<P>*)headerAddr;
+	const macho_header<P>* mh = (const macho_header<P>*)dylibInfo->machHeader;
 	uint32_t ncmds = mh->ncmds();
 	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((long)mh + sizeof(macho_header<P>));
 	const macho_load_command<P>* cmd = cmds;
@@ -244,35 +231,35 @@ void process_linkedit(const char* dylib, void* headerAddr) {
 		if ( cmd->cmd() == LC_DYLD_INFO_ONLY ) {
 			macho_dyld_info_command<P>* dyldInfo = (macho_dyld_info_command<P>*)cmd;
 			char message[1000];
-			const char* shortName = strrchr(dylib, '/') + 1;
+			const char* shortName = strrchr(dylibInfo->path, '/') + 1;
 			// add export trie info
 			if ( dyldInfo->export_size() != 0 ) {
 				//printf("export_off=0x%X\n", dyldInfo->export_off());
 				uint32_t exportPageOffsetStart = dyldInfo->export_off() & (-4096);
 				uint32_t exportPageOffsetEnd = (dyldInfo->export_off() + dyldInfo->export_size()) & (-4096);
 				sprintf(message, "exports from %s", shortName);
-				add_linkedit(exportPageOffsetStart, exportPageOffsetEnd, message);
+				add_linkedit(exportPageOffsetStart, exportPageOffsetEnd, message, results);
 			}
 			// add binding info
 			if ( dyldInfo->bind_size() != 0 ) {
 				uint32_t bindPageOffsetStart = dyldInfo->bind_off() & (-4096);
 				uint32_t bindPageOffsetEnd = (dyldInfo->bind_off() + dyldInfo->bind_size()) & (-4096);
 				sprintf(message, "bindings from %s", shortName);
-				add_linkedit(bindPageOffsetStart, bindPageOffsetEnd, message);
+				add_linkedit(bindPageOffsetStart, bindPageOffsetEnd, message, results);
 			}
 			// add lazy binding info
 			if ( dyldInfo->lazy_bind_size() != 0 ) {
 				uint32_t lazybindPageOffsetStart = dyldInfo->lazy_bind_off() & (-4096);
 				uint32_t lazybindPageOffsetEnd = (dyldInfo->lazy_bind_off() + dyldInfo->lazy_bind_size()) & (-4096);
 				sprintf(message, "lazy bindings from %s", shortName);
-				add_linkedit(lazybindPageOffsetStart, lazybindPageOffsetEnd, message);
+				add_linkedit(lazybindPageOffsetStart, lazybindPageOffsetEnd, message, results);
 			}
 			// add weak binding info
 			if ( dyldInfo->weak_bind_size() != 0 ) {
 				uint32_t weakbindPageOffsetStart = dyldInfo->weak_bind_off() & (-4096);
 				uint32_t weakbindPageOffsetEnd = (dyldInfo->weak_bind_off() + dyldInfo->weak_bind_size()) & (-4096);
 				sprintf(message, "weak bindings from %s", shortName);
-				add_linkedit(weakbindPageOffsetStart, weakbindPageOffsetEnd, message);
+				add_linkedit(weakbindPageOffsetStart, weakbindPageOffsetEnd, message, results);
 			}
 		}
 		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
@@ -280,163 +267,139 @@ void process_linkedit(const char* dylib, void* headerAddr) {
 }
 
 
-
 /*
- * This callback is used with dsc_iterator, and called once for each segment in the target shared cache
+ * Print out a .map file similar to what update_dyld_shared_cache created when the cache file was built
  */
 template <typename A>
-void segment_callback(const char *dylib, const char *segName, uint64_t offset, uint64_t sizem, 
-										uint64_t mappedAddress, uint64_t slide, void *userData) {
-	typedef typename A::P    P;
-	typedef typename A::P::E E;
-	struct seg_callback_args *args = (struct seg_callback_args *)userData;
-	if (strncmp(segName, "__TEXT", 6) == 0) {
-		int target_match = args->target_path ? (strcmp(args->target_path, dylib) == 0) : 0;
-		if (!args->target_path || target_match) {
-			if (target_match) {
-				args->target_found = 1;
-			}
-			void *headerAddr = (void*)((long)args->mapped_cache + (long)offset);
-			switch (args->op) {
-				case OP_LIST_DEPENDENCIES:
-					list_dependencies<A>(dylib, headerAddr, args->print_dylib_versions);
-					break;
-				case OP_LIST_DYLIBS:
-					print_dylib<A>(dylib, headerAddr, slide, args);
-					break;
-				case OP_LIST_LINKEDIT:
-					process_linkedit<A>(dylib, headerAddr);
-				default:
-					break;
-			}
-		}
-	}
-	else if (strncmp(segName, "__LINKEDIT", 6) == 0) {
-		sLinkeditBase = mappedAddress - offset;
-	}
+void print_map(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared_cache_segment_info* segInfo, const Options& options, Results& results) {
+	if ( !dylibInfo->isAlias )
+		printf("0x%08llX - 0x%08llX %s %s\n", segInfo->address, segInfo->address + segInfo->fileSize, segInfo->name, dylibInfo->path);
 }
 
 
+static void checkMode(Mode mode) {
+	if ( mode != modeNone ) {
+		fprintf(stderr, "Error: select one of: -list, -dependents, -info, -slide_info, -linkedit, or -map\n");
+		usage();
+		exit(1);
+	}
+}
 
+int main (int argc, const char* argv[]) {
 
-int main (int argc, char **argv) {
-	struct seg_callback_args args;
-	const char *shared_cache_path = NULL;
-	void *mapped_cache;
-	struct stat statbuf;
-	int cache_fd;
-	char c;
-	bool print_slide_info = false;
+	const char* sharedCachePath = default_shared_cache_path();
 
-    args.target_path = NULL;
-	args.op = OP_NULL;
-    args.print_uuids = 0;
-	args.print_vmaddrs = 0;
-    args.print_dylib_versions = 0;
-    args.target_found = 0;
+ 	Options options;
+	options.mode = modeNone;
+    options.printUUIDs = false;
+	options.printVMAddrs = false;
+    options.printDylibVersions = false;
+    options.dependentsOfPath = NULL;
     
-    for (uint32_t optind = 1; optind < argc; optind++) {
-        char *opt = argv[optind];
+    for (uint32_t i = 1; i < argc; i++) {
+        const char* opt = argv[i];
         if (opt[0] == '-') {
             if (strcmp(opt, "-list") == 0) {
-                if (args.op) {
-                    fprintf(stderr, "Error: select one of -list or -dependents\n");
-                    usage();
-                    exit(1);
-                }
-                args.op = OP_LIST_DYLIBS;
-            } else if (strcmp(opt, "-dependents") == 0) {
-                if (args.op) {
-                    fprintf(stderr, "Error: select one of -list or -dependents\n");
-                    usage();
-                    exit(1);
-                }
-                if (!(++optind < argc)) {
+				checkMode(options.mode);
+				options.mode = modeList;
+            } 
+			else if (strcmp(opt, "-dependents") == 0) {
+				checkMode(options.mode);
+				options.mode = modeDependencies;
+				options.dependentsOfPath = argv[++i];
+                if ( i >= argc ) {
                     fprintf(stderr, "Error: option -depdendents requires an argument\n");
                     usage();
                     exit(1);
                 }
-                args.op = OP_LIST_DEPENDENCIES;
-                args.target_path = argv[optind];
-            } else if (strcmp(opt, "-uuid") == 0) {
-                args.print_uuids = 1;
-            } else if (strcmp(opt, "-versions") == 0) {
-                args.print_dylib_versions = 1;
-            } else if (strcmp(opt, "-vmaddr") == 0) {
-				args.print_vmaddrs = 1;
-		    } else if (strcmp(opt, "-linkedit") == 0) {
-                args.op = OP_LIST_LINKEDIT;
-			} else if (strcmp(opt, "-slide_info") == 0) {
-				print_slide_info = true;
-            } else {
+            } 
+			else if (strcmp(opt, "-linkedit") == 0) {
+				checkMode(options.mode);
+				options.mode = modeLinkEdit;
+			} 
+			else if (strcmp(opt, "-info") == 0) {
+				checkMode(options.mode);
+				options.mode = modeInfo;
+			}
+			else if (strcmp(opt, "-slide_info") == 0) {
+				checkMode(options.mode);
+				options.mode = modeSlideInfo;
+			} 
+			else if (strcmp(opt, "-map") == 0) {
+				checkMode(options.mode);
+				options.mode = modeMap;
+            } 
+			else if (strcmp(opt, "-uuid") == 0) {
+                options.printUUIDs = true;
+            } 
+			else if (strcmp(opt, "-versions") == 0) {
+                options.printDylibVersions = true;
+            } 
+			else if (strcmp(opt, "-vmaddr") == 0) {
+				options.printVMAddrs = true;
+		    } 
+			else {
                 fprintf(stderr, "Error: unrecognized option %s\n", opt);
                 usage();
                 exit(1);
             }
-        } else {
-            shared_cache_path = opt;
+        } 
+		else {
+            sharedCachePath = opt;
         }
     }
     
-	if ( !print_slide_info ) {
-		if (args.op == OP_NULL) {
-			fprintf(stderr, "Error: select one of -list or -dependents\n");
-			usage();
-			exit(1);
-		}
+	if ( options.mode == modeNone ) {
+		fprintf(stderr, "Error: select one of -list, -dependents, -info, -linkedit, or -map\n");
+		usage();
+		exit(1);
+	}
 		
-		if (args.print_uuids && args.op != OP_LIST_DYLIBS)
+	if ( options.mode != modeSlideInfo ) {
+		if ( options.printUUIDs && (options.mode != modeList) )
 			fprintf(stderr, "Warning: -uuid option ignored outside of -list mode\n");
-		if (args.print_vmaddrs && args.op != OP_LIST_DYLIBS)
+			
+		if ( options.printVMAddrs && (options.mode != modeList) )
 			fprintf(stderr, "Warning: -vmaddr option ignored outside of -list mode\n");
-		if (args.print_dylib_versions && args.op != OP_LIST_DEPENDENCIES)
+			
+		if ( options.printDylibVersions && (options.mode != modeDependencies) )
 			fprintf(stderr, "Warning: -versions option ignored outside of -dependents mode\n");
 		
-		if (args.op == OP_LIST_DEPENDENCIES && !args.target_path) {
+		if ( (options.mode == modeDependencies) && (options.dependentsOfPath == NULL) ) {
 			fprintf(stderr, "Error: -dependents given, but no dylib path specified\n");
 			usage();
 			exit(1);
 		}
 	}
-	
-	if (!shared_cache_path)
-		shared_cache_path = default_shared_cache_path();
-		
-	if (stat(shared_cache_path, &statbuf)) {
-		fprintf(stderr, "Error: stat failed for dyld shared cache at %s\n", shared_cache_path);
+			
+	struct stat statbuf;
+	if ( ::stat(sharedCachePath, &statbuf) == -1 ) {
+		fprintf(stderr, "Error: stat() failed for dyld shared cache at %s, errno=%d\n", sharedCachePath, errno);
 		exit(1);
 	}
 		
-	cache_fd = open(shared_cache_path, O_RDONLY);
-	if (cache_fd < 0) {
-		fprintf(stderr, "Error: failed to open shared cache file at %s\n", shared_cache_path);
+	int cache_fd = ::open(sharedCachePath, O_RDONLY);
+	if ( cache_fd < 0 ) {
+		fprintf(stderr, "Error: open() failed for shared cache file at %s, errno=%d\n", sharedCachePath, errno);
 		exit(1);
 	}
-	mapped_cache = mmap(NULL, statbuf.st_size, PROT_READ, MAP_PRIVATE, cache_fd, 0);
-	if (mapped_cache == MAP_FAILED) {
-		fprintf(stderr, "Error: mmap() for shared cache at %s failed, errno=%d\n", shared_cache_path, errno);
+	options.mappedCache = ::mmap(NULL, statbuf.st_size, PROT_READ, MAP_PRIVATE, cache_fd, 0);
+	if (options.mappedCache == MAP_FAILED) {
+		fprintf(stderr, "Error: mmap() for shared cache at %s failed, errno=%d\n", sharedCachePath, errno);
 		exit(1);
 	}
 	
-	if ( print_slide_info ) {
-		const dyldCacheHeader<LittleEndian>* header = (dyldCacheHeader<LittleEndian>*)mapped_cache;
-		if (   (strcmp(header->magic(), "dyld_v1  x86_64") != 0)
-			&& (strcmp(header->magic(), "dyld_v1   armv6") != 0)
-			&& (strcmp(header->magic(), "dyld_v1   armv7") != 0) 
-			&& (strcmp(header->magic(), "dyld_v1  armv7f") != 0) 
-			&& (strcmp(header->magic(), "dyld_v1  armv7k") != 0) ) {
-			fprintf(stderr, "Error: unrecognized dyld shared cache magic or arch does not support sliding\n");
-			exit(1);
-		}
+	if ( options.mode == modeSlideInfo ) {
+		const dyldCacheHeader<LittleEndian>* header = (dyldCacheHeader<LittleEndian>*)options.mappedCache;
 		if ( header->slideInfoOffset() == 0 ) {
 			fprintf(stderr, "Error: dyld shared cache does not contain slide info\n");
 			exit(1);
 		}
-		const dyldCacheFileMapping<LittleEndian>* mappings = (dyldCacheFileMapping<LittleEndian>*)((char*)mapped_cache + header->mappingOffset());
+		const dyldCacheFileMapping<LittleEndian>* mappings = (dyldCacheFileMapping<LittleEndian>*)((char*)options.mappedCache + header->mappingOffset());
 		const dyldCacheFileMapping<LittleEndian>* dataMapping = &mappings[1];
 		uint64_t dataStartAddress = dataMapping->address();
 		uint64_t dataSize = dataMapping->size();
-		const dyldCacheSlideInfo<LittleEndian>* slideInfoHeader = (dyldCacheSlideInfo<LittleEndian>*)((char*)mapped_cache+header->slideInfoOffset());
+		const dyldCacheSlideInfo<LittleEndian>* slideInfoHeader = (dyldCacheSlideInfo<LittleEndian>*)((char*)options.mappedCache+header->slideInfoOffset());
 		printf("slide info version=%d\n", slideInfoHeader->version());
 		printf("toc_count=%d, data page count=%lld\n", slideInfoHeader->toc_count(), dataSize/4096);
 		const dyldCacheSlideInfoEntry* entries = (dyldCacheSlideInfoEntry*)((char*)slideInfoHeader + slideInfoHeader->entries_offset());
@@ -447,53 +410,121 @@ int main (int argc, char **argv) {
 				printf("%02X", entry->bits[j]);
 			printf("\n");
 		}
-		
-
+	}
+	else if ( options.mode == modeInfo ) {
+		const dyldCacheHeader<LittleEndian>* header = (dyldCacheHeader<LittleEndian>*)options.mappedCache;
+		printf("uuid: ");
+		if ( header->mappingOffset() >= 0x68 ) {
+			const uint8_t* uuid = header->uuid();
+			printf("%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+				   uuid[0],  uuid[1],  uuid[2],  uuid[3],
+				   uuid[4],  uuid[5],  uuid[6],  uuid[7],
+				   uuid[8],  uuid[9],  uuid[10], uuid[11],
+				   uuid[12], uuid[13], uuid[14], uuid[15]);
+		}
+		else {
+			printf("n/a\n");
+		}
+		printf("image count: %u\n", header->imagesCount());
+		printf("mappings:\n");
+		const dyldCacheFileMapping<LittleEndian>* mappings = (dyldCacheFileMapping<LittleEndian>*)((char*)options.mappedCache + header->mappingOffset());
+		for (uint32_t i=0; i < header->mappingCount(); ++i) {
+			if ( mappings[i].init_prot() & VM_PROT_EXECUTE )
+				printf("    __TEXT     %lluMB\n", mappings[i].size()/(1024*1024));
+			else if ( mappings[i]. init_prot() & VM_PROT_WRITE )
+				printf("    __DATA      %lluMB\n", mappings[i].size()/(1024*1024));
+			else if ( mappings[i].init_prot() & VM_PROT_READ )
+				printf("    __LINKEDIT  %lluMB\n", mappings[i].size()/(1024*1024));
+		}
 	}
 	else {
 		segment_callback_t callback;
-		if ( strcmp((char*)mapped_cache, "dyld_v1    i386") == 0 ) 
-			callback = segment_callback<x86>;
-		else if ( strcmp((char*)mapped_cache, "dyld_v1  x86_64") == 0 ) 
-			callback = segment_callback<x86_64>;
-		else if ( strcmp((char*)mapped_cache, "dyld_v1   armv5") == 0 ) 
-			callback = segment_callback<arm>;
-		else if ( strcmp((char*)mapped_cache, "dyld_v1   armv6") == 0 ) 
-			callback = segment_callback<arm>;
-		else if ( strcmp((char*)mapped_cache, "dyld_v1   armv7") == 0 ) 
-			callback = segment_callback<arm>;
-		else if ( strcmp((char*)mapped_cache, "dyld_v1  armv7f") == 0 ) 
-			callback = segment_callback<arm>;
-		else if ( strcmp((char*)mapped_cache, "dyld_v1  armv7k") == 0 ) 
-			callback = segment_callback<arm>;
-		else {
+		if ( strcmp((char*)options.mappedCache, "dyld_v1    i386") == 0 ) {
+			switch ( options.mode ) {
+				case modeList:
+					callback = print_list<x86>;
+					break;
+				case modeMap:
+					callback = print_map<x86>;
+					break;
+				case modeDependencies:
+					callback = print_dependencies<x86>;
+					break;
+				case modeLinkEdit:
+					callback = process_linkedit<x86>;
+					break;
+				case modeNone:
+				case modeInfo:
+				case modeSlideInfo:
+					break;
+			}
+		}		
+		else if ( strcmp((char*)options.mappedCache, "dyld_v1  x86_64") == 0 ) {
+			switch ( options.mode ) {
+				case modeList:
+					callback = print_list<x86_64>;
+					break;
+				case modeMap:
+					callback = print_map<x86_64>;
+					break;
+				case modeDependencies:
+					callback = print_dependencies<x86_64>;
+					break;
+				case modeLinkEdit:
+					callback = process_linkedit<x86_64>;
+					break;
+				case modeNone:
+				case modeInfo:
+				case modeSlideInfo:
+					break;
+			}
+		}		
+		else if ( (strncmp((char*)options.mappedCache, "dyld_v1   armv", 14) == 0) 
+			   || (strncmp((char*)options.mappedCache, "dyld_v1  armv", 13) == 0) ) {
+			switch ( options.mode ) {
+				case modeList:
+					callback = print_list<arm>;
+					break;
+				case modeMap:
+					callback = print_map<arm>;
+					break;
+				case modeDependencies:
+					callback = print_dependencies<arm>;
+					break;
+				case modeLinkEdit:
+					callback = process_linkedit<arm>;
+					break;
+				case modeNone:
+				case modeInfo:
+				case modeSlideInfo:
+					break;
+			}
+		}		
+ 		else {
 			fprintf(stderr, "Error: unrecognized dyld shared cache magic.\n");
 			exit(1);
 		}
-		
-		args.mapped_cache = mapped_cache;
-		
-	#if __BLOCKS__
-		// Shim to allow building for the host
-		void *argsPtr = &args;
-		dyld_shared_cache_iterate_segments_with_slide(mapped_cache, 
-										   ^(const char* dylib, const char* segName, uint64_t offset, uint64_t size, uint64_t mappedddress, uint64_t slide ) {
-											   (callback)(dylib, segName, offset, size, mappedddress, slide, argsPtr);
+		 		
+		__block Results results;
+		results.dependentTargetFound = false;
+		int iterateResult = dyld_shared_cache_iterate(options.mappedCache, statbuf.st_size, 
+										   ^(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared_cache_segment_info* segInfo ) {
+											   (callback)(dylibInfo, segInfo, options, results);
 										   });
-	#else
-		dyld_shared_cache_iterate_segments_with_slide_nb(mapped_cache, callback, &args);
-	#endif
+		if ( iterateResult != 0 ) {
+			fprintf(stderr, "Error: malformed shared cache file\n");
+			exit(1);
+		}
 		
-		if (args.op == OP_LIST_LINKEDIT) {
+		if ( options.mode == modeLinkEdit ) {
 			// dump -linkedit information
-			for (std::map<uint32_t, char*>::iterator it = sPageToContent.begin(); it != sPageToContent.end(); ++it) {
-				printf("0x%0llX %s\n", sLinkeditBase+it->first, it->second);
+			for (std::map<uint32_t, const char*>::iterator it = results.pageToContent.begin(); it != results.pageToContent.end(); ++it) {
+				printf("0x%08X %s\n", it->first, it->second);
 			}
 		}
 		
-		
-		if (args.target_path && !args.target_found) {
-			fprintf(stderr, "Error: could not find '%s' in the shared cache at\n  %s\n", args.target_path, shared_cache_path);
+		if ( (options.mode == modeDependencies) && options.dependentsOfPath && !results.dependentTargetFound) {
+			fprintf(stderr, "Error: could not find '%s' in the shared cache at\n  %s\n", options.dependentsOfPath, sharedCachePath);
 			exit(1);
 		}
 	}

@@ -30,7 +30,7 @@ check:
 
 all:
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c 
-	strip main
+	${STRIP} main
 	
 
 clean:

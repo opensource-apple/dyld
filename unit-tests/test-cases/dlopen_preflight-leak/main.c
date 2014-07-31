@@ -38,8 +38,12 @@ int main()
 	
 	// execute leaks command on myself
 	char cmd[512];
-	sprintf(cmd, "leaks %u\n", getpid());
-	system(cmd);
+	sprintf(cmd, "leaks %u > /dev/null\n", getpid());
+	int result = system(cmd);
+	if ( result == EXIT_SUCCESS )
+		PASS("dlopen_preflight-leak");
+	else
+		FAIL("dlopen_preflight-leak");
 	 	
 	return EXIT_SUCCESS;
 }

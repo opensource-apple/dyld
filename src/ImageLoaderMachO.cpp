@@ -40,13 +40,17 @@
 #include <mach-o/loader.h> 
 #include <mach-o/nlist.h> 
 #include <sys/sysctl.h>
+#include <sys/syscall.h>
 #include <libkern/OSAtomic.h>
 #include <libkern/OSCacheControl.h>
 #include <stdint.h>
+#include <System/sys/codesign.h>
 
 #include "ImageLoaderMachO.h"
 #include "ImageLoaderMachOCompressed.h"
+#if SUPPORT_CLASSIC_MACHO
 #include "ImageLoaderMachOClassic.h"
+#endif
 #include "mach-o/dyld_images.h"
 
 // <rdar://problem/8718137> use stack guard random value to add padding between dylibs
@@ -60,12 +64,14 @@ extern "C" long __stack_chk_guard;
 #if __LP64__
 	#define LC_SEGMENT_COMMAND		LC_SEGMENT_64
 	#define LC_ROUTINES_COMMAND		LC_ROUTINES_64
+	#define LC_SEGMENT_COMMAND_WRONG LC_SEGMENT
 	struct macho_segment_command	: public segment_command_64  {};
 	struct macho_section			: public section_64  {};	
 	struct macho_routines_command	: public routines_command_64  {};	
 #else
 	#define LC_SEGMENT_COMMAND		LC_SEGMENT
 	#define LC_ROUTINES_COMMAND		LC_ROUTINES
+	#define LC_SEGMENT_COMMAND_WRONG LC_SEGMENT_64
 	struct macho_segment_command	: public segment_command {};
 	struct macho_section			: public section  {};	
 	struct macho_routines_command	: public routines_command  {};	
@@ -114,7 +120,7 @@ ImageLoaderMachO::ImageLoaderMachO(const macho_header* mh, const char* path, uns
 
 // determine if this mach-o file has classic or compressed LINKEDIT and number of segments it has
 void ImageLoaderMachO::sniffLoadCommands(const macho_header* mh, const char* path, bool* compressed, 
-											unsigned int* segCount, unsigned int* libCount,
+											unsigned int* segCount, unsigned int* libCount, const LinkContext& context,
 											const linkedit_data_command** codeSigCmd)
 {
 	*compressed = false;
@@ -122,9 +128,11 @@ void ImageLoaderMachO::sniffLoadCommands(const macho_header* mh, const char* pat
 	*libCount = 0;
 	*codeSigCmd = NULL;
 	struct macho_segment_command* segCmd;
-#if CODESIGNING_SUPPORT
 	bool foundLoadCommandSegment = false;
-#endif
+	uint32_t loadCommandSegmentIndex = 0xFFFFFFFF;
+	uintptr_t loadCommandSegmentVMStart = 0;
+	uintptr_t loadCommandSegmentVMEnd = 0;
+
 	const uint32_t cmd_count = mh->ncmds;
 	const struct load_command* const startCmds    = (struct load_command*)(((uint8_t*)mh) + sizeof(macho_header));
 	const struct load_command* const endCmds = (struct load_command*)(((uint8_t*)mh) + sizeof(macho_header) + mh->sizeofcmds);
@@ -140,16 +148,22 @@ void ImageLoaderMachO::sniffLoadCommands(const macho_header* mh, const char* pat
 				// ignore zero-sized segments
 				if ( segCmd->vmsize != 0 )
 					*segCount += 1;
-#if CODESIGNING_SUPPORT
 				// <rdar://problem/7942521> all load commands must be in an executable segment
-				if ( (segCmd->fileoff < mh->sizeofcmds) && (segCmd->filesize != 0) ) {
+				if ( context.codeSigningEnforced && (segCmd->fileoff < mh->sizeofcmds) && (segCmd->filesize != 0) ) {
 					if ( (segCmd->fileoff != 0) || (segCmd->filesize < (mh->sizeofcmds+sizeof(macho_header))) ) 
 						dyld::throwf("malformed mach-o image: segment %s does not span all load commands", segCmd->segname); 
 					if ( segCmd->initprot != (VM_PROT_READ | VM_PROT_EXECUTE) ) 
 						dyld::throwf("malformed mach-o image: load commands found in segment %s with wrong permissions", segCmd->segname); 
+					if ( foundLoadCommandSegment )
+						throw "load commands in multiple segments";
 					foundLoadCommandSegment = true;
+					loadCommandSegmentIndex = i;
+					loadCommandSegmentVMStart = segCmd->vmaddr;
+					loadCommandSegmentVMEnd   = segCmd->vmaddr + segCmd->vmsize;
 				}
-#endif		
+				break;
+			case LC_SEGMENT_COMMAND_WRONG:
+				dyld::throwf("malformed mach-o image: wrong LC_SEGMENT[_64] for architecture"); 
 				break;
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
@@ -169,11 +183,28 @@ void ImageLoaderMachO::sniffLoadCommands(const macho_header* mh, const char* pat
 		}
 	}
 	
-#if CODESIGNING_SUPPORT
-	if ( ! foundLoadCommandSegment )
+	if ( context.codeSigningEnforced && !foundLoadCommandSegment )
 		throw "load commands not in a segment";
-#endif
-		
+	// <rdar://problem/13145644> verify another segment does not over-map load commands
+	cmd = startCmds;
+	if ( context.codeSigningEnforced ) {
+		for (uint32_t i = 0; i < cmd_count; ++i) {
+			switch (cmd->cmd) {
+				case LC_SEGMENT_COMMAND:
+					if ( i != loadCommandSegmentIndex ) {
+						segCmd = (struct macho_segment_command*)cmd;
+						uintptr_t start = segCmd->vmaddr;
+						uintptr_t end = segCmd->vmaddr + segCmd->vmsize;
+						if ( ((start <= loadCommandSegmentVMStart) && (end > loadCommandSegmentVMStart)) 
+						   || ((start >= loadCommandSegmentVMStart) && (start < loadCommandSegmentVMEnd)) )
+							dyld::throwf("malformed mach-o image: segment %s overlaps load commands", segCmd->segname); 
+					}
+					break;
+			}
+			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+		}
+	}
+	
 	// fSegmentsArrayCount is only 8-bits
 	if ( *segCount > 255 )
 		dyld::throwf("malformed mach-o image: more than 255 segments in %s", path);
@@ -197,12 +228,16 @@ ImageLoader* ImageLoaderMachO::instantiateMainExecutable(const macho_header* mh,
 	unsigned int segCount;
 	unsigned int libCount;
 	const linkedit_data_command* codeSigCmd;
-	sniffLoadCommands(mh, path, &compressed, &segCount, &libCount, &codeSigCmd);
+	sniffLoadCommands(mh, path, &compressed, &segCount, &libCount, context, &codeSigCmd);
 	// instantiate concrete class based on content of load commands
 	if ( compressed ) 
 		return ImageLoaderMachOCompressed::instantiateMainExecutable(mh, slide, path, segCount, libCount, context);
 	else
+#if SUPPORT_CLASSIC_MACHO
 		return ImageLoaderMachOClassic::instantiateMainExecutable(mh, slide, path, segCount, libCount, context);
+#else
+		throw "missing LC_DYLD_INFO load command";
+#endif
 }
 
 
@@ -225,12 +260,16 @@ ImageLoader* ImageLoaderMachO::instantiateFromFile(const char* path, int fd, con
 	unsigned int segCount;
 	unsigned int libCount;
 	const linkedit_data_command* codeSigCmd;
-	sniffLoadCommands((const macho_header*)fileData, path, &compressed, &segCount, &libCount, &codeSigCmd);
+	sniffLoadCommands((const macho_header*)fileData, path, &compressed, &segCount, &libCount, context, &codeSigCmd);
 	// instantiate concrete class based on content of load commands
 	if ( compressed ) 
 		return ImageLoaderMachOCompressed::instantiateFromFile(path, fd, fileData, offsetInFat, lenInFat, info, segCount, libCount, codeSigCmd, context);
 	else
+#if SUPPORT_CLASSIC_MACHO
 		return ImageLoaderMachOClassic::instantiateFromFile(path, fd, fileData, offsetInFat, lenInFat, info, segCount, libCount, codeSigCmd, context);
+#else
+		throw "missing LC_DYLD_INFO load command";
+#endif
 }
 
 // create image by using cached mach-o file
@@ -241,12 +280,16 @@ ImageLoader* ImageLoaderMachO::instantiateFromCache(const macho_header* mh, cons
 	unsigned int segCount;
 	unsigned int libCount;
 	const linkedit_data_command* codeSigCmd;
-	sniffLoadCommands(mh, path, &compressed, &segCount, &libCount, &codeSigCmd);
+	sniffLoadCommands(mh, path, &compressed, &segCount, &libCount, context, &codeSigCmd);
 	// instantiate concrete class based on content of load commands
 	if ( compressed ) 
 		return ImageLoaderMachOCompressed::instantiateFromCache(mh, path, slide, info, segCount, libCount, context);
 	else
+#if SUPPORT_CLASSIC_MACHO
 		return ImageLoaderMachOClassic::instantiateFromCache(mh, path, slide, info, segCount, libCount, context);
+#else
+		throw "missing LC_DYLD_INFO load command";
+#endif
 }
 
 // create image by copying an in-memory mach-o file
@@ -256,14 +299,33 @@ ImageLoader* ImageLoaderMachO::instantiateFromMemory(const char* moduleName, con
 	unsigned int segCount;
 	unsigned int libCount;
 	const linkedit_data_command* sigcmd;
-	sniffLoadCommands(mh, moduleName, &compressed, &segCount, &libCount, &sigcmd);
+	sniffLoadCommands(mh, moduleName, &compressed, &segCount, &libCount, context, &sigcmd);
 	// instantiate concrete class based on content of load commands
 	if ( compressed ) 
 		return ImageLoaderMachOCompressed::instantiateFromMemory(moduleName, mh, len, segCount, libCount, context);
 	else
+#if SUPPORT_CLASSIC_MACHO
 		return ImageLoaderMachOClassic::instantiateFromMemory(moduleName, mh, len, segCount, libCount, context);
+#else
+		throw "missing LC_DYLD_INFO load command";
+#endif
 }
 
+
+int ImageLoaderMachO::crashIfInvalidCodeSignature()
+{
+	// Now that segments are mapped in, try reading from first executable segment.
+	// If code signing is enabled the kernel will validate the code signature
+	// when paging in, and kill the process if invalid.
+	for(unsigned int i=0; i < fSegmentsCount; ++i) {
+		if ( (segFileOffset(i) == 0) && (segFileSize(i) != 0) ) {
+			// return read value to ensure compiler does not optimize away load
+			int* p = (int*)segActualLoadAddress(i);
+			return *p;
+		}
+	}
+	return 0;
+}
 
 
 void ImageLoaderMachO::parseLoadCmds()
@@ -689,19 +751,57 @@ void ImageLoaderMachO::setSlide(intptr_t slide)
 	fSlide = slide;
 }
 
-#if CODESIGNING_SUPPORT
-void ImageLoaderMachO::loadCodeSignature(const struct linkedit_data_command* codeSigCmd, int fd,  uint64_t offsetInFatFile)
+void ImageLoaderMachO::loadCodeSignature(const struct linkedit_data_command* codeSigCmd, int fd,  uint64_t offsetInFatFile, const LinkContext& context)
 {
-	fsignatures_t siginfo;
-	siginfo.fs_file_start=offsetInFatFile;			// start of mach-o slice in fat file 
-	siginfo.fs_blob_start=(void*)(codeSigCmd->dataoff);	// start of CD in mach-o file
-	siginfo.fs_blob_size=codeSigCmd->datasize;			// size of CD
-	int result = fcntl(fd, F_ADDFILESIGS, &siginfo);
-	if ( result == -1 ) 
-		dyld::log("dyld: F_ADDFILESIGS failed for %s with errno=%d\n", this->getPath(), errno);
-	//dyld::log("dyld: registered code signature for %s\n", this->getPath());
-}
+	// if dylib being loaded has no code signature load command
+	if ( codeSigCmd == NULL ) {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
+		bool codeSigningEnforced = context.codeSigningEnforced;
+		if ( context.mainExecutableCodeSigned && !codeSigningEnforced ) {
+			static bool codeSignEnforcementDynamicallyEnabled = false;
+			if ( !codeSignEnforcementDynamicallyEnabled ) {
+				uint32_t flags;
+				if ( csops(0, CS_OPS_STATUS, &flags, sizeof(flags)) != -1 ) {
+					if ( flags & CS_ENFORCEMENT ) {
+						codeSignEnforcementDynamicallyEnabled = true;
+					}
+				}
+			}
+			codeSigningEnforced = codeSignEnforcementDynamicallyEnabled;
+		}
+		// if we require dylibs to be code signed
+		if ( codeSigningEnforced  ) {
+			// if there is a non-load command based code signature, use it
+			off_t offset = (off_t)offsetInFatFile;
+			if ( fcntl(fd, F_FINDSIGS, &offset, sizeof(offset)) != -1 )
+				return;
+			// otherwise gracefully return from dlopen()
+			dyld::throwf("required code signature missing for '%s'\n", this->getPath());
+		}
 #endif
+	}
+	else {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
+		// <rdar://problem/13622786> ignore code signatures in binaries built with pre-10.9 tools
+		if ( this->sdkVersion() < DYLD_MACOSX_VERSION_10_9 ) {
+			return;
+		}
+#endif
+		fsignatures_t siginfo;
+		siginfo.fs_file_start=offsetInFatFile;				// start of mach-o slice in fat file 
+		siginfo.fs_blob_start=(void*)(long)(codeSigCmd->dataoff);	// start of CD in mach-o file
+		siginfo.fs_blob_size=codeSigCmd->datasize;			// size of CD
+		int result = fcntl(fd, F_ADDFILESIGS, &siginfo);
+		if ( result == -1 ) {
+			if ( (errno == EPERM) || (errno == EBADEXEC) )
+				dyld::throwf("code signature invalid for '%s'\n", this->getPath());
+			if ( context.verboseCodeSignatures ) 
+				dyld::log("dyld: Failed registering code signature for %s, errno=%d\n", this->getPath(), errno);
+			else
+				dyld::log("dyld: Registered code signature for %s\n", this->getPath());
+		}
+	}
+}
 
 
 const char* ImageLoaderMachO::getInstallPath() const
@@ -753,6 +853,24 @@ void ImageLoaderMachO::registerInterposing()
 		}
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 	}
+}
+
+uint32_t ImageLoaderMachO::sdkVersion() const
+{
+	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+	const struct load_command* cmd = cmds;
+	const struct version_min_command* versCmd;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		switch ( cmd->cmd ) {
+			case LC_VERSION_MIN_MACOSX:
+			case LC_VERSION_MIN_IPHONEOS:
+				versCmd = (version_min_command*)cmd;
+				return versCmd->sdk;
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+	return 0;
 }
 
 void* ImageLoaderMachO::getThreadPC() const
@@ -960,8 +1078,8 @@ void ImageLoaderMachO::getRPaths(const LinkContext& context, std::vector<const c
 					bool found = false;
 					for(const char** rp = context.rootPaths; *rp != NULL; ++rp) {
 						char newPath[PATH_MAX];
-						strcpy(newPath, *rp);
-						strcat(newPath, path);
+						strlcpy(newPath, *rp, PATH_MAX);
+						strlcat(newPath, path, PATH_MAX);
 						struct stat stat_buf;
 						if ( stat(newPath, &stat_buf) != -1 ) {
 							//dyld::log("combined DYLD_ROOT_PATH and LC_RPATH: %s\n", newPath);
@@ -1078,8 +1196,10 @@ void ImageLoaderMachO::makeTextSegmentWritable(const LinkContext& context, bool 
 		segMakeWritable(textSegmentIndex, context);
 	}
 	else {
-		// iPhoneOS requires range to be invalidated before it is made executable
+	#if !__i386__ && !__x86_64__
+		// some processors require range to be invalidated before it is made executable
 		sys_icache_invalidate((void*)segActualLoadAddress(textSegmentIndex), segSize(textSegmentIndex));
+	#endif
 		segProtect(textSegmentIndex, context);
 	}
 }
@@ -1120,7 +1240,7 @@ uintptr_t ImageLoaderMachO::getExportedSymbolAddress(const Symbol* sym, const Li
 uintptr_t ImageLoaderMachO::getSymbolAddress(const Symbol* sym, const ImageLoader* requestor, 
 												const LinkContext& context, bool runResolver) const
 {
-	uintptr_t result = exportedSymbolAddress(context, sym, runResolver);
+	uintptr_t result = exportedSymbolAddress(context, sym, requestor, runResolver);
 	// check for interposing overrides
 	for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
 		// replace all references to 'replacee' with 'replacement'
@@ -1526,7 +1646,7 @@ void ImageLoaderMachO::doImageInit(const LinkContext& context)
 						dyld::throwf("initializer function %p not in mapped image for %s\n", func, this->getPath());
 					}
 					if ( context.verboseInit )
-						dyld::log("dyld: calling -init function 0x%p in %s\n", func, this->getPath());
+						dyld::log("dyld: calling -init function %p in %s\n", func, this->getPath());
 					func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
 					break;
 			}
@@ -1727,14 +1847,14 @@ uintptr_t ImageLoaderMachO::reserveAnAddressRange(size_t length, const ImageLoad
 		 // add small (0-3 pages) random padding between dylibs
 		addr = fgNextPIEDylibAddress + (__stack_chk_guard/fgNextPIEDylibAddress & (sizeof(long)-1))*4096;
 		//dyld::log("padding 0x%08llX, guard=0x%08llX\n", (long long)(addr - fgNextPIEDylibAddress), (long long)(__stack_chk_guard));
-		kern_return_t r = vm_allocate(mach_task_self(), &addr, size, VM_FLAGS_FIXED);
+		kern_return_t r = vm_alloc(&addr, size, VM_FLAGS_FIXED | VM_MAKE_TAG(VM_MEMORY_DYLIB));
 		if ( r == KERN_SUCCESS ) {
 			fgNextPIEDylibAddress = addr + size;
 			return addr;
 		}
 		fgNextPIEDylibAddress = 0;
 	}
-	kern_return_t r = vm_allocate(mach_task_self(), &addr, size, VM_FLAGS_ANYWHERE);
+	kern_return_t r = vm_alloc(&addr, size, VM_FLAGS_ANYWHERE | VM_MAKE_TAG(VM_MEMORY_DYLIB));
 	if ( r != KERN_SUCCESS ) 
 		throw "out of address space";
 	
@@ -1745,7 +1865,7 @@ bool ImageLoaderMachO::reserveAddressRange(uintptr_t start, size_t length)
 {
 	vm_address_t addr = start;
 	vm_size_t size = length;
-	kern_return_t r = vm_allocate(mach_task_self(), &addr, size, false /*only this range*/);
+	kern_return_t r = vm_alloc(&addr, size, VM_FLAGS_FIXED | VM_MAKE_TAG(VM_MEMORY_DYLIB));
 	if ( r != KERN_SUCCESS ) 
 		return false;
 	return true;
@@ -1787,7 +1907,7 @@ void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInF
 				dyld::throwf("truncated mach-o error: segment %s extends to %llu which is past end of file %llu", 
 								segName(i), (uint64_t)(fileOffset+size), fileLen);
 			}
-			void* loadAddress = mmap((void*)requestedLoadAddress, size, protection, MAP_FIXED | MAP_PRIVATE, fd, fileOffset);
+			void* loadAddress = xmmap((void*)requestedLoadAddress, size, protection, MAP_FIXED | MAP_PRIVATE, fd, fileOffset);
 			if ( loadAddress == ((void*)(-1)) ) {
 				dyld::throwf("mmap() error %d at address=0x%08lX, size=0x%08lX segment=%s in Segment::map() mapping %s", 
 					errno, requestedLoadAddress, (uintptr_t)size, segName(i), getPath());

@@ -4,6 +4,7 @@
 
 int myfoo()
 {
+	foo();
 	return 20;
 }
 

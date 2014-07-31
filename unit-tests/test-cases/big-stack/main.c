@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2006-2012 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -48,32 +48,12 @@ void foo(unsigned long long stackSize, char* stackStart)
 		foo(stackSize, stackStart);
 }
 
-#if __ppc__
-static bool isRosetta()
-{
-	int mib[] = { CTL_KERN, KERN_CLASSIC, getpid() };
-	int is_classic = 0;
-	size_t len = sizeof(int);
-	int ret = sysctl(mib, 3, &is_classic, &len, NULL, 0);
-	if ((ret != -1) && is_classic) {
-		// we're running under Rosetta 
-		return true;
-	}
-	return false;
-}
-#endif
 
 int
 main()
 {
 	char start;
-#if __ppc__
-	// programs running under rosetta cannot use large amounts of stack
-	if ( isRosetta() )
-		foo(0x02000000, &start);	
-	else
-#endif	
-		foo(STACK_SIZE, &start);	
+  foo(STACK_SIZE, &start);	
 	return EXIT_SUCCESS;
 }
 

@@ -64,25 +64,17 @@
  */
 
 
-
-	// Hack to make _offset_to_dyld_all_image_infos work
-	// Without this local symbol, assembler will error out about in subtraction expression
-	// The real _dyld_all_image_infos (non-weak) _dyld_all_image_infos is defined in dyld_gdb.o
-	// and the linker with throw this one away and use the real one instead.
-	.section __DATA,__datacoal_nt,coalesced
-	.globl _dyld_all_image_infos
-	.weak_definition _dyld_all_image_infos
-_dyld_all_image_infos:	.long 0
-
-
+#include <TargetConditionals.h>
 
 	.globl __dyld_start
 
 #ifdef __i386__
+#if !TARGET_IPHONE_SIMULATOR
 	.data
 __dyld_start_static_picbase: 
 	.long   L__dyld_start_picbase
 Lmh:	.long	___dso_handle
+#endif
 
 	.text
 	.align 2
@@ -99,14 +91,12 @@ _dyld_func_lookup:
 	nop
 	nop
 	nop
-_offset_to_dyld_all_image_infos:
-	.long	_dyld_all_image_infos - . + 0x1010 
-	.long	0
+
 	# space for future stable entry points
-	.space	16
+	.space	32
 
 	
-	
+#if !TARGET_IPHONE_SIMULATOR
 	.text
 	.align	4, 0x90
 	.globl __dyld_start
@@ -160,7 +150,7 @@ Lapple:	movl	(%ebx),%ecx	# look for NULL ending env[] array
 	movl	%ebx,12(%esp)	# main param4 = apple
 	pushl	%edx		# simulate return address into _start in libdyld
 	jmp	*%eax		# jump to main(argc,argv,env,apple) with return address set to _start
-	
+#endif	
 	
 	.globl dyld_stub_binding_helper
 dyld_stub_binding_helper:
@@ -171,10 +161,12 @@ L_end:
 
 
 #if __x86_64__
+#if !TARGET_IPHONE_SIMULATOR
 	.data
 	.align 3
 __dyld_start_static: 
 	.quad   __dyld_start
+#endif
 
 # stable entry points into dyld
 	.text
@@ -191,13 +183,11 @@ _dyld_func_lookup:
 	nop
 	nop
 	nop
-_offset_to_dyld_all_image_infos:
-	.long	_dyld_all_image_infos - . + 0x1010 
-	.long	0
+
 	# space for future stable entry points
-	.space	16
+	.space	24
 
-
+#if !TARGET_IPHONE_SIMULATOR
 	.text
 	.align 2,0x90
 	.globl __dyld_start
@@ -239,7 +229,8 @@ Lapple: movq	(%rcx),%r8
 	testq	%r8,%r8		# look for NULL ending env[] array
 	jne	Lapple		# main param4 = apple into %rcx
 	jmp	*%rax		# jump to main(argc,argv,env,apple) with return address set to _start
-	
+
+#endif /* TARGET_IPHONE_SIMULATOR */
 #endif /* __x86_64__ */
 
 
@@ -263,11 +254,8 @@ _dyld_func_lookup:
 	b       _branch_to_lookupDyldFunction
 	nop
 	
-_offset_to_dyld_all_image_infos:
-	.long	_dyld_all_image_infos - . + 0x1010 
-	.long	0
 	# space for future stable entry points
-	.space	16
+	.space	24
     
     
 	// Hack to make ___dso_handle work

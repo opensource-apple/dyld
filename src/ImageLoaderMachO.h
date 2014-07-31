@@ -100,6 +100,7 @@ public:
 	virtual uintptr_t					segPreferredLoadAddress(unsigned int) const;
 	virtual uintptr_t					segActualEndAddress(unsigned int) const;
 	virtual void						registerInterposing();
+	virtual uint32_t					sdkVersion() const;
 			
 	
 	static void							printStatistics(unsigned int imageCount, const InitializerTimingList&);
@@ -120,7 +121,7 @@ protected:
 	virtual	void						rebase(const LinkContext& context) = 0;
 	virtual const ImageLoader::Symbol*	findExportedSymbol(const char* name, const ImageLoader** foundIn) const = 0;
 	virtual bool						containsSymbol(const void* addr) const = 0;
-	virtual uintptr_t					exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, bool runResolver) const = 0;
+	virtual uintptr_t					exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, const ImageLoader* requestor, bool runResolver) const = 0;
 	virtual bool						exportedSymbolIsWeakDefintion(const Symbol* symbol) const = 0;
 	virtual const char*					exportedSymbolName(const Symbol* symbol) const = 0;
 	virtual unsigned int				exportedSymbolCount() const = 0;
@@ -154,14 +155,13 @@ protected:
 
 			void		destroy();
 	static void			sniffLoadCommands(const macho_header* mh, const char* path, bool* compressed,
-											unsigned int* segCount, unsigned int* libCount,
+											unsigned int* segCount, unsigned int* libCount, const LinkContext& context,
 											const linkedit_data_command** codeSigCmd);
 	static bool			needsAddedLibSystemDepency(unsigned int libCount, const macho_header* mh);
-#if CODESIGNING_SUPPORT
-			void		loadCodeSignature(const struct linkedit_data_command* codeSigCmd, int fd, uint64_t offsetInFatFile);
-#endif
+			void		loadCodeSignature(const struct linkedit_data_command* codeSigCmd, int fd, uint64_t offsetInFatFile, const LinkContext& context);
 			const struct macho_segment_command* segLoadCommand(unsigned int segIndex) const;
 			void		parseLoadCmds();
+			int 		crashIfInvalidCodeSignature();
 			bool		segHasRebaseFixUps(unsigned int) const;
 			bool		segHasBindFixUps(unsigned int) const;
 			void		segProtect(unsigned int segIndex, const ImageLoader::LinkContext& context);

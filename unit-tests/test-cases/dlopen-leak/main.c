@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2007-2013 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -39,10 +39,15 @@ int main()
 		dlopen("libnotthere.dylib", RTLD_LAZY);
 	}
 	
+
 	// execute leaks command on myself
 	char cmd[512];
-	sprintf(cmd, "leaks %u\n", getpid());
-	system(cmd);
-	 	
+	sprintf(cmd, "leaks %u > /dev/null\n", getpid());
+	int result = system(cmd);
+	if ( result == EXIT_SUCCESS )
+		PASS("dlopen-leak");
+	else
+		FAIL("dlopen-leak");
+
 	return EXIT_SUCCESS;
 }

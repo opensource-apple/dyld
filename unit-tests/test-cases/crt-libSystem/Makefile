@@ -42,7 +42,7 @@ main: main.c
 	${CC} ${CCFLAGS} -I${TESTROOT}/include $(CRTLIB) -o main main.c
 
 main.stripped: main
-	strip main -o main.stripped
+	${STRIP} main -o main.stripped
 
 clean:
 	${RM} ${RMFLAGS} *~ main main.stripped

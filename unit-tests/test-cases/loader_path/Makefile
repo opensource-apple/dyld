@@ -47,8 +47,8 @@ libfoo2.dylib : foo.c
 
 main : main.c libfoo2.dylib hide/libbar.dylib hide/libfoo3.dylib
 	${CC}   -Wno-deprecated-declarations -I${TESTROOT}/include main.c -o main hide/libbar.dylib libfoo2.dylib 
-	install_name_tool -change libfoo2.dylib '@loader_path/libfoo2.dylib'      main
-	install_name_tool -change libbar.dylib  '@loader_path/hide/libbar.dylib'  main
+	${INSTALL_NAME_TOOL} -change libfoo2.dylib '@loader_path/libfoo2.dylib'      main
+	${INSTALL_NAME_TOOL} -change libbar.dylib  '@loader_path/hide/libbar.dylib'  main
 
 clean:
 	${RM} ${RMFLAGS} *~  main libfoo.dylib hide libfoo2.dylib

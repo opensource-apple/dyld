@@ -62,8 +62,8 @@ bar/libbase.dylib : base.c
 main : main.c foo/libfoo.dylib bar/libbar.dylib
 	${CC} -I${TESTROOT}/include main.c -o main foo/libfoo.dylib bar/libbar.dylib 
 	# this breaks partial makes, but ld can't see @loader_path or it freaks
-	install_name_tool -change foo/libbase.dylib  '@loader_path/libbase.dylib'      foo/libfoo.dylib
-	install_name_tool -change bar/libbase.dylib  '@loader_path/libbase.dylib'      bar/libbar.dylib
+	${INSTALL_NAME_TOOL} -change foo/libbase.dylib  '@loader_path/libbase.dylib'      foo/libfoo.dylib
+	${INSTALL_NAME_TOOL} -change bar/libbase.dylib  '@loader_path/libbase.dylib'      bar/libbar.dylib
 
 
 clean:

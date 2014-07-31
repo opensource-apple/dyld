@@ -82,7 +82,7 @@ Source is http://burtleburtle.net/bob/c/perfect.c
 #include <stdint.h>
 #include <stdlib.h>
 #ifdef SELOPT_WRITE
-#include <ext/hash_map>
+#include <unordered_map>
 #endif
 /*
   DO NOT INCLUDE ANY objc HEADERS HERE
@@ -107,6 +107,8 @@ namespace objc_opt {
 
 typedef int32_t objc_stringhash_offset_t;
 typedef uint8_t objc_stringhash_check_t;
+
+static uint64_t lookup8( uint8_t *k, size_t length, uint64_t level);
 
 #ifdef SELOPT_WRITE
 
@@ -133,18 +135,23 @@ struct eqstr {
     }
 };
 
+struct hashstr {
+    size_t operator()(const char *s) const {
+        return (size_t)lookup8((uint8_t *)s, strlen(s), 0);
+    }
+};
+
 // cstring => cstring's vmaddress
 // (used for selector names and class names)
-typedef __gnu_cxx::hash_map<const char *, uint64_t, __gnu_cxx::hash<const char *>, eqstr> string_map;
+typedef std::unordered_map<const char *, uint64_t, hashstr, eqstr> string_map;
 
 // class name => (class vmaddress, header_info vmaddress)
-typedef __gnu_cxx::hash_multimap<const char *, std::pair<uint64_t, uint64_t>, __gnu_cxx::hash<const char *>, eqstr> class_map;
+typedef std::unordered_multimap<const char *, std::pair<uint64_t, uint64_t>, hashstr, eqstr> class_map;
 
 static perfect_hash make_perfect(const string_map& strings);
 
 #endif
 
-static uint64_t lookup8( uint8_t *k, size_t length, uint64_t level);
 
 // Precomputed perfect hash table of strings.
 // Base class for precomputed selector table and class table.
@@ -169,40 +176,55 @@ struct objc_stringhash_t {
     objc_stringhash_offset_t *offsets() { return (objc_stringhash_offset_t *)&checkbytes()[capacity]; }
     const objc_stringhash_offset_t *offsets() const { return (const objc_stringhash_offset_t *)&checkbytes()[capacity]; }
 
-    uint32_t hash(const char *key) const
+    uint32_t hash(const char *key, size_t keylen) const
     {
-        uint64_t val = lookup8((uint8_t*)key, strlen(key), salt);
+        uint64_t val = lookup8((uint8_t*)key, keylen, salt);
         uint32_t index = (uint32_t)(val>>shift) ^ scramble[tab[val&mask]];
         return index;
+    }
+
+    uint32_t hash(const char *key) const 
+    {
+        return hash(key, strlen(key));
     }
 
     // The check bytes areused to reject strings that aren't in the table
     // without paging in the table's cstring data. This checkbyte calculation 
     // catches 4785/4815 rejects when launching Safari; a perfect checkbyte 
     // would catch 4796/4815.
-    objc_stringhash_check_t checkbyte(const char *key) const
+    objc_stringhash_check_t checkbyte(const char *key, size_t keylen) const
     {
         return 
             ((key[0] & 0x7) << 5)
             |
-            (strlen(key) & 0x1f);
+            ((uint8_t)keylen & 0x1f);
     }
+
+    objc_stringhash_check_t checkbyte(const char *key) const
+    {
+        return checkbyte(key, strlen(key));
+    }
+
 
 #define INDEX_NOT_FOUND (~(uint32_t)0)
 
     uint32_t getIndex(const char *key) const 
     {
-        uint32_t h = hash(key);
+        size_t keylen = strlen(key);
+        uint32_t h = hash(key, keylen);
 
         // Use check byte to reject without paging in the table's cstrings
         objc_stringhash_check_t h_check = checkbytes()[h];
-        objc_stringhash_check_t key_check = checkbyte(key);
+        objc_stringhash_check_t key_check = checkbyte(key, keylen);
         bool check_fail = (h_check != key_check);
 #if ! SELOPT_DEBUG
         if (check_fail) return INDEX_NOT_FOUND;
 #endif
 
-        const char *result = (const char *)this + offsets()[h];
+        // fixme change &zero to 0 in the next version-breaking update
+        objc_stringhash_offset_t offset = offsets()[h];
+        if (offset == offsetof(objc_stringhash_t,zero)) return INDEX_NOT_FOUND;
+        const char *result = (const char *)this + offset;
         if (0 != strcmp(key, result)) return INDEX_NOT_FOUND;
 
 #if SELOPT_DEBUG
