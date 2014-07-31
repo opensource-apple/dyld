@@ -37,6 +37,7 @@
 #include <mach-o/loader.h> 
 #include <mach-o/ldsyms.h> 
 #include <libkern/OSByteOrder.h> 
+#include <libkern/OSAtomic.h>
 #include <mach/mach.h>
 #include <sys/sysctl.h>
 #include <sys/mman.h>
@@ -382,6 +383,29 @@ void warn(const char* format, ...)
 }
 
 
+// <rdar://problem/8867781> control access to sAllImages through a lock 
+// because global dyld lock is not held during initialization phase of dlopen()
+static long sAllImagesLock = 0;
+
+static void allImagesLock()
+{
+    //dyld::log("allImagesLock()\n");
+	while ( ! OSAtomicCompareAndSwapPtrBarrier((void*)0, (void*)1, (void**)&sAllImagesLock) ) {
+        // spin
+    }
+}
+
+static void allImagesUnlock()
+{
+    //dyld::log("allImagesUnlock()\n");
+	while ( ! OSAtomicCompareAndSwapPtrBarrier((void*)1, (void*)0, (void**)&sAllImagesLock) ) {
+        // spin
+   }
+}
+
+
+
+
 // utility class to assure files are closed when an exception is thrown
 class FileOpener {
 public:
@@ -627,18 +651,20 @@ static void notifyBatchPartial(dyld_image_states state, bool orLater, dyld_image
 	std::vector<dyld_image_state_change_handler>* handlers = stateToHandlers(state, sBatchHandlers);
 	if ( handlers != NULL ) {
 		// don't use a vector because it will use malloc/free and we want notifcation to be low cost
-		ImageLoader* images[sAllImages.size()+1];
-		ImageLoader** end = images;
-		for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
-			dyld_image_states imageState = (*it)->getState();
-			if ( (imageState == state) || (orLater && (imageState > state)) )
-				*end++ = *it;
-		}
+        allImagesLock();
+        ImageLoader* images[sAllImages.size()+1];
+        ImageLoader** end = images;
+        for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
+            dyld_image_states imageState = (*it)->getState();
+            if ( (imageState == state) || (orLater && (imageState > state)) )
+                *end++ = *it;
+        }
 		if ( sBundleBeingLoaded != NULL ) {
 			dyld_image_states imageState = sBundleBeingLoaded->getState();
 			if ( (imageState == state) || (orLater && (imageState > state)) )
 				*end++ = sBundleBeingLoaded;
 		}
+        const char* dontLoadReason = NULL;
 		unsigned int count = end-images;
 		if ( end != images ) {
 			// sort bottom up
@@ -662,8 +688,7 @@ static void notifyBatchPartial(dyld_image_states state, bool orLater, dyld_image
 				if ( (result != NULL) && (state == dyld_image_state_dependents_mapped) ) {
 					//fprintf(stderr, "  images rejected by handler=%p\n", onlyHandler);
 					// make copy of thrown string so that later catch clauses can free it
-					const char* str = strdup(result);
-					throw str;
+					dontLoadReason = strdup(result);
 				}
 			}
 			else {
@@ -673,12 +698,15 @@ static void notifyBatchPartial(dyld_image_states state, bool orLater, dyld_image
 					if ( (result != NULL) && (state == dyld_image_state_dependents_mapped) ) {
 						//fprintf(stderr, "  images rejected by handler=%p\n", *it);
 						// make copy of thrown string so that later catch clauses can free it
-						const char* str = strdup(result);
-						throw str;
+						dontLoadReason = strdup(result);
+						break;
 					}
 				}
 			}
 		}
+        allImagesUnlock();
+        if ( dontLoadReason != NULL )
+            throw dontLoadReason;
 	}
 #if CORESYMBOLICATION_SUPPORT
 	if ( state == dyld_image_state_rebased ) {
@@ -758,7 +786,9 @@ static void setRunInitialzersOldWay()
 static void addImage(ImageLoader* image)
 {
 	// add to master list
-	sAllImages.push_back(image);
+    allImagesLock();
+        sAllImages.push_back(image);
+    allImagesUnlock();
 	
 	// update mapped ranges
 	uintptr_t lastSegStart = 0;
@@ -832,12 +862,14 @@ void removeImage(ImageLoader* image)
 	removedMappedRanges(image);
 
 	// remove from master list
-	for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
-		if ( *it == image ) {
-			sAllImages.erase(it);
-			break;
-		}
-	}
+    allImagesLock();
+        for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
+            if ( *it == image ) {
+                sAllImages.erase(it);
+                break;
+            }
+        }
+    allImagesUnlock();
 	
 	// flush find-by-address cache (do this after removed from master list, so there is no chance it can come back)
 	if ( sLastImageByAddressCache == image )
@@ -1559,12 +1591,12 @@ static void checkSharedRegionDisable()
 
 bool validImage(const ImageLoader* possibleImage)
 {
-	const unsigned int imageCount = sAllImages.size();
-	for(unsigned int i=0; i < imageCount; ++i) {
-		if ( possibleImage == sAllImages[i] ) {
-			return true;
-		}
-	}
+    const unsigned int imageCount = sAllImages.size();
+    for(unsigned int i=0; i < imageCount; ++i) {
+        if ( possibleImage == sAllImages[i] ) {
+            return true;
+        }
+    }
 	return false;
 }
 
