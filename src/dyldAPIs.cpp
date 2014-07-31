@@ -33,6 +33,7 @@
 #include <string.h>
 #include <mach/mach.h>
 #include <sys/time.h>
+#include <sys/sysctl.h>
 
 extern "C" mach_port_name_t	task_self_trap(void);  // can't include <System/mach/mach_traps.h> because it is missing extern C
 
@@ -1557,6 +1558,29 @@ static void _dyld_update_prebinding(int pathCount, const char* paths[], uint32_t
 		else {
 			uint32_t imageCount = preboundImages.size();
 			uint32_t imageNumber = 1;
+
+			// on Intel system, update_prebinding is run twice: i386, then emulated ppc
+			// calculate fudge factors so that progress output represents both runs
+			int denomFactor = 1;
+			int numerAddend = 0;
+			if (UPDATE_PREBINDING_PROGRESS & flags) {
+		#if __i386__
+				// i386 half runs first, just double denominator
+				denomFactor = 2;
+		#endif	
+		#if __ppc__
+				// if emulated ppc, double denominator and shift numerator
+				int mib[] = { CTL_KERN, KERN_CLASSIC, getpid() };
+				int is_emulated = 0;
+				size_t len = sizeof(int);
+				int ret = sysctl(mib, 3, &is_emulated, &len, NULL, 0);
+				if ((ret != -1) && is_emulated) {
+					denomFactor = 2;
+					numerAddend = imageCount;
+				}
+		#endif
+			}
+
 			// tell each image to write itself out re-prebound
 			struct timeval currentTime = { 0 , 0 };
 			gettimeofday(&currentTime, NULL);
@@ -1566,7 +1590,7 @@ static void _dyld_update_prebinding(int pathCount, const char* paths[], uint32_t
 				uint64_t freespace = (*it)->reprebind(dyld::gLinkContext, timestamp);
 				updatedImages.push_back(*it);
 				if(UPDATE_PREBINDING_PROGRESS & flags) {
-					fprintf(stdout, "update_prebinding: progress: %3u/%u\n", imageNumber, imageCount);
+					fprintf(stdout, "update_prebinding: progress: %3u/%u\n", imageNumber+numerAddend, imageCount*denomFactor);
 					fflush(stdout);
 					imageNumber++;
 				}

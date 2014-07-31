@@ -843,7 +843,7 @@ uint64_t ImageLoader::copyAndMap(const char* tempFile, uint8_t** fileToPrebind, 
 	struct statfs statfs_buf;
 	if ( fstatfs(dst, &statfs_buf) != 0 )
 		throwf("can't fstatfs(), errno=%d for %s", errno, tempFile);
-	uint64_t freespace = statfs_buf.f_bavail * statfs_buf.f_bsize;
+	uint64_t freespace = (uint64_t)statfs_buf.f_bavail * (uint64_t)statfs_buf.f_bsize;
 	
 	// closing notes:  
 	//		ok to close file after mapped in

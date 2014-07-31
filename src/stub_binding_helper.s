@@ -57,6 +57,9 @@
 
     .text
     .align 4,0x90
+	.globl _fast_stub_binding_helper_interface
+_fast_stub_binding_helper_interface:
+	pushl		$0
     .globl _stub_binding_helper_interface
 _stub_binding_helper_interface:
 	pushl		%ebp
@@ -65,20 +68,20 @@ _stub_binding_helper_interface:
 	movl		%eax,EAX_SAVE(%esp)		# save registers that might be used as parameters
 	movl		%ecx,ECX_SAVE(%esp)
 	movl		%edx,EDX_SAVE(%esp)
-	movdqu		%xmm0,XMMM0_SAVE(%esp)
-	movdqu		%xmm1,XMMM1_SAVE(%esp)
-	movdqu		%xmm2,XMMM2_SAVE(%esp)
-	movdqu		%xmm3,XMMM3_SAVE(%esp)
+	movdqa		%xmm0,XMMM0_SAVE(%esp)
+	movdqa		%xmm1,XMMM1_SAVE(%esp)
+	movdqa		%xmm2,XMMM2_SAVE(%esp)
+	movdqa		%xmm3,XMMM3_SAVE(%esp)
 	movl		MH_PARAM_BP(%ebp),%eax	# call dyld::bindLazySymbol(mh, lazy_ptr)
 	movl		%eax,MH_PARAM_OUT(%esp)
 	movl		LP_PARAM_BP(%ebp),%eax
 	movl		%eax,LP_PARAM_OUT(%esp)
 	call		__ZN4dyld14bindLazySymbolEPK11mach_headerPm
 	movl		%eax,RESULT_BP(%ebp)	# store target for ret
-	movdqu		XMMM0_SAVE(%esp),%xmm0	# restore registers
-	movdqu		XMMM1_SAVE(%esp),%xmm1
-	movdqu		XMMM2_SAVE(%esp),%xmm2
-	movdqu		XMMM3_SAVE(%esp),%xmm3
+	movdqa		XMMM0_SAVE(%esp),%xmm0	# restore registers
+	movdqa		XMMM1_SAVE(%esp),%xmm1
+	movdqa		XMMM2_SAVE(%esp),%xmm2
+	movdqa		XMMM3_SAVE(%esp),%xmm3
 	movl		EAX_SAVE(%esp),%eax
 	movl		ECX_SAVE(%esp),%ecx
 	movl		EDX_SAVE(%esp),%edx

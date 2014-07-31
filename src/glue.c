@@ -115,7 +115,12 @@ char* __hldtoa(/*long*/ double e, const char *xdigs, int ndigits, int *decpt, in
 
 int __fegetfltrounds(void) 
 {
-       return 1;                                       /* FE_NEAREST */
+	return 1;                                       /* FE_NEAREST */
+}
+
+int fegetround(void) 
+{
+	return 1;
 }
 
 /*
@@ -126,6 +131,7 @@ struct tm* localtime(const time_t* t)
 {
 	return (struct tm*)NULL;
 }
+
 
 /*
  * On ppc64, the C++ runtime references strftime & wcsftime, but they
@@ -153,4 +159,9 @@ int __strtopdd (const char* p1, char** p2, double* p3)
 char* __ldtoa(long double *ld, int mode, int ndigits, int *decpt, int *sign, char **rve)
 {
 	return "__ldtoa";
+}
+
+int __hexnan_D2A(const char **sp, void *fpi, unsigned long *x0)
+{
+	return 0;
 }
