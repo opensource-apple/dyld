@@ -6,6 +6,7 @@
 
 
 	.text
+	.align 2
 	.globl _mystart
 _mystart:
 #if __i386__ 

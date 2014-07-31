@@ -31,9 +31,6 @@
 #include <mach-o/loader.h>
 #include <mach-o/ldsyms.h>
 #include <mach-o/reloc.h>
-#if __ppc__ || __ppc64__
-	#include <mach-o/ppc/reloc.h>
-#endif
 #if __x86_64__
 	#include <mach-o/x86_64/reloc.h>
 #endif
@@ -192,10 +189,6 @@ static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 	const relocation_info* const relocsStart = (struct relocation_info*)(linkEditSeg->vmaddr + slide + dynamicSymbolTable->locreloff - linkEditSeg->fileoff);
 	const relocation_info* const relocsEnd = &relocsStart[dynamicSymbolTable->nlocrel];
 	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
-	#if __ppc__ || __ppc64__ || __i36__
-		if ( (reloc->r_address & R_SCATTERED) != 0 )
-			throw "scattered relocation in dyld";
-	#endif
 		if ( reloc->r_length != RELOC_SIZE ) 
 			throw "relocation in dyld has wrong size";
 
@@ -208,7 +201,6 @@ static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 }
 
 
-extern "C" void dyld_exceptions_init(const struct macho_header*, uintptr_t slide); // in dyldExceptions.cpp
 extern "C" void mach_init();
 
 //
@@ -228,7 +220,8 @@ extern "C" {
 //  In dyld we have to do this manually.
 //
 uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char* argv[], 
-								intptr_t slide, const struct macho_header* dyldsMachHeader)
+				intptr_t slide, const struct macho_header* dyldsMachHeader,
+				uintptr_t* startGlue)
 {
 	// if kernel had to slide dyld, we need to fix up load sensitive locations
 	// we have to do this before using any global variables
@@ -242,9 +235,6 @@ uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char*
 	_pthread_keys_init();
 #endif
 
-	// enable C++ exceptions to work inside dyld
-	dyld_exceptions_init(dyldsMachHeader, slide);
-	
 	// allow dyld to use mach messaging
 	mach_init();
 
@@ -261,7 +251,7 @@ uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char*
 		
 	// now that we are done bootstrapping dyld, call dyld's main
 	uintptr_t appsSlide = slideOfMainExecutable(appsMachHeader);
-	return dyld::_main(appsMachHeader, appsSlide, argc, argv, envp, apple);
+	return dyld::_main(appsMachHeader, appsSlide, argc, argv, envp, apple, startGlue);
 }
 
 

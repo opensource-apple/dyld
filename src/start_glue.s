@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
+ * Copyright (c) 2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -20,30 +20,49 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-#include <stdlib.h> // EXIT_SUCCESS
-#include <dlfcn.h>
-#include <mach-o/dyld_priv.h>
+ 
+ 
 
-#include "test.h"
+#ifdef __i386__
 
-//
-// This builds an executable that is just big enough to force dyld to slide a bit
-//
-#if __arm__
-	#define ARRAY_SIZE  66582528
-#else
-	#define ARRAY_SIZE 335400000
+    .align 2
+    .globl _start
+    .private_extern _start
+start:
+	nop		# <rdar://problem/10753356> backtraces of LC_MAIN binaries don't end in "start"
+_start:
+	movl	%eax,(%esp)	    # pass result from main() to exit() 
+	call	_exit
+	hlt
+
+#endif /* __i386__ */
+
+
+#if __x86_64__
+
+    .align 2
+    .globl _start
+    .private_extern _start
+start:
+	nop		# <rdar://problem/10753356> backtraces of LC_MAIN binaries don't end in "start"
+_start:
+	movl	%eax,%edi	    # pass result from main() to exit() 
+	call	_exit
+	hlt
+
 #endif
 
-//int bigarray1[ARRAY_SIZE];
 
-int
-main()
-{
-	// call a dyld function that will execute lots of code and bus error dyld was not slid
-	dlsym(RTLD_DEFAULT, "foobar");
-
-	return EXIT_SUCCESS;
-}
-
+#if __arm__
+ 
+    .align 2
+    .globl _start
+    .private_extern _start
+start:
+	nop					// <rdar://problem/10753356> backtraces of LC_MAIN binaries don't end in "start"
+_start:
+	bl	_exit			// result in r0 already in param reg r0
+	trap
+ 
+#endif /* __arm__ */
 

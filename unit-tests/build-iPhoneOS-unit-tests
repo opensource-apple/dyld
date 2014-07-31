@@ -17,9 +17,9 @@ echo "#!/bin/sh" > /var/root/testing/run-all-tests
 chmod +x /var/root/testing/run-all-tests
 
 # do every combination of OS version and architectures
-for os in "4.3" "3.0" 
+for os in "6.0" "3.0" 
 do
-	for arch in armv6 thumb armv7 thumb2
+	for arch in armv7 armv6 thumb
 	do
 		# make copy of tests
 		cp -r ${TEST_CASE_DIR}/../../unit-tests  /var/root/testing/unit-tests-${arch}-${os}

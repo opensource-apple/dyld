@@ -16,7 +16,7 @@ int getdown()
 	return state;
 }
 
-void other()
+int getdownsup()
 {
-	whatsup();
+	return whatsup();
 }

@@ -31,6 +31,8 @@
 ///  main links directly against one libfoo.dylib and indirectly through libbar.dylib with the other.
 ///
 
+extern int foo();
+extern int bar();
 
 int main(int argc, const char* argv[])
 {

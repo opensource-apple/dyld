@@ -22,13 +22,21 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#define OBJC_IMAGE_SUPPORTS_GC (1<<1)
+#define OBJC_IMAGE_REQUIRES_GC (1<<2)
+
 template <typename A>
 struct objc_image_info {
     uint32_t version;
     uint32_t flags;
 
+    uint32_t getFlags()         INLINE { return A::P::E::get32(flags); }
+    
+    bool supportsGCFlagSet()    INLINE { return getFlags() & OBJC_IMAGE_SUPPORTS_GC; }
+    bool requiresGCFlagSet()    INLINE { return getFlags() & OBJC_IMAGE_REQUIRES_GC; }
+    
     void setFlag(uint32_t bits) INLINE { uint32_t old = A::P::E::get32(flags); A::P::E::set32(flags, old | bits); }
-    void setSelectorsPrebound() INLINE { setFlag(1<<3); }
+    void setOptimizedByDyld() INLINE { setFlag(1<<3); }
 };
 
 template <typename A>
@@ -220,15 +228,6 @@ public:
             uint64_t oldValue = selrefs.getUnmapped(s);
             uint64_t newValue = visitor.visit(oldValue);
             selrefs.set(s, newValue);
-        }
-
-        // Mark image_info
-        const macho_section<P> *imageInfoSection = 
-            header->getSection("__OBJC", "__image_info");
-        if (imageInfoSection) {
-            objc_image_info<A> *info = (objc_image_info<A> *)
-                cache->mappedAddressForVMAddress(imageInfoSection->addr());
-            info->setSelectorsPrebound();
         }
     }
 };

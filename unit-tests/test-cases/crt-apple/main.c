@@ -71,9 +71,9 @@ main(int argc, const char* argv[], const char* env[], const char* apple[])
 	}
 		
 	if ( strcmp(apple[0], argv[1]) == 0 )
-		PASS("crt-apple %s", argv[0]);
+		PASS("crt-apple %s", apple[0]);
 	else
-		FAIL("crt-apple %s", argv[0]);
+		FAIL("crt-apple %s", apple[0]);
 		
 	return EXIT_SUCCESS;
 }

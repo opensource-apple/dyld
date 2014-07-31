@@ -31,12 +31,6 @@
 //
 // Architectures
 //
-struct ppc
-{
-	typedef Pointer32<BigEndian>		P;
-	
-};
-
 struct x86
 {
 	typedef Pointer32<LittleEndian>		P;

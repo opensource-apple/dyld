@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2005-2009 Apple Inc. All rights reserved.
+# Copyright (c) 2011 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -23,35 +23,19 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-STACK_BASE = 0x8fe01000
-STACK_SIZE = 0x00100000
-
-ifeq "armv6" "$(ARCH)"
-	STACK_BASE = 0x2fe01000
-	STACK_SIZE = 0x00100000
-endif
-ifeq "armv7" "$(ARCH)"
-	STACK_BASE = 0x2fe01000
-	STACK_SIZE = 0x00100000
-endif
-ifeq "ppc64" "$(ARCH)"
-	STACK_BASE = 0x7fff5ff00000
-	STACK_SIZE = 0x00400000
-endif
-ifeq "x86_64" "$(ARCH)"
-	STACK_BASE = 0x7fff5ff00000
-	STACK_SIZE = 0x00400000
-endif
-
-
-
 all-check: all check
 
 check:
-	${TESTROOT}/bin/exit-zero-pass.pl "dyld did slide" "dyld did not slide" ./main
+	./main
 
 all:
-	${CC} ${CCFLAGS} -Wno-deprecated-declarations -I${TESTROOT}/include -o main main.c -Wl,-stack_addr,${STACK_BASE} -Wl,-stack_size,${STACK_SIZE}
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c 
+	${CC} ${CCFLAGS} -dynamiclib -I${TESTROOT}/include -o libbar.dylib bar.c 
+	${CC} ${CCFLAGS} -dynamiclib -I${TESTROOT}/include -o libbaz.dylib baz.c -Wl,-upward_library,libbar.dylib
+	${CC} ${CCFLAGS} -dynamiclib -I${TESTROOT}/include -o libbar.dylib bar.c  libbaz.dylib
+	${CC} ${CCFLAGS} -dynamiclib -I${TESTROOT}/include -o libfoo.dylib foo.c libbar.dylib  
+
 
 clean:
-	${RM} ${RMFLAGS} main
+	${RM} ${RMFLAGS} *~ main libbaz.dylib libbar.dylib libfoo.dylib 
+

@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2008 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -96,51 +96,31 @@ char* __cxa_get_globals_fast()
 
 
 
-#if __x86_64__ || __i386__ || __ppc__
+#if !__arm__
 //
-//  The intel/ppc versions of dyld uses zero-cost exceptions which are handled by
+//  The intel versions of dyld uses zero-cost exceptions which are handled by
 //  linking with a special copy of libunwind.a
 //
 
-static struct dyld_unwind_sections	sDyldInfo;
-static void*						sDyldTextEnd;
+extern void*  ehStart  __asm("section$start$__TEXT$__eh_frame");
+extern void*  ehEnd    __asm("section$end$__TEXT$__eh_frame");
+extern void*  uwStart  __asm("section$start$__TEXT$__unwind_info");
+extern void*  uwEnd    __asm("section$end$__TEXT$__unwind_info");
 
-// called by dyldStartup.s very early
-void dyld_exceptions_init(struct mach_header* mh, intptr_t slide)
-{
-	// record location of unwind sections in dyld itself
-    sDyldInfo.mh = mh;    
-	const struct load_command* cmd;
-	unsigned long i;
-	cmd = (struct load_command*) ((char *)mh + sizeof(struct macho_header));
-	for(i = 0; i < mh->ncmds; i++) {
-	    if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
-			const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
-			if ( strcmp(seg->segname, "__TEXT") == 0 ) {
-				const struct macho_section* sect = (struct macho_section*)( (char*)seg + sizeof(struct macho_segment_command) );
-				unsigned long j;
-				for (j = 0; j < seg->nsects; j++) {
-					if ( strcmp(sect[j].sectname, "__eh_frame") == 0 ) {
-						sDyldInfo.dwarf_section = (void*)(sect[j].addr + slide);
-						sDyldInfo.dwarf_section_length = sect[j].size;
-					}
-					else if ( strcmp(sect[j].sectname, "__unwind_info") == 0 ) {
-						sDyldInfo.compact_unwind_section = (void*)(sect[j].addr + slide);
-						sDyldInfo.compact_unwind_section_length = sect[j].size;
-					}
-				}
-				sDyldTextEnd = (void*)(seg->vmaddr + seg->vmsize + slide);
-		    }
-		}
-	    cmd = (struct load_command*)( (char*)cmd + cmd->cmdsize );
-	}
-}
+extern void*  textStart __asm("section$start$__TEXT$__text");
+extern void*  textEnd   __asm("section$end$__TEXT$__text");
 
-// called by libuwind code to find unwind information in dyld
+extern void* __dso_handle;
+
+// called by libuwind code to find unwind information sections in dyld
 bool _dyld_find_unwind_sections(void* addr, struct dyld_unwind_sections* info)
 {
-	if ( ((void*)sDyldInfo.mh < addr) && (addr < sDyldTextEnd) ) { 
-		*info = sDyldInfo;
+ 	if ( ((void*)&textStart < addr) && (addr < (void*)&textEnd) ) { 
+        info->mh = (struct mach_header*)&__dso_handle;
+        info->dwarf_section = &ehStart;
+        info->dwarf_section_length = ((char*)&ehEnd - (char*)&ehStart);
+        info->compact_unwind_section = &uwStart;
+        info->compact_unwind_section_length = ((char*)&uwEnd - (char*)&uwStart);
 		return true;
 	}
 	else {
@@ -148,13 +128,7 @@ bool _dyld_find_unwind_sections(void* addr, struct dyld_unwind_sections* info)
 	}
 }
 
-#if __ppc__
-	// the ppc version of _Znwm in libstdc++.a uses keymgr
-	// need to override that
-	void* _Znwm(size_t size) { return malloc(size); }
-#endif
-
-#endif // __MAC_OS_X_VERSION_MIN_REQUIRED
+#endif // !__arm__
 
 
 #if __arm__
@@ -166,13 +140,6 @@ struct _Unwind_FunctionContext
 
 };
 
-//
-//  The ARM of dyld use SL-LJ based exception handling
-//  which does not require any initialization until libSystem is initialized.
-//
-void dyld_exceptions_init(struct mach_header *mh, uintptr_t slide)
-{
-}
 
 static pthread_key_t						sThreadChainKey = 0; 
 static struct _Unwind_FunctionContext*		sStaticThreadChain = NULL; 

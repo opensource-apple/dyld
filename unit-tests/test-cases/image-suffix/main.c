@@ -22,6 +22,7 @@
  */
 #include <stdlib.h>
 #include <mach-o/dyld.h>
+#include <dlfcn.h>
 
 #include "test.h"
 

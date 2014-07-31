@@ -25,9 +25,21 @@ include ${TESTROOT}/include/common.makefile
 
 PWD = $(shell pwd)
 
-all-check: all check
+ifeq "$(OS_NAME)" "iPhoneOS"
+	CHECK = check-ios
+else
+	CHECK = check-macosx
+endif
 
-check:
+
+all-check: all $(CHECK)
+
+check: $(CHECK)
+
+check-ios:
+	./main 10
+
+check-macosx:
 	./main 10
 	export DYLD_VERSIONED_FRAMEWORK_PATH="${PWD}/alt11" && ./main 11
 	export DYLD_VERSIONED_FRAMEWORK_PATH="${PWD}/alt9" && ./main 10

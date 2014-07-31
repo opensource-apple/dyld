@@ -38,7 +38,6 @@
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
 #include <mach-o/reloc.h>
-#include <mach-o/ppc/reloc.h>
 #include <mach-o/x86_64/reloc.h>
 #include <mach-o/arm/reloc.h>
 #include <vector>
@@ -170,7 +169,6 @@ Rebaser<A>::Rebaser(const MachOLayoutAbstraction& layout)
 	fSplittingSegments = layout.hasSplitSegInfo() && this->unequalSlides();
 }
 
-template <> cpu_type_t Rebaser<ppc>::getArchitecture()    const { return CPU_TYPE_POWERPC; }
 template <> cpu_type_t Rebaser<x86>::getArchitecture()    const { return CPU_TYPE_I386; }
 template <> cpu_type_t Rebaser<x86_64>::getArchitecture() const { return CPU_TYPE_X86_64; }
 template <> cpu_type_t Rebaser<arm>::getArchitecture() const { return CPU_TYPE_ARM; }
@@ -536,25 +534,103 @@ void Rebaser<A>::doCodeUpdate(uint8_t kind, uint64_t address, int64_t codeToData
 			value64 += codeToDataDelta;
 			 A::P::E::set64(*(uint64_t*)p, value64);
 			break;
-		case 3: // used only for ppc, an instruction that sets the hi16 of a register
-			// adjust low 16 bits of instruction which contain hi16 of distance to something in DATA
-			if ( (codeToDataDelta & 0xFFFF) != 0 )
-				throwf("codeToDataDelta=0x%0llX is not a multiple of 64K", codeToDataDelta);
-			p = (uint32_t*)mappedAddressForVMAddress(address);
-			instruction = BigEndian::get32(*p);
-			{
-				uint16_t originalLo16 = instruction & 0x0000FFFF;
-				uint16_t delta64Ks = codeToDataDelta >> 16;
-				instruction = (instruction & 0xFFFF0000) | ((originalLo16+delta64Ks) & 0x0000FFFF);
-			}
-			BigEndian::set32(*p, instruction);
-			break;
 		case 4:	// only used for i386, a reference to something in the IMPORT segment
 			p = (uint32_t*)mappedAddressForVMAddress(address);
 			value = A::P::E::get32(*p);
 			value += codeToImportDelta;
 			 A::P::E::set32(*p, value);
+			break;			
+        case 5: // used by thumb2 movw
+			p = (uint32_t*)mappedAddressForVMAddress(address);
+			instruction = A::P::E::get32(*p);
+			// codeToDataDelta is always a multiple of 4096, so only top 4 bits of lo16 will ever need adjusting
+			value = (instruction & 0x0000000F) + (codeToDataDelta >> 12);
+			instruction = (instruction & 0xFFFFFFF0) | (value & 0x0000000F);
+			A::P::E::set32(*p, instruction);
 			break;
+        case 6: // used by ARM movw
+			p = (uint32_t*)mappedAddressForVMAddress(address);
+			instruction = A::P::E::get32(*p);
+			// codeToDataDelta is always a multiple of 4096, so only top 4 bits of lo16 will ever need adjusting
+			value = ((instruction & 0x000F0000) >> 16) + (codeToDataDelta >> 12);
+			instruction = (instruction & 0xFFF0FFFF) | ((value <<16) & 0x000F0000);
+			A::P::E::set32(*p, instruction);
+			break;
+		case 0x10:
+		case 0x11:
+		case 0x12:
+		case 0x13:
+		case 0x14:
+		case 0x15:
+		case 0x16:
+		case 0x17:
+		case 0x18:
+		case 0x19:
+		case 0x1A:
+		case 0x1B:
+		case 0x1C:
+		case 0x1D:
+		case 0x1E:
+		case 0x1F:
+			// used by thumb2 movt (low nibble of kind is high 4-bits of paired movw)
+			{
+				p = (uint32_t*)mappedAddressForVMAddress(address);
+				instruction = A::P::E::get32(*p);
+				// extract 16-bit value from instruction
+				uint32_t i =    ((instruction & 0x00000400) >> 10);
+				uint32_t imm4 =  (instruction & 0x0000000F);
+				uint32_t imm3 = ((instruction & 0x70000000) >> 28);
+				uint32_t imm8 = ((instruction & 0x00FF0000) >> 16);
+				uint32_t imm16 = (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8;
+				// combine with codeToDataDelta and kind nibble
+				uint32_t targetValue = (imm16 << 16) | ((kind & 0xF) << 12);
+				uint32_t newTargetValue = targetValue + codeToDataDelta;
+				// construct new bits slices
+				uint32_t imm4_	= (newTargetValue & 0xF0000000) >> 28;
+				uint32_t i_		= (newTargetValue & 0x08000000) >> 27;
+				uint32_t imm3_	= (newTargetValue & 0x07000000) >> 24;
+				uint32_t imm8_	= (newTargetValue & 0x00FF0000) >> 16;
+				// update instruction to match codeToDataDelta 
+				uint32_t newInstruction = (instruction & 0x8F00FBF0) | imm4_ | (i_ << 10) | (imm3_ << 28) | (imm8_ << 16);
+				A::P::E::set32(*p, newInstruction);
+			}
+			break;
+		case 0x20:
+		case 0x21:
+		case 0x22:
+		case 0x23:
+		case 0x24:
+		case 0x25:
+		case 0x26:
+		case 0x27:
+		case 0x28:
+		case 0x29:
+		case 0x2A:
+		case 0x2B:
+		case 0x2C:
+		case 0x2D:
+		case 0x2E:
+		case 0x2F:
+			// used by arm movt (low nibble of kind is high 4-bits of paired movw)
+			{
+				p = (uint32_t*)mappedAddressForVMAddress(address);
+				instruction = A::P::E::get32(*p);
+				// extract 16-bit value from instruction
+				uint32_t imm4 = ((instruction & 0x000F0000) >> 16);
+				uint32_t imm12 = (instruction & 0x00000FFF);
+				uint32_t imm16 = (imm4 << 12) | imm12;
+				// combine with codeToDataDelta and kind nibble
+				uint32_t targetValue = (imm16 << 16) | ((kind & 0xF) << 12);
+				uint32_t newTargetValue = targetValue + codeToDataDelta;
+				// construct new bits slices
+				uint32_t imm4_  = (newTargetValue & 0xF0000000) >> 28;
+				uint32_t imm12_ = (newTargetValue & 0x0FFF0000) >> 16;
+				// update instruction to match codeToDataDelta 
+				uint32_t newInstruction = (instruction & 0xFFF0F000) | (imm4_ << 16) | imm12_;
+				A::P::E::set32(*p, newInstruction);
+			}
+			break;
+		case 3: // used only for ppc, an instruction that sets the hi16 of a register
 		default:
 			throwf("invalid kind=%d in split seg info", kind);
 	}
@@ -663,7 +739,13 @@ void Rebaser<A>::doRebase(int segIndex, uint64_t segOffset, uint8_t type, std::v
 	switch ( type ) {
 		case REBASE_TYPE_POINTER:
 			valueP= P::getP(*mappedAddrP);
-			P::setP(*mappedAddrP, valueP + this->getSlideForVMAddress(valueP));
+			try {
+				P::setP(*mappedAddrP, valueP + this->getSlideForVMAddress(valueP));
+			}
+			catch (const char* msg) {
+				throwf("at offset=0x%08llX in seg=%s, pointer cannot be rebased because it does not point to __TEXT or __DATA. %s\n", 
+						segOffset, seg.name(), msg);
+			}
 			break;
 		
 		case REBASE_TYPE_TEXT_ABSOLUTE32:
@@ -843,27 +925,6 @@ void Rebaser<x86_64>::doLocalRelocation(const macho_relocation_info<x86_64::P>* 
 }
 
 template <>
-void Rebaser<ppc>::doLocalRelocation(const macho_relocation_info<P>* reloc)
-{
-	if ( (reloc->r_address() & R_SCATTERED) == 0 ) {
-		if ( reloc->r_type() == GENERIC_RELOC_VANILLA ) {
-			pint_t* addr = this->mappedAddressForRelocAddress(reloc->r_address());
-			pint_t value = P::getP(*addr);
-			P::setP(*addr, value + this->getSlideForVMAddress(value));
-		}
-	}
-	else {
-		macho_scattered_relocation_info<P>* sreloc = (macho_scattered_relocation_info<P>*)reloc;
-		if ( sreloc->r_type() == PPC_RELOC_PB_LA_PTR ) {
-			sreloc->set_r_value( sreloc->r_value() + this->getSlideForVMAddress(sreloc->r_value()) );
-		}
-		else {
-			throw "cannot rebase final linked image with scattered relocations";
-		}
-	}
-}
-
-template <>
 void Rebaser<x86>::doLocalRelocation(const macho_relocation_info<P>* reloc)
 {
 	if ( (reloc->r_address() & R_SCATTERED) == 0 ) {
@@ -972,9 +1033,6 @@ public:
 					uint32_t fileOffset = OSSwapBigToHostInt32(archs[i].offset);
 					try {
 						switch ( OSSwapBigToHostInt32(archs[i].cputype) ) {
-							case CPU_TYPE_POWERPC:
-								fRebasers.push_back(new Rebaser<ppc>(&p[fileOffset]));
-								break;
 							case CPU_TYPE_I386:
 								fRebasers.push_back(new Rebaser<x86>(&p[fileOffset]));
 								break;
@@ -995,10 +1053,7 @@ public:
 			}
 			else {
 				try {
-					if ( (OSSwapBigToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapBigToHostInt32(mh->cputype) == CPU_TYPE_POWERPC)) {
-						fRebasers.push_back(new Rebaser<ppc>(mh));
-					}
-					else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_I386)) {
+					if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_I386)) {
 						fRebasers.push_back(new Rebaser<x86>(mh));
 					}
 					else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC_64) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_X86_64)) {

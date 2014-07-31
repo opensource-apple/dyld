@@ -44,9 +44,6 @@
 #include <libkern/OSAtomic.h>
 #include <libkern/OSCacheControl.h>
 
-#if __ppc__ || __ppc64__
-	#include <mach-o/ppc/reloc.h>
-#endif
 #if __x86_64__
 	#include <mach-o/x86_64/reloc.h>
 #endif
@@ -56,14 +53,6 @@
 
 #include "ImageLoaderMachOClassic.h"
 #include "mach-o/dyld_images.h"
-
-// optimize strcmp for ppc
-#if __ppc__
-	#include <ppc_intrinsics.h>
-#else
-	#define astrcmp(a,b) strcmp(a,b)
-#endif
-
 
 // in dyldStartup.s
 extern "C" void fast_stub_binding_helper_interface();
@@ -163,11 +152,12 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromFile(const char
 		const char* installName = image->getInstallPath();
 		if ( (installName != NULL) && (strcmp(installName, path) == 0) && (path[0] == '/') )
 			image->setPathUnowned(installName);
-		else if ( path[0] != '/' ) {
+		else if ( (path[0] != '/') || (strstr(path, "../") != NULL) ) {
+			// rdar://problem/10733082 Fix up @path based paths during introspection
 			// rdar://problem/5135363 turn relative paths into absolute paths so gdb, Symbolication can later find them
 			char realPath[MAXPATHLEN];
-			if ( realpath(path, realPath) != NULL )
-				image->setPath(realPath);
+			if ( fcntl(fd, F_GETPATH, realPath) == 0 ) 
+				image->setPaths(path, realPath);
 			else
 				image->setPath(path);
 		}
@@ -729,33 +719,6 @@ uintptr_t ImageLoaderMachOClassic::getRelocBase()
 }
 
 
-#if __ppc__
-static inline void otherRelocsPPC(uintptr_t* locationToFix, uint8_t relocationType, uint16_t otherHalf, uintptr_t slide)
-{
-	// low 16 bits of 32-bit ppc instructions need fixing
-	struct ppcInstruction { uint16_t opcode; int16_t immediateValue; };
-	ppcInstruction* instruction = (ppcInstruction*)locationToFix;
-	//uint32_t before = *((uint32_t*)locationToFix);
-	switch ( relocationType )
-	{
-		case PPC_RELOC_LO16: 
-			instruction->immediateValue = ((otherHalf << 16) | instruction->immediateValue) + slide;
-			break;
-		case PPC_RELOC_HI16: 
-			instruction->immediateValue = ((((instruction->immediateValue << 16) | otherHalf) + slide) >> 16);
-			break;
-		case PPC_RELOC_HA16: 
-			int16_t signedOtherHalf = (int16_t)(otherHalf & 0xffff);
-			uint32_t temp = (instruction->immediateValue << 16) + signedOtherHalf + slide;
-			if ( (temp & 0x00008000) != 0 )
-				temp += 0x00008000;
-			instruction->immediateValue = temp >> 16;
-	}
-	//uint32_t after = *((uint32_t*)locationToFix);
-	//dyld::log("dyld: ppc fixup %0p type %d from 0x%08X to 0x%08X\n", locationToFix, relocationType, before, after);
-}
-#endif
-
 #if PREBOUND_IMAGE_SUPPORT
 void ImageLoaderMachOClassic::resetPreboundLazyPointers(const LinkContext& context)
 {
@@ -770,11 +733,6 @@ void ImageLoaderMachOClassic::resetPreboundLazyPointers(const LinkContext& conte
 			if (sreloc->r_length == RELOC_SIZE) {
 				uintptr_t* locationToFix = (uintptr_t*)(sreloc->r_address + relocBase);
 				switch(sreloc->r_type) {
-		#if __ppc__ 
-					case PPC_RELOC_PB_LA_PTR:
-						*locationToFix = sreloc->r_value + slide;
-						break;
-		#endif
 		#if __i386__
 					case GENERIC_RELOC_PB_LA_PTR:
 						*locationToFix = sreloc->r_value + slide;
@@ -809,6 +767,7 @@ void ImageLoaderMachOClassic::rebase(const LinkContext& context)
 	const relocation_info* const relocsStart = (struct relocation_info*)(&fLinkEditBase[fDynamicInfo->locreloff]);
 	const relocation_info* const relocsEnd = &relocsStart[fDynamicInfo->nlocrel];
 	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
+		uintptr_t rebaseAddr;
 		try {
 	#if LINKEDIT_USAGE_DEBUG
 			noteAccessedLinkEditAddress(reloc);
@@ -823,7 +782,12 @@ void ImageLoaderMachOClassic::rebase(const LinkContext& context)
 				throw "bad local relocation pc_rel";
 			if ( reloc->r_extern != 0 ) 
 				throw "extern relocation found with local relocations";
-			*((uintptr_t*)(reloc->r_address + relocBase)) += slide;
+			rebaseAddr = reloc->r_address + relocBase;
+			if ( ! this->containsAddress((void*)rebaseAddr) )
+				dyld::throwf("local reloc %p not in mapped image\n", (void*)rebaseAddr);
+			*((uintptr_t*)rebaseAddr) += slide;
+			if ( context.verboseRebase )
+				dyld::log("dyld: rebase: %s:*0x%08lX += 0x%08lX\n", this->getShortName(), rebaseAddr, slide);
 		#else	
 			if ( (reloc->r_address & R_SCATTERED) == 0 ) {
 				if ( reloc->r_symbolnum == R_ABS ) {
@@ -832,17 +796,13 @@ void ImageLoaderMachOClassic::rebase(const LinkContext& context)
 				else if (reloc->r_length == RELOC_SIZE) {
 					switch(reloc->r_type) {
 						case GENERIC_RELOC_VANILLA:
-							*((uintptr_t*)(reloc->r_address + relocBase)) += slide;
+							rebaseAddr = reloc->r_address + relocBase;
+							if ( ! this->containsAddress((void*)rebaseAddr) )
+								dyld::throwf("local reloc %p not in mapped image\n", (void*)rebaseAddr);
+							*((uintptr_t*)rebaseAddr) += slide;
+							if ( context.verboseRebase )
+								dyld::log("dyld: rebase: %s:*0x%08lX += 0x%08lX\n", this->getShortName(), rebaseAddr, slide);
 							break;
-			#if __ppc__
-						case PPC_RELOC_HI16: 
-						case PPC_RELOC_LO16: 
-						case PPC_RELOC_HA16: 
-							// some tools leave object file relocations in linked images
-							otherRelocsPPC((uintptr_t*)(reloc->r_address + relocBase), reloc->r_type, reloc[1].r_address, slide);
-							++reloc; // these relocations come in pairs, skip next
-							break;
-			#endif
 						default:
 							throw "unknown local relocation type";
 					}
@@ -857,26 +817,13 @@ void ImageLoaderMachOClassic::rebase(const LinkContext& context)
 					uintptr_t* locationToFix = (uintptr_t*)(sreloc->r_address + relocBase);
 					switch(sreloc->r_type) {
 						case GENERIC_RELOC_VANILLA:
+							if ( ! this->containsAddress((void*)locationToFix) ) 
+								dyld::throwf("local scattered reloc %p not in mapped image\n", locationToFix);
 							*locationToFix += slide;
+							if ( context.verboseRebase )
+								dyld::log("dyld: rebase: %s:*0x%08lX += 0x%08lX\n", this->getShortName(), (uintptr_t)locationToFix, slide);
 							break;
-			#if __ppc__
-						case PPC_RELOC_HI16: 
-						case PPC_RELOC_LO16: 
-						case PPC_RELOC_HA16: 
-							// Metrowerks compiler sometimes leaves object file relocations in linked images???
-							++reloc; // these relocations come in pairs, get next one
-							otherRelocsPPC(locationToFix, sreloc->r_type, reloc->r_address, slide);
-							break;
-						case PPC_RELOC_PB_LA_PTR:
-							// do nothing
-							break;
-			#elif __ppc64__
-						case PPC_RELOC_PB_LA_PTR:
-							// needed for compatibility with ppc64 binaries built with the first ld64
-							// which used PPC_RELOC_PB_LA_PTR relocs instead of GENERIC_RELOC_VANILLA for lazy pointers
-							*locationToFix += slide;
-							break;
-			#elif __i386__
+			#if __i386__
 						case GENERIC_RELOC_PB_LA_PTR:
 							// do nothing
 							break;
@@ -932,7 +879,7 @@ const struct macho_nlist* ImageLoaderMachOClassic::binarySearchWithToc(const cha
 		noteAccessedLinkEditAddress(pivot);
 		noteAccessedLinkEditAddress(pivotStr);
 #endif
-		int cmp = astrcmp(key, pivotStr);
+		int cmp = strcmp(key, pivotStr);
 		if ( cmp == 0 )
 			return pivot;
 		if ( cmp > 0 ) {
@@ -964,7 +911,7 @@ const struct macho_nlist* ImageLoaderMachOClassic::binarySearch(const char* key,
 		noteAccessedLinkEditAddress(pivot);
 		noteAccessedLinkEditAddress(pivotStr);
 #endif
-		int cmp = astrcmp(key, pivotStr);
+		int cmp = strcmp(key, pivotStr);
 		if ( cmp == 0 )
 			return pivot;
 		if ( cmp > 0 ) {
@@ -1266,6 +1213,8 @@ void ImageLoaderMachOClassic::doBindExternalRelocations(const LinkContext& conte
 					{
 						const struct macho_nlist* undefinedSymbol = &fSymbolTable[reloc->r_symbolnum];
 						uintptr_t* location = ((uintptr_t*)(reloc->r_address + relocBase));
+						if ( ! this->containsAddress((void*)location) )
+							dyld::throwf("external reloc %p not in mapped image %s\n", (void*)location, this->getPath());
 						uintptr_t value = *location;
 						bool symbolAddrCached = true;
 					#if __i386__

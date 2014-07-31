@@ -28,9 +28,9 @@ include ${TESTROOT}/include/common.makefile
 ## Basic test of thread-local-variables in a main executable
 ##
 
-all-check: all_$(OS_BAROLO_FEATURES) check_$(OS_BAROLO_FEATURES)
+all-check: all_$(OS_LION_FEATURES) check_$(OS_LION_FEATURES)
 
-check: check_$(OS_BAROLO_FEATURES)
+check: check_$(OS_LION_FEATURES)
 
 check_:
 	${PASS_IFF} true

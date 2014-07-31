@@ -178,6 +178,41 @@ extern const char* dyld_image_path_containing_address(const void* addr);
 
 
 
+
+//
+// This is finds the SDK version a binary was built against.
+// Returns zero on error, or if SDK version could not be determined.
+//
+// Exists in Mac OS X 10.8 and later 
+extern uint32_t dyld_get_sdk_version(const struct mach_header* mh);
+
+
+//
+// This is finds the SDK version the main executable was built against.
+// Returns zero on error, or if SDK version could not be determined.
+//
+// Exists in Mac OS X 10.8 and later 
+extern uint32_t dyld_get_program_sdk_version();
+
+
+//
+// This is finds the min OS version a binary was built to run on.
+// Returns zero on error, or if no min OS recorded in binary.
+//
+// Exists in Mac OS X 10.8 and later 
+extern uint32_t dyld_get_min_os_version(const struct mach_header* mh);
+
+
+//
+// This is finds the min OS version the main executable was built to run on.
+// Returns zero on error, or if no min OS recorded in binary.
+//
+// Exists in Mac OS X 10.8 and later 
+extern uint32_t dyld_get_program_min_os_version();
+
+
+
+
 #if __IPHONE_OS_VERSION_MIN_REQUIRED	
 //
 // Returns if any OS dylib has overridden its copy in the shared cache

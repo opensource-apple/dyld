@@ -87,7 +87,7 @@ static intptr_t read_sleb128(const uint8_t*& p, const uint8_t* end)
 		if (p == end)
 			throw "malformed sleb128";
 		byte = *p++;
-		result |= ((byte & 0x7f) << bit);
+		result |= (((int64_t)(byte & 0x7f)) << bit);
 		bit += 7;
 	} while (byte & 0x80);
 	// sign extend negative numbers
@@ -161,11 +161,12 @@ ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateFromFile(cons
 		else if ( (installName != NULL) && (strcmp(path, "/usr/lib/libgcc_s.1.dylib") == 0) && (strcmp(installName, "/usr/lib/libSystem.B.dylib") == 0) )
 			image->setPathUnowned("/usr/lib/libSystem.B.dylib");
 #endif
-		else if ( path[0] != '/' ) {
+		else if ( (path[0] != '/') || (strstr(path, "../") != NULL) ) {
+			// rdar://problem/10733082 Fix up @rpath based paths during introspection
 			// rdar://problem/5135363 turn relative paths into absolute paths so gdb, Symbolication can later find them
 			char realPath[MAXPATHLEN];
-			if ( realpath(path, realPath) != NULL )
-				image->setPath(realPath);
+			if ( fcntl(fd, F_GETPATH, realPath) == 0 ) 
+				image->setPaths(path, realPath);
 			else
 				image->setPath(path);
 		}
@@ -204,7 +205,6 @@ ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateFromCache(con
 
 		// remember this is from shared cache and cannot be unloaded
 		image->fInSharedCache = true;
-		image->fGoodFirstSegment = true;
 		image->setNeverUnload();
 		image->setSlide(slide);
 
@@ -393,6 +393,9 @@ void ImageLoaderMachOCompressed::markLINKEDIT(const LinkContext& context, int ad
 
 void ImageLoaderMachOCompressed::rebaseAt(const LinkContext& context, uintptr_t addr, uintptr_t slide, uint8_t type)
 {
+	if ( context.verboseRebase ) {
+		dyld::log("dyld: rebase: %s:*0x%08lX += 0x%08lX\n", this->getShortName(), (uintptr_t)addr, slide);
+	}
 	//dyld::log("0x%08lX type=%d\n", addr, type);
 	uintptr_t* locationToFix = (uintptr_t*)addr;
 	switch (type) {
@@ -637,7 +640,18 @@ uintptr_t ImageLoaderMachOCompressed::exportedSymbolAddress(const LinkContext& c
 	if ( (flags & EXPORT_SYMBOL_FLAGS_KIND_MASK) == EXPORT_SYMBOL_FLAGS_KIND_REGULAR ) {
 		if ( runResolver && (flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) ) {
 			// this node has a stub and resolver, run the resolver to get target address
-			read_uleb128(exportNode, exportTrieEnd); // skip over stub
+			uintptr_t stub = read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData; // skip over stub
+			// <rdar://problem/10657737> interposing dylibs have the stub address as their replacee
+			for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
+				// replace all references to 'replacee' with 'replacement'
+				if ( stub == it->replacee ) {
+					if ( context.verboseInterposing ) {
+						dyld::log("dyld interposing: lazy replace 0x%lX with 0x%lX from %s\n", 
+								  it->replacee, it->replacement, this->getPath());
+					}
+					return it->replacement;
+				}
+			}
 			typedef uintptr_t (*ResolverProc)(void);
 			ResolverProc resolver = (ResolverProc)(read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData);
 			uintptr_t result = (*resolver)();

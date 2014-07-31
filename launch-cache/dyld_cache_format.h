@@ -31,7 +31,7 @@
 
 struct dyld_cache_header
 {
-	char		magic[16];				// e.g. "dyld_v0     ppc"
+	char		magic[16];				// e.g. "dyld_v0    i386"
 	uint32_t	mappingOffset;			// file offset to first dyld_cache_mapping_info
 	uint32_t	mappingCount;			// number of dyld_cache_mapping_info entries
 	uint32_t	imagesOffset;			// file offset to first dyld_cache_image_info

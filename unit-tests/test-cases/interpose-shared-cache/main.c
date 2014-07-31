@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005-2008 Apple Inc. All rights reserved.
+ * Copyright (c) 2005-2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -24,15 +24,20 @@
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <string.h>
 #include <dlfcn.h>
+#include <stdbool.h>
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
+extern bool allocationSeen(void* p);
+typedef bool (*seenProc)(void*);
 
 int main()
 {
-	const char* x = strdup("123");
-  
-	if ( (strcmp(&x[-16], "hello") == 0) )
+	void* x = strdup("123");
+	
+	seenProc seen = (seenProc)dlsym(RTLD_DEFAULT, "allocationSeen");
+	
+	if ( (seen != NULL) && (*seen)(x) )
 		PASS("interpose-basic-shared-cache");
 	else
 		FAIL("interpose-basic-shared-cache");

@@ -23,11 +23,14 @@
 #include <stdio.h>  // fprintf(), NULL
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <unistd.h>
+#include <Availability.h>
 #include <mach-o/getsect.h>
 #include <mach/mach.h> 
 #include <mach/mach_vm.h> 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
+
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 
 extern void foo();
 
@@ -106,4 +109,14 @@ int main()
 	return EXIT_SUCCESS;
 }
 
+#else
+
+int main()
+{
+	// iOS does not have text relocs
+	PASS("text-relocs-perm");
+	return EXIT_SUCCESS;
+}
+
+#endif
 

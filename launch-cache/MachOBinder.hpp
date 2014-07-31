@@ -97,7 +97,7 @@ private:
 	void										doBindDyldLazyInfo(std::vector<void*>& pointersInData);
 	void										bindDyldInfoAt(uint8_t segmentIndex, uint64_t segmentOffset, uint8_t type, 
 																int libraryOrdinal, int64_t addend, 
-																const char* symbolName, bool lazyPointer,
+																const char* symbolName, bool lazyPointer, bool weakImport,
 																std::vector<void*>& pointersInData);
 	pint_t										resolveUndefined(const macho_nlist<P>* undefinedSymbol);
 	bool										findExportedSymbolAddress(const char* name, pint_t* result, Binder<A>** foundIn, bool* isResolverSymbol);
@@ -190,7 +190,7 @@ Binder<A>::Binder(const MachOLayoutAbstraction& layout, uint64_t dyldBaseAddress
 				fDyldInfo = (macho_dyld_info_command<P>*)cmd;
 				break;
 			case LC_RPATH:
-				throwf("LC_RPATH not supported in dylibs in dyld shared cache");
+				throwf("dyld shared cache does not support LC_RPATH found in %s", layout.getFilePath());
 				break;
 			default:
 				if ( cmd->cmd() & LC_REQ_DYLD )
@@ -262,12 +262,10 @@ Binder<A>::Binder(const MachOLayoutAbstraction& layout, uint64_t dyldBaseAddress
 	}
 }
 
-template <> uint8_t	Binder<ppc>::pointerRelocSize()    { return 2; }
 template <> uint8_t	Binder<x86>::pointerRelocSize()   { return 2; }
 template <> uint8_t	Binder<x86_64>::pointerRelocSize() { return 3; }
 template <> uint8_t	Binder<arm>::pointerRelocSize() { return 2; }
 
-template <> uint8_t	Binder<ppc>::pointerRelocType()    { return GENERIC_RELOC_VANILLA; }
 template <> uint8_t	Binder<x86>::pointerRelocType()   { return GENERIC_RELOC_VANILLA; }
 template <> uint8_t	Binder<x86_64>::pointerRelocType() { return X86_64_RELOC_UNSIGNED; }
 template <> uint8_t	Binder<arm>::pointerRelocType() { return ARM_RELOC_VANILLA; }
@@ -363,8 +361,18 @@ void Binder<A>::setDependentBinders(const Map& map)
 							}
 						}
 					}
-					if ( ! found )
-						throwf("in %s can't find dylib %s", this->getDylibID(), path);
+					if ( ! found ) {
+						if ( cmd->cmd() == LC_LOAD_WEAK_DYLIB ) {
+							BinderAndReExportFlag entry;
+							entry.binder = NULL;
+							entry.reExport = false;
+							fDependentDylibs.push_back(entry);
+							break;
+						}
+						else {
+							throwf("in %s can't find dylib %s", this->getDylibID(), path);
+						}
+					}
 				}
 				break;
 		}
@@ -534,7 +542,7 @@ void Binder<A>::doSetUpDyldSection()
 
 template <typename A>
 void Binder<A>::bindDyldInfoAt(uint8_t segmentIndex, uint64_t segmentOffset, uint8_t type, int libraryOrdinal, 
-							int64_t addend, const char* symbolName, bool lazyPointer, std::vector<void*>& pointersInData)
+							int64_t addend, const char* symbolName, bool lazyPointer, bool weakImport, std::vector<void*>& pointersInData)
 {
 	//printf("%d 0x%08llX type=%d, lib=%d, addend=%lld, symbol=%s\n", segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName);
 	const std::vector<MachOLayoutAbstraction::Segment>& segments = this->fLayout.getSegments();
@@ -561,9 +569,16 @@ void Binder<A>::bindDyldInfoAt(uint8_t segmentIndex, uint64_t segmentOffset, uin
 	pint_t targetSymbolAddress;
 	bool isResolverSymbol;
     Binder<A>* foundIn;
-	if ( ! binder->findExportedSymbolAddress(symbolName, &targetSymbolAddress, &foundIn, &isResolverSymbol) ) 
-		throwf("could not bind symbol %s in %s expected in %s", symbolName, this->getDylibID(), binder->getDylibID());
-
+	if ( weakImport && (binder == NULL) ) {
+		targetSymbolAddress = 0;
+		foundIn = NULL;
+		isResolverSymbol = false;
+	}
+	else {
+		if ( ! binder->findExportedSymbolAddress(symbolName, &targetSymbolAddress, &foundIn, &isResolverSymbol) ) 
+			throwf("could not bind symbol %s in %s expected in %s", symbolName, this->getDylibID(), binder->getDylibID());
+	}
+	
 	// don't bind lazy pointers to resolver stubs in shared cache
 	if ( lazyPointer && isResolverSymbol ) {
         if ( foundIn == this ) {
@@ -620,6 +635,7 @@ void Binder<A>::doBindDyldLazyInfo(std::vector<void*>& pointersInData)
 	const char* symbolName = NULL;
 	int libraryOrdinal = 0;
 	int64_t addend = 0;
+	bool weakImport = false;
 	while ( p < end ) {
 		uint8_t immediate = *p & BIND_IMMEDIATE_MASK;
 		uint8_t opcode = *p & BIND_OPCODE_MASK;
@@ -644,6 +660,7 @@ void Binder<A>::doBindDyldLazyInfo(std::vector<void*>& pointersInData)
 				}
 				break;
 			case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
+				weakImport = ( (immediate & BIND_SYMBOL_FLAGS_WEAK_IMPORT) != 0 );
 				symbolName = (char*)p;
 				while (*p != '\0')
 					++p;
@@ -657,7 +674,7 @@ void Binder<A>::doBindDyldLazyInfo(std::vector<void*>& pointersInData)
 				segmentOffset = read_uleb128(p, end);
 				break;
 			case BIND_OPCODE_DO_BIND:
-				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName, true, pointersInData);
+				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName, true, weakImport, pointersInData);
 				segmentOffset += sizeof(pint_t);
 				break;
 			case BIND_OPCODE_SET_TYPE_IMM:
@@ -687,6 +704,7 @@ void Binder<A>::doBindDyldInfo(std::vector<void*>& pointersInData)
 	int64_t addend = 0;
 	uint32_t count;
 	uint32_t skip;
+	bool weakImport = false;
 	bool done = false;
 	while ( !done && (p < end) ) {
 		uint8_t immediate = *p & BIND_IMMEDIATE_MASK;
@@ -712,6 +730,7 @@ void Binder<A>::doBindDyldInfo(std::vector<void*>& pointersInData)
 				}
 				break;
 			case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
+				weakImport = ( (immediate & BIND_SYMBOL_FLAGS_WEAK_IMPORT) != 0 );
 				symbolName = (char*)p;
 				while (*p != '\0')
 					++p;
@@ -731,22 +750,22 @@ void Binder<A>::doBindDyldInfo(std::vector<void*>& pointersInData)
 				segmentOffset += read_uleb128(p, end);
 				break;
 			case BIND_OPCODE_DO_BIND:
-				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName, false, pointersInData);
+				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName, false, weakImport, pointersInData);
 				segmentOffset += sizeof(pint_t);
 				break;
 			case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
-				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName, false, pointersInData);
+				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName, false, weakImport, pointersInData);
 				segmentOffset += read_uleb128(p, end) + sizeof(pint_t);
 				break;
 			case BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
-				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName, false, pointersInData);
+				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName, false, weakImport, pointersInData);
 				segmentOffset += immediate*sizeof(pint_t) + sizeof(pint_t);
 				break;
 			case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
 				count = read_uleb128(p, end);
 				skip = read_uleb128(p, end);
 				for (uint32_t i=0; i < count; ++i) {
-					bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName, false, pointersInData);
+					bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName, false, weakImport, pointersInData);
 					segmentOffset += skip + sizeof(pint_t);
 				}
 				break;

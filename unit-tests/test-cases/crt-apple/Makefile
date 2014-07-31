@@ -23,6 +23,9 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+SHELL = bash # use bash shell so we can redirect just stderr
+
+
 #
 # verify that apple[0] parameter is correct by comparing to argv[1]
 #
@@ -34,7 +37,7 @@ check:
 	./main.stripped ./main.stripped
 	`pwd`/main `pwd`/main
 	`pwd`/main.stripped `pwd`/main.stripped
-	export DYLD_LIBRARY_PATH=. && export DYLD_FRAMEWORK_PATH=. && ./main-setuid ./main-setuid
+	export DYLD_LIBRARY_PATH=. && export DYLD_FRAMEWORK_PATH=. && ./main-setuid ./main-setuid 2>/dev/null
 
 all: main  main.stripped main-setuid
 

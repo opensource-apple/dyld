@@ -29,6 +29,10 @@ ifeq "x86_64" "$(ARCH)"
 	EXTRA_OPTIONS = 
 endif
 
+ifeq "iPhoneOS" "$(OS_NAME)"
+	EXTRA_OPTIONS = 
+endif
+
 
 # run a PIE four times and verify its load address was different every time
 

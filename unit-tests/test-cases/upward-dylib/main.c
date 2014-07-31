@@ -13,6 +13,7 @@ int main()
 		PASS("upward-dylib");
 	else
 		FAIL("upward-dylib");
+        
 	return EXIT_SUCCESS;
 }
 

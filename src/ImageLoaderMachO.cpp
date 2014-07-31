@@ -88,7 +88,7 @@ ImageLoaderMachO::ImageLoaderMachO(const macho_header* mh, const char* path, uns
 	fReadOnlyImportSegment(false),
 #endif
 	fHasSubLibraries(false), fHasSubUmbrella(false), fInUmbrella(false), fHasDOFSections(false), fHasDashInit(false),
-	fHasInitializers(false), fHasTerminators(false), fGoodFirstSegment(false), fRegisteredAsRequiresCoalescing(false)
+	fHasInitializers(false), fHasTerminators(false), fRegisteredAsRequiresCoalescing(false)
 {
 	fIsSplitSeg = ((mh->flags & MH_SPLIT_SEGS) != 0);        
 
@@ -121,10 +121,14 @@ void ImageLoaderMachO::sniffLoadCommands(const macho_header* mh, const char* pat
 	*segCount = 0;
 	*libCount = 0;
 	*codeSigCmd = NULL;
+	struct macho_segment_command* segCmd;
+#if CODESIGNING_SUPPORT
+	bool foundLoadCommandSegment = false;
+#endif
 	const uint32_t cmd_count = mh->ncmds;
-	const struct load_command* const cmds    = (struct load_command*)(((uint8_t*)mh) + sizeof(macho_header));
+	const struct load_command* const startCmds    = (struct load_command*)(((uint8_t*)mh) + sizeof(macho_header));
 	const struct load_command* const endCmds = (struct load_command*)(((uint8_t*)mh) + sizeof(macho_header) + mh->sizeofcmds);
-	const struct load_command* cmd = cmds;
+	const struct load_command* cmd = startCmds;
 	for (uint32_t i = 0; i < cmd_count; ++i) {
 		switch (cmd->cmd) {
 			case LC_DYLD_INFO:
@@ -132,9 +136,20 @@ void ImageLoaderMachO::sniffLoadCommands(const macho_header* mh, const char* pat
 				*compressed = true;
 				break;
 			case LC_SEGMENT_COMMAND:
+				segCmd = (struct macho_segment_command*)cmd;
 				// ignore zero-sized segments
-				if ( ((struct macho_segment_command*)cmd)->vmsize != 0 )
+				if ( segCmd->vmsize != 0 )
 					*segCount += 1;
+#if CODESIGNING_SUPPORT
+				// <rdar://problem/7942521> all load commands must be in an executable segment
+				if ( (segCmd->fileoff < mh->sizeofcmds) && (segCmd->filesize != 0) ) {
+					if ( (segCmd->fileoff != 0) || (segCmd->filesize < (mh->sizeofcmds+sizeof(macho_header))) ) 
+						dyld::throwf("malformed mach-o image: segment %s does not span all load commands", segCmd->segname); 
+					if ( segCmd->initprot != (VM_PROT_READ | VM_PROT_EXECUTE) ) 
+						dyld::throwf("malformed mach-o image: load commands found in segment %s with wrong permissions", segCmd->segname); 
+					foundLoadCommandSegment = true;
+				}
+#endif		
 				break;
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
@@ -148,11 +163,17 @@ void ImageLoaderMachO::sniffLoadCommands(const macho_header* mh, const char* pat
 		}
 		uint32_t cmdLength = cmd->cmdsize;
 		cmd = (const struct load_command*)(((char*)cmd)+cmdLength);
-		if ( cmd > endCmds ) {
+		if ( (cmd > endCmds) || (cmd < startCmds) ) {
 			dyld::throwf("malformed mach-o image: load command #%d length (%u) would exceed sizeofcmds (%u) in %s", 
 							i, cmdLength, mh->sizeofcmds, path);
 		}
 	}
+	
+#if CODESIGNING_SUPPORT
+	if ( ! foundLoadCommandSegment )
+		throw "load commands not in a segment";
+#endif
+		
 	// fSegmentsArrayCount is only 8-bits
 	if ( *segCount > 255 )
 		dyld::throwf("malformed mach-o image: more than 255 segments in %s", path);
@@ -287,6 +308,8 @@ void ImageLoaderMachO::parseLoadCmds()
 	const dyld_info_command* dyldInfo = NULL;
 	const macho_nlist* symbolTable = NULL;
 	const char* symbolTableStrings = NULL;
+	const struct load_command* firstUnknownCmd = NULL;
+	const struct version_min_command* minOSVersionCmd = NULL;
 	const dysymtab_command* dynSymbolTable = NULL;
 	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
 	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
@@ -352,14 +375,34 @@ void ImageLoaderMachO::parseLoadCmds()
 			case LC_LOAD_WEAK_DYLIB:
 		    case LC_REEXPORT_DYLIB:
 			case LC_LOAD_UPWARD_DYLIB:
+			case LC_MAIN:
 				// do nothing, just prevent LC_REQ_DYLD exception from occuring
 				break;
+			case LC_VERSION_MIN_MACOSX:
+			case LC_VERSION_MIN_IPHONEOS:
+				minOSVersionCmd = (version_min_command*)cmd;
+				break;
 			default:
-				if ( (cmd->cmd & LC_REQ_DYLD) != 0 )
-					dyld::throwf("unknown required load command 0x%08X", cmd->cmd);
+				if ( (cmd->cmd & LC_REQ_DYLD) != 0 ) {
+					if ( firstUnknownCmd == NULL )
+						firstUnknownCmd = cmd;
+				}
+				break;
 		}
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 	}
+	if ( firstUnknownCmd != NULL ) {
+		if ( minOSVersionCmd != NULL )  {
+			dyld::throwf("cannot load '%s' because it was built for OS version %u.%u (load command 0x%08X is unknown)", 
+						 this->getShortName(),
+						 minOSVersionCmd->version >> 16, ((minOSVersionCmd->version >> 8) & 0xff), 
+						 firstUnknownCmd->cmd);
+		}
+		else {
+			dyld::throwf("cannot load '%s' (load command 0x%08X is unknown)", this->getShortName(), firstUnknownCmd->cmd);
+		}
+	}
+	
 	
 	if ( dyldInfo != NULL )
 		this->setDyldInfo(dyldInfo);
@@ -673,11 +716,6 @@ const char* ImageLoaderMachO::getInstallPath() const
 void ImageLoaderMachO::registerInterposing()
 {
 	// mach-o files advertise interposing by having a __DATA __interpose section
-	uintptr_t textStart = this->segActualLoadAddress(0);
-	uintptr_t textEnd = this->segActualEndAddress(0);
-	// <rdar://problem/8268602> verify that the first segment load command is for a read-only segment
-	if ( ! fGoodFirstSegment )
-		return;
 	struct InterposeData { uintptr_t replacement; uintptr_t replacee; };
 	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
 	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
@@ -699,7 +737,7 @@ void ImageLoaderMachO::registerInterposing()
 								tuple.replacementImage	= this;
 								tuple.replacee			= interposeArray[i].replacee;
 								// <rdar://problem/7937695> verify that replacement is in this image
-								if ( (tuple.replacement >= textStart) && (tuple.replacement < textEnd) ) {
+								if ( this->containsAddress((void*)tuple.replacement) ) {
 									for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
 										if ( it->replacee == tuple.replacee ) {
 											tuple.replacee = it->replacement;
@@ -717,6 +755,26 @@ void ImageLoaderMachO::registerInterposing()
 	}
 }
 
+void* ImageLoaderMachO::getThreadPC() const
+{
+	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+	const struct load_command* cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		if ( cmd->cmd == LC_MAIN ) {
+			entry_point_command* mainCmd = (entry_point_command*)cmd;
+			void* entry = (void*)(mainCmd->entryoff + (char*)fMachOData);
+			// <rdar://problem/8543820&9228031> verify entry point is in image
+			if ( this->containsAddress(entry) )
+				return entry;
+			else
+				throw "LC_MAIN entryoff is out of range";
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+	return NULL;
+}
+
 
 void* ImageLoaderMachO::getMain() const
 {
@@ -727,30 +785,28 @@ void* ImageLoaderMachO::getMain() const
 		switch (cmd->cmd) {
 			case LC_UNIXTHREAD:
 			{
-			#if __ppc__
-				const ppc_thread_state_t* registers = (ppc_thread_state_t*)(((char*)cmd) + 16);
-				return (void*)(registers->srr0 + fSlide);
-			#elif __ppc64__
-				const ppc_thread_state64_t* registers = (ppc_thread_state64_t*)(((char*)cmd) + 16);
-				return (void*)(registers->srr0 + fSlide);
-			#elif __i386__
+			#if __i386__
 				const i386_thread_state_t* registers = (i386_thread_state_t*)(((char*)cmd) + 16);
-				return (void*)(registers->eip + fSlide);
+				void* entry = (void*)(registers->eip + fSlide);
 			#elif __x86_64__
 				const x86_thread_state64_t* registers = (x86_thread_state64_t*)(((char*)cmd) + 16);
-				return (void*)(registers->rip + fSlide);
+				void* entry = (void*)(registers->rip + fSlide);
 			#elif __arm__
 				const arm_thread_state_t* registers = (arm_thread_state_t*)(((char*)cmd) + 16);
-				return (void*)(registers->__pc + fSlide);
+				void* entry = (void*)(registers->__pc + fSlide);
 			#else
 				#warning need processor specific code
 			#endif
+				// <rdar://problem/8543820&9228031> verify entry point is in image
+				if ( this->containsAddress(entry) ) {
+					return entry;
+				}
 			}
 			break;
 		}
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 	}
-	return NULL;
+	throw "no valid entry point";
 }
 
 bool ImageLoaderMachO::needsAddedLibSystemDepency(unsigned int libCount, const macho_header* mh)
@@ -1306,9 +1362,7 @@ uintptr_t ImageLoaderMachO::bindLocation(const LinkContext& context, uintptr_t l
 
 #if SUPPORT_OLD_CRT_INITIALIZATION
 // first 16 bytes of "start" in crt1.o
-#if __ppc__
-	static uint32_t sStandardEntryPointInstructions[4] = { 0x7c3a0b78, 0x3821fffc, 0x54210034, 0x38000000 };
-#elif __i386__
+#if __i386__
 	static uint8_t sStandardEntryPointInstructions[16] = { 0x6a, 0x00, 0x89, 0xe5, 0x83, 0xe4, 0xf0, 0x83, 0xec, 0x10, 0x8b, 0x5d, 0x04, 0x89, 0x5c, 0x24 };
 #endif
 #endif
@@ -1331,11 +1385,10 @@ void ImageLoaderMachO::setupLazyPointerHandler(const LinkContext& context)
 	const uint32_t cmd_count = mh->ncmds;
 	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
 	const struct load_command* cmd;
-	// set up __dyld section
-	// optimizations:
-	//   1) do nothing if image is in dyld shared cache and dyld loaded at same address as when cache built
-	//	 2) first read __dyld value, if already correct don't write, this prevents dirtying a page
-	if ( !fInSharedCache || !context.dyldLoadedAtSameAddressNeededBySharedCache ) {
+	// There used to be some optimizations to skip this section scan, but we need to handle the 
+	// __dyld section in libdyld.dylib, so everything needs to be scanned for now.
+	// <rdar://problem/10910062> CrashTracer: 1,295 crashes in bash at bash: getenv
+	if ( true ) {
 		cmd = cmds;
 		for (uint32_t i = 0; i < cmd_count; ++i) {
 			if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
@@ -1375,6 +1428,16 @@ void ImageLoaderMachO::setupLazyPointerHandler(const LinkContext& context)
 										context.setRunInitialzersOldWay();
 									}
 				#endif
+								}
+							}
+							else if ( mh->filetype == MH_DYLIB ) {
+								const char* installPath = this->getInstallPath();
+								if ( (installPath != NULL) && (strncmp(installPath, "/usr/lib/", 9) == 0) ) {
+									if ( sect->size > offsetof(DATAdyld, vars) ) {
+										// use ProgramVars from libdyld.dylib but tweak mh field to correct value
+										dd->vars.mh = context.mainExecutable->machHeader();
+										context.setNewProgramVars(dd->vars);
+									}
 								}
 							}
 						}
@@ -1451,16 +1514,6 @@ bool ImageLoaderMachO::usablePrebinding(const LinkContext& context) const
 void ImageLoaderMachO::doImageInit(const LinkContext& context)
 {
 	if ( fHasDashInit ) {
-#if __IPHONE_OS_VERSION_MIN_REQUIRED	
-		// <rdar://problem/8543820> verify initializers are in first segment for dylibs
-		if ( this->isDylib() && !fGoodFirstSegment ) {
-			if ( context.verboseInit )
-				dyld::log("dyld: ignoring -init in %s\n", this->getPath());
-			return;
-		}
-		uintptr_t textStart = this->segActualLoadAddress(0);
-		uintptr_t textEnd = this->segActualEndAddress(0);
-#endif
 		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
 		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
 		const struct load_command* cmd = cmds;
@@ -1468,20 +1521,13 @@ void ImageLoaderMachO::doImageInit(const LinkContext& context)
 			switch (cmd->cmd) {
 				case LC_ROUTINES_COMMAND:
 					Initializer func = (Initializer)(((struct macho_routines_command*)cmd)->init_address + fSlide);
-#if __IPHONE_OS_VERSION_MIN_REQUIRED	
-					// <rdar://problem/8543820> verify initializers are in first segment for dylibs
-					if ( this->isDylib() && (((uintptr_t)func >= textEnd) || ((uintptr_t)func < textStart)) ) {
-						if ( context.verboseInit )
-							dyld::log("dyld: ignoring out of bounds initializer function %p in %s\n", func, this->getPath());
+					// <rdar://problem/8543820&9228031> verify initializers are in image
+					if ( ! this->containsAddress((void*)func) ) {
+						dyld::throwf("initializer function %p not in mapped image for %s\n", func, this->getPath());
 					}
-					else {
-#endif
-						if ( context.verboseInit )
-							dyld::log("dyld: calling -init function 0x%p in %s\n", func, this->getPath());
-						func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
-#if __IPHONE_OS_VERSION_MIN_REQUIRED	
-					}
-#endif
+					if ( context.verboseInit )
+						dyld::log("dyld: calling -init function 0x%p in %s\n", func, this->getPath());
+					func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
 					break;
 			}
 			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
@@ -1492,16 +1538,6 @@ void ImageLoaderMachO::doImageInit(const LinkContext& context)
 void ImageLoaderMachO::doModInitFunctions(const LinkContext& context)
 {
 	if ( fHasInitializers ) {
-#if __IPHONE_OS_VERSION_MIN_REQUIRED	
-		// <rdar://problem/8543820> verify initializers are in first segment for dylibs
-		if ( this->isDylib() && !fGoodFirstSegment ) {
-			if ( context.verboseInit )
-				dyld::log("dyld: ignoring all initializers in %s\n", this->getPath());
-			return;
-		}
-		uintptr_t textStart = this->segActualLoadAddress(0);
-		uintptr_t textEnd = this->segActualEndAddress(0);
-#endif
 		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
 		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
 		const struct load_command* cmd = cmds;
@@ -1517,20 +1553,13 @@ void ImageLoaderMachO::doModInitFunctions(const LinkContext& context)
 						const uint32_t count = sect->size / sizeof(uintptr_t);
 						for (uint32_t i=0; i < count; ++i) {
 							Initializer func = inits[i];
-#if __IPHONE_OS_VERSION_MIN_REQUIRED	
-							// <rdar://problem/8543820> verify initializers are in first segment for dylibs
-							if ( this->isDylib() && (((uintptr_t)func >= textEnd) || ((uintptr_t)func < textStart)) ) {
-								if ( context.verboseInit )
-									dyld::log("dyld: ignoring out of bounds initializer function %p in %s\n", func, this->getPath());
+							// <rdar://problem/8543820&9228031> verify initializers are in image
+							if ( ! this->containsAddress((void*)func) ) {
+								dyld::throwf("initializer function %p not in mapped image for %s\n", func, this->getPath());
 							}
-							else {
-#endif						
-								if ( context.verboseInit )
-									dyld::log("dyld: calling initializer function %p in %s\n", func, this->getPath());
-								func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
-#if __IPHONE_OS_VERSION_MIN_REQUIRED	
-							}
-#endif
+							if ( context.verboseInit )
+								dyld::log("dyld: calling initializer function %p in %s\n", func, this->getPath());
+							func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
 						}
 					}
 				}
@@ -1620,6 +1649,10 @@ void ImageLoaderMachO::doTermination(const LinkContext& context)
 						const uint32_t count = sect->size / sizeof(uintptr_t);
 						for (uint32_t i=count; i > 0; --i) {
 							Terminator func = terms[i-1];
+							// <rdar://problem/8543820&9228031> verify terminators are in image
+							if ( ! this->containsAddress((void*)func) ) {
+								dyld::throwf("termination function %p not in mapped image for %s\n", func, this->getPath());
+							}
 							if ( context.verboseInit )
 								dyld::log("dyld: calling termination function %p in %s\n", func, this->getPath());
 							func();
@@ -1726,24 +1759,11 @@ void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInF
 	intptr_t slide = this->assignSegmentAddresses(context);
 	if ( context.verboseMapping )
 		dyld::log("dyld: Mapping %s\n", this->getPath());
-	// <rdar://problem/8268602> verify that the first segment load command is for a r-x segment
-	// that starts at begining of file and is larger than all load commands
-	uintptr_t firstSegMappedStart = segPreferredLoadAddress(0) + slide;
-	uintptr_t firstSegMappedEnd = firstSegMappedStart + this->segSize(0);
-	if ( (this->segLoadCommand(0)->initprot == (VM_PROT_EXECUTE|VM_PROT_READ)) 
-		&& (this->segFileOffset(0) == 0) 
-		&& (this->segFileSize(0) != 0) 
-		&& (this->segSize(0) > ((macho_header*)fMachOData)->sizeofcmds) ) {
-			fGoodFirstSegment = true;
-	}
 	// map in all segments
 	for(unsigned int i=0, e=segmentCount(); i < e; ++i) {
 		vm_offset_t fileOffset = segFileOffset(i) + offsetInFat;
 		vm_size_t size = segFileSize(i);
 		uintptr_t requestedLoadAddress = segPreferredLoadAddress(i) + slide;
-		// <rdar://problem/8268602> verify other segments map after first
-		if ( (i != 0) && (requestedLoadAddress < firstSegMappedEnd) )
-			fGoodFirstSegment = false;
 		int protection = 0;
 		if ( !segUnaccessible(i) ) {
 			// If has text-relocs, don't set x-bit initially.

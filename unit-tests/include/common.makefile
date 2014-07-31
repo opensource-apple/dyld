@@ -6,28 +6,29 @@ SHELL = /bin/sh
 OS_NAME ?= MacOSX
 ifeq "$(OS_NAME)" "iPhoneOS"
 	OS_VERSION ?= 3.1
-	ifeq "$(OS_VERSION)" "4.3"
-		OS_BAROLO_FEATURES = 1
+	ifeq "$(findstring -$(OS_VERSION)-,-3.0-3.1-3.2-4.0-4.1-4.2-4.3-)" ""
+		OS_LION_FEATURES = 1
 	endif
-	ARCH ?= armv6
-	VALID_ARCHS ?= armv6
+	ARCH ?= armv7
+	VALID_ARCHS ?= armv7
 else
 	OS_VERSION ?= 10.7
-	ifeq "$(OS_VERSION)" "10.7"
-		OS_BAROLO_FEATURES = 1
+	ifeq "$(findstring -$(OS_VERSION)-,-10.4-10.5-10.6-)" ""
+		OS_LION_FEATURES = 1
 	endif
-	ARCH ?= $(shell arch)
+	ARCH ?= x86_64
 	VALID_ARCHS ?= "i386 x86_64"
 endif
 
+IOSROOT	= 
+
 ifeq "$(OS_NAME)" "iPhoneOS"
-	CC			= /Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/gcc-4.2 -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot /Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS4.3.Internal.sdk
-	CXX			= /Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/g++-4.2 -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot /Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS4.3.Internal.sdk
-#	CC			= gcc-4.2 -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION)
-#	CXX			= g++-4.2 -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION)
+	IOSROOT		= /Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS5.0.Internal.sdk
+	CC			= /Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/cc -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot $(IOSROOT)
+	CXX			= /Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/c++ -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot $(IOSROOT)
 else
-	CC			= gcc-4.2 -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION)
-	CXX			= g++-4.2 -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION)
+	CC			= cc -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION)
+	CXX			= c++ -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION)
 endif
 
 CCFLAGS		= -Wall -std=c99

@@ -37,11 +37,28 @@
 extern "C" int  __cxa_atexit(void (*func)(void *), void *arg, void *dso);
 extern "C" void __cxa_finalize(const void *dso);
 
+
+#ifndef LC_VERSION_MIN_MACOSX
+	#define LC_VERSION_MIN_MACOSX 0x24
+	struct version_min_command {
+		uint32_t	cmd;		/* LC_VERSION_MIN_MACOSX or
+					   LC_VERSION_MIN_IPHONEOS  */
+		uint32_t	cmdsize;	/* sizeof(struct min_version_command) */
+		uint32_t	version;	/* X.Y.Z is encoded in nibbles xxxx.yy.zz */
+		uint32_t	sdk;		/* X.Y.Z is encoded in nibbles xxxx.yy.zz */
+	};
+#endif
+
+#ifndef LC_VERSION_MIN_IPHONEOS
+	#define LC_VERSION_MIN_IPHONEOS 0x25
+#endif
+
+
 #ifndef LC_LOAD_UPWARD_DYLIB
 	#define	LC_LOAD_UPWARD_DYLIB (0x23|LC_REQ_DYLD)	/* load of dylib whose initializers run later */
 #endif
 
-#define DYLD_SHARED_CACHE_SUPPORT (__ppc__ || __i386__ || __ppc64__ || __x86_64__ || __arm__)
+#define DYLD_SHARED_CACHE_SUPPORT (__i386__ || __x86_64__ || __arm__)
 
 // deprecated APIs are still availble on Mac OS X, but not on iPhone OS
 #if __IPHONE_OS_VERSION_MIN_REQUIRED	
@@ -405,6 +422,119 @@ const char* libraryName)
 	}
 	return(-1);
 }
+
+
+/*
+ * Returns the sdk version (encode as nibble XXXX.YY.ZZ) the
+ * specified binary was built against.
+ *
+ * First looks for LC_VERSION_MIN_MACOSX/LC_VERSION_MIN_IPHONEOS
+ * in binary and if sdk field is not zero, return that value.
+ * Otherwise, looks for the libSystem.B.dylib the binary linked
+ * against and uses a table to convert that to an sdk version.
+ */
+uint32_t dyld_get_sdk_version(const mach_header* mh)
+{
+#if __LP64__
+	const load_command* cmds = (load_command*)((char *)mh + sizeof(mach_header_64));
+#else
+	const load_command* cmds = (load_command*)((char *)mh + sizeof(mach_header));
+#endif
+	const version_min_command* versCmd;
+	const dylib_command* dylibCmd;
+	const load_command* cmd = cmds;
+	uint32_t libSystemVers = 0;
+	for(uint32_t i = 0; i < mh->ncmds; ++i) {
+		switch ( cmd->cmd ) { 
+			case LC_VERSION_MIN_MACOSX:
+			case LC_VERSION_MIN_IPHONEOS:
+				versCmd = (version_min_command*)cmd;
+				if ( versCmd->sdk != 0 )
+					return versCmd->sdk;	// found explicit SDK version
+				break;
+			case LC_LOAD_DYLIB:
+			case LC_LOAD_WEAK_DYLIB:
+			case LC_LOAD_UPWARD_DYLIB:
+				dylibCmd = (dylib_command*)cmd;
+				if ( strcmp((char*)dylibCmd + dylibCmd->dylib.name.offset, "/usr/lib/libSystem.B.dylib") == 0 )
+					libSystemVers = dylibCmd->dylib.current_version;
+				else if ( strcmp((char*)dylibCmd + dylibCmd->dylib.name.offset, "/usr/lib/libSystem.dylib") == 0 )
+					return 0x00040000; // all iOS simulator have same libSystem.dylib version
+				break;
+		}
+	    cmd = (load_command*)((char *)cmd + cmd->cmdsize);
+	}
+	
+	if ( libSystemVers != 0 ) {
+		// found linked libSystem.B.dylib version linked against
+#if __IPHONE_OS_VERSION_MIN_REQUIRED
+		// convert libSystem.B.dylib version to iOS sdk version
+		if ( libSystemVers < 0x006F0010 )       // libSystem 111.0.16 in 3.0
+			return 0x00020000;		// 2.0  
+		else if ( libSystemVers < 0x006F0201 )	// libSystem 111.2.1 in 3.1
+			return 0x00030000;		// 3.0  
+		else if ( libSystemVers < 0x007D020B )	// libSystem 125.2.11 in 4.0
+			return 0x00030100;		// 3.1  
+		else if ( libSystemVers < 0x007D0400 )	// libSystem 125.4 in 4.1 and in 4.2
+			return 0x00040000;		// 4.0  
+		else if ( libSystemVers < 0x009F0000 )	// libSystem 159 in 4.3
+			return 0x00040100;		// 4.1  
+		else if ( libSystemVers < 0x00A10000 )	// libSystem 161 in 5.0
+			return 0x00040300;		// 4.3  
+		else
+			return 0x00050000;
+#else
+		// convert libSystem.B.dylib version to MacOSX sdk version
+		if ( libSystemVers < 0x006F0000 )       // libSystem 111 in 10.5
+			return 0x000A0400;		// 10.4  
+		else if ( libSystemVers < 0x007B0000 )	// libSystem 123 in 10.6
+			return 0x000A0500;		// 10.5  
+		else if ( libSystemVers < 0x009F0000 )	// libSystem 159 in 10.7
+			return 0x000A0600;		// 10.6  
+		else if ( libSystemVers < 0x00A10000 )  // libSystem 161 in 10.8
+			return 0x000A0700;		// 10.7  
+		else 
+			return 0x000A0800;		// 10.8  
+#endif
+	}
+	
+	return 0;
+}
+
+uint32_t dyld_get_program_sdk_version()
+{
+	return dyld_get_sdk_version((mach_header*)_NSGetMachExecuteHeader());
+}
+
+
+uint32_t dyld_get_min_os_version(const struct mach_header* mh)
+{
+#if __LP64__
+	const load_command* cmds = (load_command*)((char *)mh + sizeof(mach_header_64));
+#else
+	const load_command* cmds = (load_command*)((char *)mh + sizeof(mach_header));
+#endif
+	const version_min_command* versCmd;
+	const load_command* cmd = cmds;
+	for(uint32_t i = 0; i < mh->ncmds; ++i) {
+		switch ( cmd->cmd ) { 
+			case LC_VERSION_MIN_MACOSX:
+			case LC_VERSION_MIN_IPHONEOS:
+				versCmd = (version_min_command*)cmd;
+				return versCmd->version;	// found explicit min OS version
+				break;
+		}
+	    cmd = (load_command*)((char *)cmd + cmd->cmdsize);
+	}
+	return 0;
+}
+
+
+uint32_t dyld_get_program_min_os_version()
+{
+	return dyld_get_min_os_version((mach_header*)_NSGetMachExecuteHeader());
+}
+
 
 #if DEPRECATED_APIS_SUPPORTED
 /*
@@ -1075,9 +1205,10 @@ static void shared_cache_out_of_date()
 }
 #endif // DYLD_SHARED_CACHE_SUPPORT
 
+extern void* start;
 
 // the table passed to dyld containing thread helpers
-static dyld::LibSystemHelpers sHelpers = { 8, &dyldGlobalLockAcquire, &dyldGlobalLockRelease,  
+static dyld::LibSystemHelpers sHelpers = { 9, &dyldGlobalLockAcquire, &dyldGlobalLockRelease,  
 									&getPerThreadBufferFor_dlerror, &malloc, &free, &__cxa_atexit,
 						#if DYLD_SHARED_CACHE_SUPPORT
 									&shared_cache_missing, &shared_cache_out_of_date,
@@ -1088,7 +1219,8 @@ static dyld::LibSystemHelpers sHelpers = { 8, &dyldGlobalLockAcquire, &dyldGloba
 									&pthread_key_create, &pthread_setspecific,
 									&malloc_size,
 									&pthread_getspecific,
-									&__cxa_finalize};
+									&__cxa_finalize,
+									&start};
 
 
 //

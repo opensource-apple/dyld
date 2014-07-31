@@ -50,6 +50,7 @@ public:
 	bool								inSharedCache() const { return fInSharedCache; }
 	const char*							getInstallPath() const;
 	virtual void*						getMain() const;
+	virtual void*						getThreadPC() const;
 	virtual const struct mach_header*   machHeader() const;
 	virtual uintptr_t					getSlide() const;
 	virtual const void*					getEnd() const;
@@ -218,7 +219,6 @@ protected:
 											fHasDashInit : 1,
 											fHasInitializers : 1,
 											fHasTerminators : 1,
-											fGoodFirstSegment : 1,
 											fRegisteredAsRequiresCoalescing : 1; 	// <rdar://problem/7886402> Loading MH_DYLIB_STUB causing coalescable miscount
 											
 											

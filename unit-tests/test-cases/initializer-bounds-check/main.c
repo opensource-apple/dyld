@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -30,13 +30,9 @@ extern int bar;
 int
 main()
 {
-#if __IPHONE_OS_VERSION_MIN_REQUIRED
 	if ( bar == 1 )
 		FAIL("initializer-bounds-check, out of bounds initializer called");
 	else
 		PASS("initializer-bounds-check");
-#else
-		PASS("initializer-bounds-check");
-#endif
   return EXIT_SUCCESS;
 }

@@ -25,6 +25,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <time.h>
 #include <unistd.h>
 #include <stdarg.h>
@@ -240,10 +241,8 @@ char* mach_error_type(mach_error_t err)
 
 // _pthread_reap_thread calls fprintf(stderr). 
 // We map fprint to _simple_vdprintf and ignore FILE* stream, so ok for it to be NULL
-#if !__ppc__
 FILE* __stderrp = NULL;
 FILE* __stdoutp = NULL;
-#endif
 
 // work with c++abi.a
 void (*__cxa_terminate_handler)() = _ZSt9terminatev;
@@ -261,3 +260,20 @@ void __cxa_bad_typeid()
 {
 	_ZN4dyld4haltEPKc("__cxa_bad_typeid()");
 }
+
+// to work with libc++
+void _ZNKSt3__120__vector_base_commonILb1EE20__throw_length_errorEv()
+{
+	_ZN4dyld4haltEPKc("std::vector<>::_throw_length_error()");
+}
+
+// libc.a sometimes missing memset
+#undef memset
+void* memset(void* b, int c, size_t len)
+{
+	uint8_t* p = (uint8_t*)b;
+	for(size_t i=len; i > 0; --i)
+		*p++ = c;
+	return b;
+}
+

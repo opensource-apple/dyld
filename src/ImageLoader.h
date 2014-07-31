@@ -56,12 +56,6 @@
 #elif __x86_64__
 	#define SHARED_REGION_BASE SHARED_REGION_BASE_X86_64
 	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_X86_64
-#elif __ppc__
-	#define SHARED_REGION_BASE SHARED_REGION_BASE_PPC
-	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_PPC
-#elif __ppc64__
-	#define SHARED_REGION_BASE SHARED_REGION_BASE_PPC64
-	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_PPC64
 #elif __arm__
 	#define SHARED_REGION_BASE SHARED_REGION_BASE_ARM
 	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_ARM
@@ -74,13 +68,22 @@
 	#define EXPORT_SYMBOL_FLAGS_REEXPORT 0x08
 #endif
 
+#ifndef LC_MAIN
+	#define LC_MAIN (0x28|LC_REQ_DYLD) /* replacement for LC_UNIXTHREAD */
+	struct entry_point_command {
+		uint32_t  cmd;	/* LC_MAIN only used in MH_EXECUTE filetypes */
+		uint32_t  cmdsize;	/* 24 */
+		uint64_t  entryoff;	/* file (__TEXT) offset of main() */
+		uint64_t  stacksize;/* if not zero, initial stack size */
+	};
+#endif
 
 #define SPLIT_SEG_SHARED_REGION_SUPPORT __arm__
-#define SPLIT_SEG_DYLIB_SUPPORT (__ppc__ || __i386__ || __arm__)
-#define PREBOUND_IMAGE_SUPPORT (__ppc__ || __i386__ || __arm__)
-#define TEXT_RELOC_SUPPORT (__ppc__ || __i386__ || __arm__)
-#define DYLD_SHARED_CACHE_SUPPORT (__ppc__ || __i386__ || __ppc64__ || __x86_64__ || __arm__)
-#define SUPPORT_OLD_CRT_INITIALIZATION (__ppc__ || __i386__)
+#define SPLIT_SEG_DYLIB_SUPPORT (__i386__ || __arm__)
+#define PREBOUND_IMAGE_SUPPORT (__i386__ || __arm__)
+#define TEXT_RELOC_SUPPORT (__i386__ || __arm__)
+#define DYLD_SHARED_CACHE_SUPPORT (__i386__ ||  __x86_64__ || __arm__)
+#define SUPPORT_OLD_CRT_INITIALIZATION (__i386__)
 #define SUPPORT_LC_DYLD_ENVIRONMENT  (__i386__ || __x86_64__)
 #define SUPPORT_VERSIONED_PATHS  (__i386__ || __x86_64__)
 #if __IPHONE_OS_VERSION_MIN_REQUIRED
@@ -89,7 +92,7 @@
 	#define CORESYMBOLICATION_SUPPORT   (__i386__ || __x86_64__)
 #endif
 #if __arm__
-	#define INITIAL_IMAGE_COUNT 100
+	#define INITIAL_IMAGE_COUNT 256
 #else
 	#define INITIAL_IMAGE_COUNT 200
 #endif
@@ -187,6 +190,7 @@ public:
 		void			(*removeImage)(ImageLoader* image);
 		void			(*registerDOFs)(const std::vector<DOFInfo>& dofs);
 		void			(*clearAllDepths)();
+		void			(*printAllDepths)();
 		unsigned int	(*imageCount)();
 		void			(*setNewProgramVars)(const ProgramVars&);
 		bool			(*inSharedCache)(const char* path);
@@ -285,6 +289,9 @@ public:
 
 	uint32_t							getPathHash() const { return fPathHash; }
 
+										// get the "real" path for this image (e.g. no @rpath)
+	const char*							getRealPath() const;
+
 										// get path this image is intended to be placed on disk or NULL if no preferred install location
 	virtual const char*					getInstallPath() const = 0;
 
@@ -325,7 +332,10 @@ public:
 										// st_mtime from stat() on file
 	time_t								lastModified() const;
 
-										// only valid for main executables, returns a pointer its entry point
+										// only valid for main executables, returns a pointer its entry point from LC_UNIXTHREAD
+	virtual void*						getThreadPC() const = 0;
+	
+										// only valid for main executables, returns a pointer its main from LC_<MAIN
 	virtual void*						getMain() const = 0;
 	
 										// dyld API's require each image to have an associated mach_header
@@ -478,7 +488,11 @@ public:
 	bool								neverUnload() const { return fNeverUnload; }
 
 	void								setNeverUnload() { fNeverUnload = true; fLeaveMapped = true; }
+	
+	bool								isReferencedDownward() { return fIsReferencedDownward; }
 
+	bool								isReferencedUpward() { return fIsReferencedUpward; }
+	
 										// triggered by DYLD_PRINT_STATISTICS to write info on work done and how fast
 	static void							printStatistics(unsigned int imageCount, const InitializerTimingList& timingInfo);
 				
@@ -490,10 +504,12 @@ public:
 										// used instead of directly deleting image
 	static void							deleteImage(ImageLoader*);
 		
-			void						setPath(const char* path);	// only called for images created from memory
+			void						setPath(const char* path);
+			void						setPaths(const char* path, const char* realPath);
 			void						setPathUnowned(const char* path);
 						
 			void						clearDepth() { fDepth = 0; }
+			int							getDepth() { return fDepth; }
 			
 			void						setBeingRemoved() { fBeingRemoved = true; }
 			bool						isBeingRemoved() const { return fBeingRemoved; }
@@ -638,6 +654,7 @@ protected:
 	static uint64_t				fgTotalInitTime;
 	static std::vector<InterposeTuple>	fgInterposingTuples;
 	const char*					fPath;
+	const char*					fRealPath;
 	dev_t						fDevice;
 	ino_t						fInode;
 	time_t						fLastModified;
@@ -677,6 +694,8 @@ private:
 								fBeingRemoved : 1,
 								fAddFuncNotified : 1,
 								fPathOwnedByImage : 1,
+								fIsReferencedDownward : 1,
+								fIsReferencedUpward : 1,
 								fWeakSymbolsBound : 1;
 
 	static uint16_t				fgLoadOrdinal;

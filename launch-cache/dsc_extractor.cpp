@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2010 Apple Inc. All rights reserved.
+ * Copyright (c) 2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -85,6 +85,8 @@ int optimize_linkedit(macho_header<typename A::P>* mh, const void* mapped_cache,
 	macho_segment_command<P>* linkEditSegCmd = NULL;
 	macho_symtab_command<P>* symtab = NULL;
 	macho_dysymtab_command<P>*	dynamicSymTab = NULL;
+	macho_linkedit_data_command<P>*	functionStarts = NULL;
+	macho_linkedit_data_command<P>*	dataInCode = NULL;
 	for (uint32_t i = 0; i < cmd_count; ++i) {
 		if ( cmd->cmd() == macho_segment_command<P>::CMD ) {
 			// update segment/section file offsets
@@ -121,6 +123,12 @@ int optimize_linkedit(macho_header<typename A::P>* mh, const void* mapped_cache,
 		else if ( cmd->cmd() == LC_DYSYMTAB ) {
 			dynamicSymTab = (macho_dysymtab_command<P>*)cmd;
 		}
+		else if ( cmd->cmd() == LC_FUNCTION_STARTS ) {
+			functionStarts = (macho_linkedit_data_command<P>*)cmd;
+		}
+		else if ( cmd->cmd() == LC_DATA_IN_CODE ) {
+			dataInCode = (macho_linkedit_data_command<P>*)cmd;
+		}
 		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
 	}
 	
@@ -137,8 +145,23 @@ int optimize_linkedit(macho_header<typename A::P>* mh, const void* mapped_cache,
 		fprintf(stderr, "LC_DYSYMTAB not found\n");
 		return -1;
 	}
+
+	const uint32_t newFunctionStartsOffset = linkEditSegCmd->fileoff();
+	uint32_t functionStartsSize = 0;
+	if ( functionStarts != NULL ) {
+		// copy function starts from original cache file to new mapped dylib file
+		functionStartsSize = functionStarts->datasize();
+		memcpy((char*)mh + newFunctionStartsOffset, (char*)mapped_cache + functionStarts->dataoff(), functionStartsSize);
+	}
+	const uint32_t newDataInCodeOffset = (newFunctionStartsOffset + functionStartsSize + sizeof(pint_t) - 1) & (-sizeof(pint_t)); // pointer align
+	uint32_t dataInCodeSize = 0;
+	if ( dataInCode != NULL ) {
+		// copy data-in-code info from original cache file to new mapped dylib file
+		dataInCodeSize = dataInCode->datasize();
+		memcpy((char*)mh + newDataInCodeOffset, (char*)mapped_cache + dataInCode->dataoff(), dataInCodeSize);
+	}
 	// copy symbol entries and strings from original cache file to new mapped dylib file
-	const uint32_t newSymTabOffset = linkEditSegCmd->fileoff();
+	const uint32_t newSymTabOffset = (newDataInCodeOffset + dataInCodeSize + sizeof(pint_t) - 1) & (-sizeof(pint_t)); // pointer align
 	const uint32_t newIndSymTabOffset = newSymTabOffset + symtab->nsyms()*sizeof(macho_nlist<P>);
 	const uint32_t newStringPoolOffset = newIndSymTabOffset + dynamicSymTab->nindirectsyms()*sizeof(uint32_t);
 	macho_nlist<P>* const newSymTabStart = (macho_nlist<P>*)(((uint8_t*)mh) + newSymTabOffset);
@@ -165,6 +188,14 @@ int optimize_linkedit(macho_header<typename A::P>* mh, const void* mapped_cache,
 	memcpy(newIndSymTab, mergedIndSymTab, dynamicSymTab->nindirectsyms()*sizeof(uint32_t));
 	
 	// update load commands
+	if ( functionStarts != NULL ) {
+		functionStarts->set_dataoff(newFunctionStartsOffset);
+		functionStarts->set_datasize(functionStartsSize);
+	}
+	if ( dataInCode != NULL ) {
+		dataInCode->set_dataoff(newDataInCodeOffset);
+		dataInCode->set_datasize(dataInCodeSize);
+	}
 	symtab->set_symoff(newSymTabOffset);
 	symtab->set_stroff(newStringPoolOffset);
 	symtab->set_strsize(poolOffset);
@@ -290,7 +321,7 @@ size_t dylib_maker(const void* mapped_cache, std::vector<uint8_t> &dylib_data, c
 } 
 
 
-extern int dyld_shared_cache_extract_dylibs_progress(const char* shared_cache_file_path, const char* extraction_root_path,
+int dyld_shared_cache_extract_dylibs_progress(const char* shared_cache_file_path, const char* extraction_root_path,
 													void (^progress)(unsigned current, unsigned total))
 {
 	struct stat statbuf;
@@ -319,13 +350,13 @@ extern int dyld_shared_cache_extract_dylibs_progress(const char* shared_cache_fi
 		dylib_create_func = dylib_maker<x86>;
 	else if ( strcmp((char*)mapped_cache, "dyld_v1  x86_64") == 0 ) 
 		dylib_create_func = dylib_maker<x86_64>;
-	else if ( strcmp((char*)mapped_cache, "dyld_v1     ppc") == 0 ) 
-		dylib_create_func = dylib_maker<ppc>;
 	else if ( strcmp((char*)mapped_cache, "dyld_v1   armv5") == 0 ) 
 		dylib_create_func = dylib_maker<arm>;
 	else if ( strcmp((char*)mapped_cache, "dyld_v1   armv6") == 0 ) 
 		dylib_create_func = dylib_maker<arm>;
 	else if ( strcmp((char*)mapped_cache, "dyld_v1   armv7") == 0 ) 
+		dylib_create_func = dylib_maker<arm>;
+	else if ( strncmp((char*)mapped_cache, "dyld_v1  armv7", 14) == 0 ) 
 		dylib_create_func = dylib_maker<arm>;
 	else {
 		fprintf(stderr, "Error: unrecognized dyld shared cache magic.\n");
@@ -343,7 +374,7 @@ extern int dyld_shared_cache_extract_dylibs_progress(const char* shared_cache_fi
 
 	// for each dylib instantiate a dylib file
     dispatch_group_t        group               = dispatch_group_create();
-    dispatch_semaphore_t    sema                = dispatch_semaphore_create(4);
+    dispatch_semaphore_t    sema                = dispatch_semaphore_create(2);
     dispatch_queue_t        process_queue       = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
     dispatch_queue_t        writer_queue        = dispatch_queue_create("dyld writer queue", 0);
     
@@ -351,8 +382,8 @@ extern int dyld_shared_cache_extract_dylibs_progress(const char* shared_cache_fi
 	__block unsigned        count               = 0;
     
 	for ( NameToSegments::iterator it = map.begin(); it != map.end(); ++it) {
+        dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
         dispatch_group_async(group, process_queue, ^{
-            dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
             
             char    dylib_path[PATH_MAX];
             strcpy(dylib_path, extraction_root_path);
@@ -426,18 +457,35 @@ int dyld_shared_cache_extract_dylibs(const char* shared_cache_file_path, const c
 
 
 #if 0 
+
+typedef int (*extractor_proc)(const char* shared_cache_file_path, const char* extraction_root_path,
+													void (^progress)(unsigned current, unsigned total));
+
 int main(int argc, const char* argv[])
 {
 	if ( argc != 3 ) {
 		fprintf(stderr, "usage: dsc_extractor <path-to-cache-file> <path-to-device-dir>\n");
 		return 1;
 	}
-		
-	int result = dyld_shared_cache_extract_dylibs_progress(argv[1], argv[2], ^(unsigned c, unsigned total) { printf("%d/%d\n", c, total); } );
+	
+	void* handle = dlopen("/Developer/Platforms/iPhoneOS.platform/usr/lib/dsc_extractor.bundle", RTLD_LAZY);
+	if ( handle == NULL ) {
+		fprintf(stderr, "dsc_extractor.bundle could not be loaded\n");
+		return 1;
+	}
+	
+	extractor_proc proc = (extractor_proc)dlsym(handle, "dyld_shared_cache_extract_dylibs_progress");
+	if ( proc == NULL ) {
+		fprintf(stderr, "dsc_extractor.bundle did not have dyld_shared_cache_extract_dylibs_progress symbol\n");
+		return 1;
+	}
+	
+	int result = (*proc)(argv[1], argv[2], ^(unsigned c, unsigned total) { printf("%d/%d\n", c, total); } );
 	fprintf(stderr, "dyld_shared_cache_extract_dylibs_progress() => %d\n", result);
 	return 0;
 }
 #endif
 
-
+ 
+ 
 

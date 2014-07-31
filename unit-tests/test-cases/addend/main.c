@@ -38,6 +38,13 @@ const char* pc   = &c;
 const char* pd_2 = &d - 2;
 const char* pb2  = &b + 2;
 
+const char* pd_1234567890 = &d - 1234567890;
+const char* pd1234567890  = &d + 1234567890;
+
+#if __LP64__
+const char* pd_12345678901234 = &d - 12345678901234;
+const char* pd12345678901234  = &d + 12345678901234;
+#endif
 
 int main()
 {
@@ -55,6 +62,28 @@ int main()
 		FAIL("addend: *pb2 != 13");
 		return 0;
 	}
+	
+	if (pd_1234567890[1234567890] != 13 ) {
+		FAIL("addend: pd_1234567890[1234567890] != 13");
+		return 0;
+	}
+	
+	if (pd1234567890[-1234567890] != 13 ) {
+		FAIL("addend: pd1234567890[-1234567890] != 13");
+		return 0;
+	}
+	
+#if __LP64__
+	if (pd_12345678901234[12345678901234] != 13 ) {
+		FAIL("addend: pd_12345678901234[12345678901234] != 13");
+		return 0;
+	}
+	
+	if (pd12345678901234[-12345678901234] != 13 ) {
+		FAIL("addend: pd12345678901234[-12345678901234] != 13");
+		return 0;
+	}
+#endif	
 	
 	PASS("addend");
 	return 0;

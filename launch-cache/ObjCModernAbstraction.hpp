@@ -22,6 +22,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#include "MachOLayout.hpp"
 #include <iterator>
 #include <deque>
 
@@ -76,7 +77,7 @@ struct entsize_iterator {
     }
     
     T& operator * () { return *current; }
-    const T& operator * () const { return *current; }
+    T& operator * () const { return *current; }
     T& operator -> () { return *current; }
     const T& operator -> () const { return *current; }
     
@@ -106,6 +107,44 @@ struct entsize_iterator {
             ++dst;
         }
     }
+};
+
+template <typename A> 
+class objc_header_info_t {
+
+    typedef typename A::P P;
+    typedef typename A::P::uint_t pint_t;
+
+    pint_t next;   // objc_header_info *
+    pint_t mhdr;   // mach_header or mach_header_64
+    pint_t info;   // objc_image_info *
+    pint_t fname;  // const char *
+    bool loaded; 
+    bool inSharedCache;
+    bool allClassesRealized;
+
+public:
+    objc_header_info_t(SharedCache<A>* cache, const macho_header<P>* mh) 
+        : next(0), 
+          mhdr(0), 
+          info(0), 
+          fname(0), 
+          loaded(0), 
+          allClassesRealized(0)
+    {
+        A::P::setP(mhdr, cache->VMAddressForMappedAddress(mh));
+        const macho_section<P>* sect = mh->getSection("__DATA", "__objc_imageinfo");
+        if (sect) A::P::setP(info, sect->addr());
+
+        // can't set fname because dyld sometimes edits it
+    }
+
+	void addPointers(std::vector<void*>& pointersToAdd) {
+        pointersToAdd.push_back(&mhdr);
+        if (info) pointersToAdd.push_back(&info);
+    }
+
+    uint64_t header_vmaddr() const { return mhdr; }
 };
   
 template <typename A> class objc_method_list_t;  // forward reference
@@ -203,15 +242,30 @@ public:
 
 template <typename A>
 class objc_ivar_t {
+    typedef typename A::P::uint_t pint_t;
     typename A::P::uint_t offset;  // A::P *
     typename A::P::uint_t name;    // const char *
     typename A::P::uint_t type;    // const char *
     uint32_t alignment; 
     uint32_t size;
+    
+public:
+    const char * getName(SharedCache<A> *cache) const { return (const char *)cache->mappedAddressForVMAddress(A::P::getP(name)); }
+
+    bool hasOffset() const { return A::P::getP(offset) != 0; }
+    pint_t getOffset(SharedCache<A> *cache) const { return A::P::getP(*(pint_t * const)cache->mappedAddressForVMAddress(A::P::getP(offset))); }
+    void setOffset(SharedCache<A> *cache, pint_t newOffset) { A::P::setP(*(pint_t *)cache->mappedAddressForVMAddress(A::P::getP(offset)), newOffset); }
+    
+    uint32_t getAlignment()
+    {
+        uint32_t a = A::P::E::get32(alignment);
+        return a == (uint32_t)-1 ? sizeof(typename A::P::uint_t) : 1<<a;
+    }
 };
 
 template <typename A>
 class objc_ivar_list_t {
+    typedef typename A::P::uint_t pint_t;
     uint32_t entsize;
     uint32_t count;
     objc_ivar_t<A> first;
@@ -228,7 +282,7 @@ public:
 
 	uint32_t getEntsize() const { return A::P::E::get32(entsize); }
 
-    objc_ivar_t<A>& get(typename A::P::pint_t i) const { return *(objc_ivar_t<A> *)((uint8_t *)&first + i * A::P::E::get32(entsize)); }
+    objc_ivar_t<A>& get(pint_t i) const { return *(objc_ivar_t<A> *)((uint8_t *)&first + i * A::P::E::get32(entsize)); }
 
     uint32_t byteSize() const { 
         return byteSizeForCount(getCount(), getEntsize()); 
@@ -440,10 +494,20 @@ class objc_class_data_t {
     typename A::P::uint_t baseProperties;
 
 public:
+    bool isMetaClass() { return A::P::E::get32(flags) & 1; }
+
+    uint32_t getInstanceStart() { return A::P::E::get32(instanceStart); }
+    void setInstanceStart(uint32_t newStart) { A::P::E::set32(instanceStart, newStart); }
+    
+    uint32_t getInstanceSize() { return A::P::E::get32(instanceSize.instanceSize); }
+    void setInstanceSize(uint32_t newSiz) { A::P::E::set32(instanceSize.instanceSize, newSiz); }
+
     objc_method_list_t<A> *getMethodList(SharedCache<A>* cache) const { return (objc_method_list_t<A> *)cache->mappedAddressForVMAddress(A::P::getP(baseMethods)); }
 
     objc_protocol_list_t<A> *getProtocolList(SharedCache<A>* cache) const { return (objc_protocol_list_t<A> *)cache->mappedAddressForVMAddress(A::P::getP(baseProtocols)); }
 
+    objc_ivar_list_t<A> *getIvarList(SharedCache<A>* cache) const { return (objc_ivar_list_t<A> *)cache->mappedAddressForVMAddress(A::P::getP(ivars)); }
+    
     objc_property_list_t<A> *getPropertyList(SharedCache<A>* cache) const { return (objc_property_list_t<A> *)cache->mappedAddressForVMAddress(A::P::getP(baseProperties)); }
 
     const char * getName(SharedCache<A>* cache) const { return (const char *)cache->mappedAddressForVMAddress(A::P::getP(name)); }
@@ -482,8 +546,12 @@ class objc_class_t {
     typename A::P::uint_t data;
 
 public:
+    bool isMetaClass(SharedCache<A>* cache) const { return getData(cache)->isMetaClass(); }
+
     objc_class_t<A> *getIsa(SharedCache<A> *cache) const { return (objc_class_t<A> *)cache->mappedAddressForVMAddress(A::P::getP(isa)); }
 
+    objc_class_t<A> *getSuperclass(SharedCache<A> *cache) const { return (objc_class_t<A> *)cache->mappedAddressForVMAddress(A::P::getP(superclass)); }
+    
     objc_class_data_t<A> *getData(SharedCache<A>* cache) const { return (objc_class_data_t<A> *)cache->mappedAddressForVMAddress(A::P::getP(data)); }
 
     objc_method_list_t<A> *getMethodList(SharedCache<A>* cache) const { return getData(cache)->getMethodList(cache); }
@@ -570,6 +638,60 @@ public:
     void setName(typename A::P::uint_t newName) { A::P::setP(sel, newName); }
 };
 
+// Call visitor.visitIvar() on every ivar in a given class.
+template <typename A, typename V>
+class IvarWalker {
+    typedef typename A::P P;
+    typedef typename A::P::uint_t pint_t;
+    V& ivarVisitor;
+public:
+    
+    IvarWalker(V& visitor) : ivarVisitor(visitor) { }
+    
+    void walk(SharedCache<A>* cache, const macho_header<P>* header, objc_class_t<A> *cls)
+    {
+        objc_class_data_t<A> *data = cls->getData(cache);
+        objc_ivar_list_t<A> *ivars = data->getIvarList(cache);
+        if (ivars) {
+            for (pint_t i = 0; i < ivars->getCount(); i++) {
+                objc_ivar_t<A>& ivar = ivars->get(i);
+                //fprintf(stderr, "visiting ivar: %s\n", ivar.getName(cache));
+                ivarVisitor.visitIvar(cache, header, cls, &ivar);
+            }
+        } else {
+            //fprintf(stderr, "no ivars\n");
+        }
+    }
+    
+    void visitClass(SharedCache<A>* cache, const macho_header<P>* header, objc_class_t<A> *cls)
+    {
+        walk(cache, header, cls);
+    }
+};
+
+// Call visitor.visitClass() on every class.
+template <typename A, typename V>
+class ClassWalker {
+    typedef typename A::P P;
+    typedef typename A::P::uint_t pint_t;
+    V& classVisitor;
+public:
+    
+    ClassWalker(V& visitor) : classVisitor(visitor) { }
+    
+    void walk(SharedCache<A>* cache, const macho_header<P>* header)
+    {   
+        PointerSection<A, objc_class_t<A> *> 
+        classes(cache, header, "__DATA", "__objc_classlist");
+        
+        for (pint_t i = 0; i < classes.count(); i++) {
+            objc_class_t<A> *cls = classes.get(i);
+            //fprintf(stderr, "visiting class: %s\n", cls->getName(cache));
+            classVisitor.visitClass(cache, header, cls);
+        }
+    }
+};
+
 
 // Call visitor.visitMethodList(mlist) on every method list in a header.
 template <typename A, typename V>
@@ -584,7 +706,7 @@ public:
     
     MethodListWalker(V& visitor) : mVisitor(visitor) { }
 
-    void walk(SharedCache<A>* cache, const macho_header<P>* header)
+    void walk(SharedCache<A>* cache, const macho_header<P>* header, bool walkProtocols)
     {   
         // Method lists in classes
         PointerSection<A, objc_class_t<A> *> 
@@ -615,25 +737,27 @@ public:
             }
         }
 
-        // Method description lists from protocols
-        PointerSection<A, objc_protocol_t<A> *> 
-            protocols(cache, header, "__DATA", "__objc_protolist");
-        for (pint_t i = 0; i < protocols.count(); i++) {
-            objc_protocol_t<A> *proto = protocols.get(i);
-            objc_method_list_t<A> *mlist;
-            if ((mlist = proto->getInstanceMethods(cache))) {
-                mVisitor.visitMethodList(mlist);
-            }
-            if ((mlist = proto->getClassMethods(cache))) {
-                mVisitor.visitMethodList(mlist);
-            }
-            if ((mlist = proto->getOptionalInstanceMethods(cache))) {
-                mVisitor.visitMethodList(mlist);
-            }
-            if ((mlist = proto->getOptionalClassMethods(cache))) {
-                mVisitor.visitMethodList(mlist);
-            }
-        }
+		// Method description lists from protocols
+		if ( walkProtocols ) {
+			PointerSection<A, objc_protocol_t<A> *> 
+				protocols(cache, header, "__DATA", "__objc_protolist");
+			for (pint_t i = 0; i < protocols.count(); i++) {
+				objc_protocol_t<A> *proto = protocols.get(i);
+				objc_method_list_t<A> *mlist;
+				if ((mlist = proto->getInstanceMethods(cache))) {
+					mVisitor.visitMethodList(mlist);
+				}
+				if ((mlist = proto->getClassMethods(cache))) {
+					mVisitor.visitMethodList(mlist);
+				}
+				if ((mlist = proto->getOptionalInstanceMethods(cache))) {
+					mVisitor.visitMethodList(mlist);
+				}
+				if ((mlist = proto->getOptionalClassMethods(cache))) {
+					mVisitor.visitMethodList(mlist);
+				}
+			}
+		}
     }
 };
 
@@ -667,7 +791,7 @@ public:
     {
         // method lists of all kinds
         MethodListWalker< A, SelectorOptimizer<A,V> > mw(*this);
-        mw.walk(cache, header);
+        mw.walk(cache, header, true);
         
         // @selector references
         PointerSection<A, const char *> 
@@ -687,14 +811,96 @@ public:
             pint_t newValue = mVisitor.visit(oldValue);
             msg.setName(newValue);
         }
+    }
+};
 
-        // Mark image_info
-        const macho_section<P> *imageInfoSection = 
-            header->getSection("__DATA", "__objc_imageinfo");
+
+// Update selector references. The visitor performs recording and uniquing.
+template <typename A>
+class IvarOffsetOptimizer {
+    typedef typename A::P P;
+
+    uint32_t slide;
+    uint32_t maxAlignment;
+
+    uint32_t fOptimized;
+
+public:
+    
+    IvarOffsetOptimizer() : fOptimized(0) { }
+
+    size_t optimized() const { return fOptimized; }
+    
+    // dual purpose ivar visitor function
+    // if slide!=0 then slides the ivar by that amount, otherwise computes maxAlignment
+    void visitIvar(SharedCache<A>* cache, const macho_header<P>* /*unused, may be NULL*/, objc_class_t<A> *cls, objc_ivar_t<A> *ivar)
+    {
+        if (slide == 0) {
+            uint32_t alignment = ivar->getAlignment();
+            if (alignment > maxAlignment) maxAlignment = alignment;
+        } else {
+            // skip anonymous bitfields
+            if (ivar->hasOffset()) {
+                uint32_t oldOffset = (uint32_t)ivar->getOffset(cache);
+                ivar->setOffset(cache, oldOffset + slide);
+                fOptimized++;
+                //fprintf(stderr, "%d -> %d for %s.%s\n", oldOffset, oldOffset + slide, cls->getName(cache), ivar->getName(cache));
+            } else {
+                //fprintf(stderr, "NULL offset\n");
+            }
+        }
+    }
+    
+    // Class visitor function. Evaluates whether to slide ivars and performs slide if needed.
+    // The slide algorithm is also implemented in objc. Any changes here should be reflected there also.
+    void visitClass(SharedCache<A>* cache, const macho_header<P>* /*unused, may be NULL*/, objc_class_t<A> *cls)
+    {
+        objc_class_t<A> *super = cls->getSuperclass(cache);
+        if (super) {
+            // Recursively visit superclasses to ensure we have the correct superclass start
+            // Note that we don't need the macho_header, so just pass NULL.
+            visitClass(cache, NULL, super);
+
+            objc_class_data_t<A> *data = cls->getData(cache);
+            objc_class_data_t<A> *super_data = super->getData(cache);
+            int32_t diff = super_data->getInstanceSize() - data->getInstanceStart();
+            if (diff > 0) {
+                IvarWalker<A, IvarOffsetOptimizer<A> > ivarVisitor(*this);
+                maxAlignment = 0;
+                slide = 0;
+                
+                // This walk computes maxAlignment
+                ivarVisitor.walk(cache, NULL, cls);
+
+                // Compute a slide value that preserves that alignment
+                uint32_t alignMask = maxAlignment - 1;
+                if (diff & alignMask) diff = (diff + alignMask) & ~alignMask;
+
+                // Slide all of this class's ivars en masse
+                slide = diff;
+                if (slide != 0) {
+                    //fprintf(stderr, "Sliding ivars in %s by %u (superclass was %d, now %d)\n", cls->getName(cache), slide, data->getInstanceStart(), super_data->getInstanceSize());
+                    ivarVisitor.walk(cache, NULL, cls);
+                    data->setInstanceStart(data->getInstanceStart() + slide);
+                    data->setInstanceSize(data->getInstanceSize() + slide);
+                }
+            }
+        }
+    }
+    
+    // Enumerates objc classes in the module and performs any ivar slides
+    void optimize(SharedCache<A>* cache, const macho_header<P>* header)
+    {
+        // The slide code cannot fix up GC layout strings so skip modules that support ore require GC
+        const macho_section<P> *imageInfoSection = header->getSection("__DATA", "__objc_imageinfo");
         if (imageInfoSection) {
-            objc_image_info<A> *info = (objc_image_info<A> *)
-                cache->mappedAddressForVMAddress(imageInfoSection->addr());
-            info->setSelectorsPrebound();
+            objc_image_info<A> *info = (objc_image_info<A> *)cache->mappedAddressForVMAddress(imageInfoSection->addr());
+            if (!info->supportsGCFlagSet() && !info->requiresGCFlagSet()) {
+                ClassWalker<A, IvarOffsetOptimizer<A> > classVisitor(*this);
+                classVisitor.walk(cache, header);
+            } else {
+                //fprintf(stderr, "GC support present - skipped module\n");
+            }
         }
     }
 };
@@ -707,548 +913,76 @@ class MethodListSorter {
     typedef typename A::P P;
     typedef typename A::P::uint_t pint_t;
 
+    uint32_t fOptimized;
+
     friend class MethodListWalker<A, MethodListSorter<A> >;
     void visitMethodList(objc_method_list_t<A> *mlist)
     {
         typename objc_method_t<A>::SortBySELAddress sorter;
         std::stable_sort(mlist->begin(), mlist->end(), sorter);
         mlist->setFixedUp();
+        fOptimized++;
     }
 
 public:
+    MethodListSorter() : fOptimized(0) { }
+
+    size_t optimized() const { return fOptimized; }
 
     void optimize(SharedCache<A>* cache, macho_header<P>* header)
     {
         MethodListWalker<A, MethodListSorter<A> > mw(*this);
-        mw.walk(cache, header);
+        mw.walk(cache, header, false /* don't sort protocol method lists*/);
     }
 };
 
 
-// Attach categories to classes in the same framework. 
-// Merge method and protocol and property lists.
 template <typename A>
-class CategoryAttacher {
+class HeaderInfoOptimizer {
 
     typedef typename A::P P;
     typedef typename A::P::uint_t pint_t;
 
-    uint8_t *mBytes;
-    ssize_t mBytesFree;
-    ssize_t mBytesUsed;
-
-    size_t mCategoriesAttached;
-
-    bool segmentContainsPointer(SharedCache<A>* cache, 
-                                const macho_segment_command<P>* seg, void *ptr)
-    {
-        if (!seg) return false;
-        void *start = (void*)
-            cache->mappedAddressForVMAddress(seg->vmaddr());
-        void *end   = (uint8_t *)start + seg->filesize();
-        return (ptr >= start  &&  ptr < end);
-    }
-
-    bool headerContainsPointer(SharedCache<A>* cache, 
-                               macho_header<P>* header, void *ptr)
-    {
-        return 
-            segmentContainsPointer(cache, header->getSegment("__DATA"), ptr) ||
-            segmentContainsPointer(cache, header->getSegment("__TEXT"), ptr) ||
-            segmentContainsPointer(cache, header->getSegment("__OBJC"), ptr);
-    }
-
-    struct pointer_hash {
-        size_t operator () (void* ptr) const { 
-            return __gnu_cxx::hash<long>()((long)ptr); 
-        }
-    };
-
-    typedef std::deque<objc_category_t<A>*> CategoryList;
-    typedef std::vector<uint64_t> CategoryRefs;
-
-    struct ClassChanges {
-        CategoryList categories;
-        CategoryRefs catrefs;
-        
-        objc_method_list_t<A>* instanceMethods;
-        objc_method_list_t<A>* classMethods;
-        objc_protocol_list_t<A>* protocols;
-        objc_property_list_t<A>* instanceProperties;
-
-        ClassChanges() 
-            : instanceMethods(NULL), classMethods(NULL), 
-              protocols(NULL), instanceProperties(NULL)
-        { }
-
-        ~ClassChanges() { 
-            if (instanceMethods) delete instanceMethods;
-            if (classMethods) delete classMethods;
-            if (protocols) delete protocols;
-            if (instanceProperties) delete instanceProperties;
-        }
-    };
-
-    typedef __gnu_cxx::hash_map<objc_class_t<A>*, ClassChanges, pointer_hash> ClassMap;
-
-    class RangeArray {
-        typedef std::pair<uint8_t*,uint32_t> Range;
-        std::deque<Range> ranges;
-
-        class SizeFits {
-        private:
-            uint32_t mSize;
-        public:
-            SizeFits(uint32_t size) : mSize(size) { } 
-            bool operator() (const Range& r) { 
-                return r.second >= mSize;
-            }
-        };
-
-        struct AddressComp {
-            bool operator() (const Range& lhs, const Range& rhs) {
-                return (lhs.first < rhs.first);
-            }
-        };
-    public:
-        RangeArray() { }
-        void add(void* p, uint32_t size) {
-            add(Range((uint8_t *)p, size));
-        }
-        void add(const Range& r) {
-            // find insertion point
-            std::deque<Range>::iterator iter;
-            iter = upper_bound(ranges.begin(), ranges.end(), r, AddressComp());
-            // coalesce
-            // fixme doesn't fully coalesce if new range exactly fills a gap
-            if (iter != ranges.begin()) {
-                std::deque<Range>::iterator prev = iter - 1;
-                if ((*prev).first + (*prev).second == r.first) {
-                    (*prev).second += r.second;
-                    return;
-                }
-            }
-            if (iter != ranges.end()  &&  iter+1 != ranges.end()) {
-                std::deque<Range>::iterator next = iter + 1;
-                if (r.first + r.second == (*next).first) {
-                    (*next).second += r.second;
-                    (*next).first = r.first;
-                    return;
-                }
-            }
-            ranges.insert(iter, r);
-        }
-
-        uint8_t* remove(uint32_t size) {
-            // first-fit search
-            // this saves 50-75% of space overhead; 
-            // a better algorithm might do better
-
-            std::deque<Range>::iterator iter;
-            iter = find_if(ranges.begin(), ranges.end(), SizeFits(size));
-            if (iter == ranges.end()) {
-                return NULL;
-            }
-
-            Range& found = *iter;
-            uint8_t *result = found.first;
-            if (found.second > size) {
-                // keep leftovers
-                found.first += size;
-                found.second -= size;
-            } else {
-                ranges.erase(iter);
-            }
-
-            return result;
-        }
-    };
-
-    void copyMethods(typename objc_method_list_t<A>::method_iterator& dst, 
-                     const objc_method_list_t<A>* srcList)
-    {
-        objc_method_list_t<A>::method_iterator::
-            overwrite(dst, srcList);
-    }
-
-    void copyProperties(typename objc_property_list_t<A>::property_iterator& dst, 
-                        const objc_property_list_t<A>* srcList)
-    {
-        objc_property_list_t<A>::property_iterator::
-            overwrite(dst, srcList);
-    }
-
-    void copyProtocols(objc_protocol_list_t<A>* dst, pint_t& dstIndex,
-                       const objc_protocol_list_t<A>* src)
-    {
-        dst->overwrite(dstIndex, src);
-    }
-
-	class InSet
-	{
-	public:
-		InSet(std::set<void*>& deadPointers) : _deadPointers(deadPointers) {}
-
-		bool operator()(void* ptr) const {
-			return ( _deadPointers.count(ptr) != 0 );
-		}
-
-	private:
-		std::set<void*>& _deadPointers;
-	};
+    objc_header_info_t<A>* fHinfos;
+    size_t fCount;
 
 public:
+    HeaderInfoOptimizer() : fHinfos(0), fCount(0) { }
 
-    CategoryAttacher(uint8_t *bytes, ssize_t bytesFree) 
-        : mBytes(bytes), mBytesFree(bytesFree)
-        , mBytesUsed(0), mCategoriesAttached(0) 
-    { }
-
-    size_t count() const { return mCategoriesAttached; }
-
-    const char *optimize(SharedCache<A>* cache, macho_header<P>* header, std::vector<void*>& pointersInData)
+    const char *init(size_t count, uint8_t*& buf, size_t& bufSize)
     {
-        // Build class=>cateories mapping.
-        // Disregard target classes that aren't in this binary.
+        if (count == 0) return NULL;
 
-        ClassMap map;
-
-		PointerSection<A, objc_category_t<A> *> 
-            nlcatsect(cache, header, "__DATA", "__objc_nlcatlist");
-        PointerSection<A, objc_category_t<A> *> 
-            catsect(cache, header, "__DATA", "__objc_catlist");
-        for (pint_t i = 0; i < catsect.count(); i++) {
-            objc_category_t<A> *cat = catsect.get(i);
-            objc_class_t<A> *cls = cat->getClass(cache);
-            if (!cls) continue;
-            if (!headerContainsPointer(cache, header, cls)) continue;
-			if ( nlcatsect.count() !=0 ) {
-				// don't optimize categories also in __objc_nlcatlist
-				bool alsoInNlcatlist = false;
-				for (pint_t nli = 0; nli < nlcatsect.count(); nli++) {
-					if ( nlcatsect.get(nli) == cat ) {
-						//fprintf(stderr, "skipping cat in __objc_nlcatlist for mh=%p\n", header);
-						alsoInNlcatlist = true;
-						break;
-					}
-				}
-				if ( alsoInNlcatlist ) 
-					continue;
-			}
-
-            // The LAST category found is the FIRST to be processed later.
-            map[cls].categories.push_front(cat);
-
-            // We don't care about the category reference order.
-            map[cls].catrefs.push_back(i);
+        if (bufSize < 2*sizeof(uint32_t) + count*sizeof(objc_header_info_t<A>)) {
+            return "libobjc's read/write section is too small (metadata not optimized)";
         }
 
-        if (map.size() == 0) {
-            // No attachable categories.
-            return NULL;
-        }
+        uint32_t *buf32 = (uint32_t *)buf;
+        A::P::E::set32(buf32[0], count);
+        A::P::E::set32(buf32[1], sizeof(objc_header_info_t<A>));
+        fHinfos = (objc_header_info_t<A>*)(buf32+2);
 
-        // Process each class.
-        // Each class is all-or-nothing: either all of its categories 
-        // are attached successfully, or none of them are. This preserves 
-        // cache validity if we run out of space for more reallocations.
-
-        // unusedMemory stores memory ranges evacuated by now-unused metadata.
-        // It is available for re-use by other newly-added metadata.
-        // fixme could packing algorithm be improved?
-        RangeArray unusedMemory;
-
-        ssize_t reserve = 0;
-
-        // First: build new aggregated lists on the heap.
-        // Require enough space in mBytes for all of it.
-
-		std::set<void*> pointersToRemove;
-        for (typename ClassMap::iterator i = map.begin(); 
-             i != map.end(); 
-             ++i) 
-        {
-            objc_class_t<A>* cls = i->first;
-            objc_class_t<A>* meta = cls->getIsa(cache);
-            ClassChanges& changes = i->second;
-            CategoryList& cats = changes.categories;
-
-            // Count memory needed for all categories on this class.
-
-            uint32_t methodEntsize = 0;
-            uint32_t propertyEntsize = 0;
-            objc_method_list_t<A>* mlist;
-            objc_property_list_t<A>* proplist;
-            objc_protocol_list_t<A>* protolist;
-            uint32_t instanceMethodsCount = 0;
-            uint32_t classMethodsCount = 0;
-            uint32_t instancePropertyCount = 0;
-            pint_t protocolCount = 0;
-            bool addedInstanceMethods = false;
-            bool addedClassMethods = false;
-            bool addedInstanceProperties = false;
-            bool addedProtocols = false;
-
-            mlist = cls->getMethodList(cache);
-            if (mlist) {
-                instanceMethodsCount = mlist->getCount();
-                methodEntsize = 
-                    std::max(methodEntsize, mlist->getEntsize());
-            }
-
-            mlist = meta->getMethodList(cache);
-            if (mlist) {
-                classMethodsCount = mlist->getCount();
-                methodEntsize = 
-                    std::max(methodEntsize, mlist->getEntsize());
-            }
-
-            proplist = cls->getPropertyList(cache);
-            if (proplist) {
-                instancePropertyCount = proplist->getCount();
-                propertyEntsize = 
-                    std::max(propertyEntsize, proplist->getEntsize());
-            }
-
-            protolist = cls->getProtocolList(cache);
-            if (protolist) {
-                protocolCount = protolist->getCount();
-            }
-
-            typename CategoryList::iterator j;
-            for (j = cats.begin(); j != cats.end(); ++j) {
-                objc_category_t<A>* cat = *j;
-
-                mlist = cat->getInstanceMethods(cache);
-                if (mlist  &&  mlist->getCount() > 0) {
-                    addedInstanceMethods = true;
-                    instanceMethodsCount += mlist->getCount();
-                    methodEntsize = 
-                        std::max(methodEntsize, mlist->getEntsize());
-                }
-
-                mlist = cat->getClassMethods(cache);
-                if (mlist  &&  mlist->getCount() > 0) {
-                    addedClassMethods = true;
-                    classMethodsCount += mlist->getCount();
-                    methodEntsize = 
-                        std::max(methodEntsize, mlist->getEntsize());
-                }
-
-                proplist = cat->getInstanceProperties(cache);
-                if (proplist  &&  proplist->getCount() > 0) {
-                    addedInstanceProperties = true;
-                    instancePropertyCount += proplist->getCount();
-                    propertyEntsize = 
-                        std::max(propertyEntsize, proplist->getEntsize());
-                }
-
-                protolist = cat->getProtocols(cache);
-                if (protolist  &&  protolist->getCount() > 0) {
-                    addedProtocols = true;
-                    protocolCount += protolist->getCount();
-                }
-            }
-
-            // Allocate memory for aggregated lists. 
-            // Reserve the same amount of space from mBytes.
-
-            if (addedInstanceMethods) {
-                changes.instanceMethods = objc_method_list_t<A>::newMethodList(instanceMethodsCount, methodEntsize);
-                reserve = P::round_up(reserve + changes.instanceMethods->byteSize());
-            }
-            if (addedClassMethods) {
-                changes.classMethods = objc_method_list_t<A>::newMethodList(classMethodsCount, methodEntsize);
-                reserve = P::round_up(reserve + changes.classMethods->byteSize());
-            }
-            if (addedInstanceProperties) {
-                changes.instanceProperties = objc_property_list_t<A>::newPropertyList(instancePropertyCount, propertyEntsize);
-                reserve = P::round_up(reserve + changes.instanceProperties->byteSize());
-            }
-            if (addedProtocols) {
-                changes.protocols = objc_protocol_list_t<A>::newProtocolList(protocolCount);
-                reserve = P::round_up(reserve + changes.protocols->byteSize());
-            }
-
-			// Merge. The LAST category's contents ends up FIRST in each list.
-			// The aggregated lists are not sorted; a future pass does that.
-
-            typename objc_method_list_t<A>::method_iterator newInstanceMethods;
-            typename objc_method_list_t<A>::method_iterator newClassMethods;
-            typename objc_property_list_t<A>::property_iterator newInstanceProperties;
-            pint_t newProtocolIndex;
-
-            if (addedInstanceMethods) {
-                newInstanceMethods = changes.instanceMethods->begin();
-            }
-            if (addedClassMethods) {
-                newClassMethods = changes.classMethods->begin();
-            }
-            if (addedInstanceProperties) {
-                newInstanceProperties = changes.instanceProperties->begin();
-            }
-            if (addedProtocols) {
-                newProtocolIndex = 0;
-            }
-            
-            for (j = cats.begin(); j != cats.end(); ++j) {
-                objc_category_t<A>* cat = *j;
-
-                mlist = cat->getInstanceMethods(cache);
-                if (mlist) {
-                    copyMethods(newInstanceMethods, mlist);
-					mlist->getPointers(pointersToRemove);
-                    unusedMemory.add(mlist, mlist->byteSize());
-                }
-
-                mlist = cat->getClassMethods(cache);
-                if (mlist) {
-                    copyMethods(newClassMethods, mlist);
-  					mlist->getPointers(pointersToRemove);
-					unusedMemory.add(mlist, mlist->byteSize());
-                }
-
-                proplist = cat->getInstanceProperties(cache);
-                if (proplist) {
-                    copyProperties(newInstanceProperties, proplist);
-  					proplist->getPointers(pointersToRemove);
-					unusedMemory.add(proplist, proplist->byteSize());
-                }
-
-                protolist = cat->getProtocols(cache);
-                if (protolist) {
-                    copyProtocols(changes.protocols, newProtocolIndex, protolist);
-   					protolist->getPointers(pointersToRemove);
-					unusedMemory.add(protolist, protolist->byteSize());
-                }
-
-				cat->getPointers(pointersToRemove);
-				unusedMemory.add(cat, sizeof(*cat));                
-            }
-
-            if (addedInstanceMethods && (mlist = cls->getMethodList(cache))) {
-                copyMethods(newInstanceMethods, mlist);
-				mlist->getPointers(pointersToRemove);
-				unusedMemory.add(mlist, mlist->byteSize());
-            }
-            if (addedClassMethods && (mlist = meta->getMethodList(cache))) {
-                copyMethods(newClassMethods, mlist);
-				mlist->getPointers(pointersToRemove);
-                unusedMemory.add(mlist, mlist->byteSize());
-            }
-            if (addedInstanceProperties && (proplist = cls->getPropertyList(cache))) {
-                copyProperties(newInstanceProperties, proplist);
- 				proplist->getPointers(pointersToRemove);
-				unusedMemory.add(proplist, proplist->byteSize());
-            }
-            if (addedProtocols && (protolist = cls->getProtocolList(cache))) {
-                copyProtocols(changes.protocols, newProtocolIndex, protolist);
- 				protolist->getPointers(pointersToRemove);
-                unusedMemory.add(protolist, protolist->byteSize());
-            }
-        }
-
-		if (reserve > mBytesFree) {
-			return "insufficient space for category data (metadata not optimized)";
-		}
-
-		// update cache slide info and remove areas now longer containing pointers
-		//fprintf(stderr, "found %lu pointers in objc structures being moved\n", pointersToRemove.size());
-		pointersInData.erase(std::remove_if(pointersInData.begin(), pointersInData.end(), InSet(pointersToRemove)), pointersInData.end());
-		
-
-		// All lists are now built.
-        // mBytes is big enough to hold everything if necessary.
-        // Everything in unusedMemory is now available for re-use.
-        // The original metadata is still untouched.
-
-        // Second: write lists into mBytes and unusedMemory, 
-        // then disconnect categories.
-
-        for (typename ClassMap::iterator i = map.begin(); 
-             i != map.end(); 
-             ++i) 
-        {
-            objc_class_t<A>* cls = i->first;
-            objc_class_t<A>* meta = cls->getIsa(cache);
-            ClassChanges& changes = i->second;
-
-            // Write lists.
-            
-            if (changes.instanceMethods) {
-                uint8_t *bytes;
-                uint32_t size = changes.instanceMethods->byteSize();
-                if (! (bytes = unusedMemory.remove(size))) {
-                    bytes = mBytes + mBytesUsed;
-                    mBytesFree -= size;
-                    mBytesUsed += size;
-                }
-                memcpy(bytes, changes.instanceMethods, size);
-				objc_method_list_t<A>::addPointers(bytes, pointersInData);
-				cls->setMethodList(cache, (objc_method_list_t<A> *)bytes);
-				cls->addMethodListPointer(cache, pointersInData);
-            }
-            
-            if (changes.classMethods) {
-                uint8_t *bytes;
-                uint32_t size = changes.classMethods->byteSize();
-                if (! (bytes = unusedMemory.remove(size))) {
-                    bytes = mBytes + mBytesUsed;
-                    mBytesFree -= size;
-                    mBytesUsed += size;
-                }
-                memcpy(bytes, changes.classMethods, size);
- 				objc_method_list_t<A>::addPointers(bytes, pointersInData);
-				meta->setMethodList(cache, (objc_method_list_t<A> *)bytes);
-				meta->addMethodListPointer(cache, pointersInData);
-            }
-            
-            if (changes.instanceProperties) {
-                uint8_t *bytes;
-                uint32_t size = changes.instanceProperties->byteSize();
-                if (! (bytes = unusedMemory.remove(size))) {
-                    bytes = mBytes + mBytesUsed;
-                    mBytesFree -= size;
-                    mBytesUsed += size;
-                }
-                memcpy(bytes, changes.instanceProperties, size);
- 				objc_property_list_t<A>::addPointers(bytes, pointersInData);
-                cls->setPropertyList(cache, (objc_property_list_t<A> *)bytes);
-  				cls->addPropertyListPointer(cache, pointersInData);
-          }
-
-            if (changes.protocols) {
-                uint8_t *bytes;
-                uint32_t size = changes.protocols->byteSize();
-                if (! (bytes = unusedMemory.remove(size))) {
-                    bytes = mBytes + mBytesUsed;
-                    mBytesFree -= size;
-                    mBytesUsed += size;
-                }
-                memcpy(bytes, changes.protocols, size);
-                cls->setProtocolList(cache, (objc_protocol_list_t<A> *)bytes);
-  				objc_protocol_list_t<A>::addPointers(bytes, pointersInData);
-   				cls->addProtocolListPointer(cache, pointersInData);
-				meta->setProtocolList(cache, (objc_protocol_list_t<A> *)bytes);
-				meta->addProtocolListPointer(cache, pointersInData);
-          }
-
-            // Disavow all knowledge of the categories.
-
-            for (typename CategoryRefs::iterator j = changes.catrefs.begin();
-                 j != changes.catrefs.end();
-                 ++j)
-            {
-                catsect.set(*j, 0);
-            }
-
-            mCategoriesAttached += changes.categories.size();
-        }
-
-        catsect.removeNulls();
+        size_t total = sizeof(uint32_t) + count*sizeof(objc_header_info_t<A>);
+        buf += total;
+        bufSize -= total;
 
         return NULL;
     }
 
-    ssize_t bytesUsed() { return mBytesUsed; }
+    void update(SharedCache<A>* cache, const macho_header<P>* mh, std::vector<void*>& pointersInData)
+    { 
+        objc_header_info_t<A>* hi = new(&fHinfos[fCount++]) objc_header_info_t<A>(cache, mh);
+        hi->addPointers(pointersInData);
+    }
+
+    objc_header_info_t<A>* hinfoForHeader(SharedCache<A>* cache, const macho_header<P>* mh)
+    {
+        // fixme could be binary search
+        pint_t mh_vmaddr = cache->VMAddressForMappedAddress(mh);
+        for (size_t i = 0; i < fCount; i++) {
+            objc_header_info_t<A>* hi = &fHinfos[i];
+            if (hi->header_vmaddr() == mh_vmaddr) return hi;
+        }
+        return NULL;
+    }
 };

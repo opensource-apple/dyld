@@ -78,14 +78,16 @@ static const char* default_shared_cache_path() {
 	return MACOSX_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "i386";
 #elif __x86_64__ 
 	return MACOSX_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "x86_64";
-#elif __ppc__ 
-	return MACOSX_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "rosetta";
 #elif __ARM_ARCH_5TEJ__ 
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv5";
 #elif __ARM_ARCH_6K__ 
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv6";
 #elif __ARM_ARCH_7A__ 
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7";
+#elif __ARM_ARCH_7F__ 
+	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7f";
+#elif __ARM_ARCH_7K__ 
+	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7k";
 #else
 	#error unsupported architecture
 #endif
@@ -137,14 +139,17 @@ void list_dependencies(const char *dylib, void *headerAddr, uint8_t print_dylib_
 			uint32_t current_vers = dylib_cmd->current_version();
 			
             if (print_dylib_versions) {
-                printf("\t%s (compatibility version %u.%u.%u, current version %u.%u.%u)\n", 
-                       name, 
+                printf("\t%s", name);
+                if ( compat_vers != 0xFFFFFFFF )
+                    printf("(compatibility version %u.%u.%u, current version %u.%u.%u)\n", 
                        (compat_vers >> 16),
                        (compat_vers >> 8) & 0xff,
                        (compat_vers) & 0xff,
                        (current_vers >> 16),
                        (current_vers >> 8) & 0xff,
                        (current_vers) & 0xff);
+                else
+                    printf("\n");
             } else {
                 printf("\t%s\n", name);
             }			
@@ -417,7 +422,9 @@ int main (int argc, char **argv) {
 		const dyldCacheHeader<LittleEndian>* header = (dyldCacheHeader<LittleEndian>*)mapped_cache;
 		if (   (strcmp(header->magic(), "dyld_v1  x86_64") != 0)
 			&& (strcmp(header->magic(), "dyld_v1   armv6") != 0)
-			&& (strcmp(header->magic(), "dyld_v1   armv7") != 0) ) {
+			&& (strcmp(header->magic(), "dyld_v1   armv7") != 0) 
+			&& (strcmp(header->magic(), "dyld_v1  armv7f") != 0) 
+			&& (strcmp(header->magic(), "dyld_v1  armv7k") != 0) ) {
 			fprintf(stderr, "Error: unrecognized dyld shared cache magic or arch does not support sliding\n");
 			exit(1);
 		}
@@ -449,13 +456,15 @@ int main (int argc, char **argv) {
 			callback = segment_callback<x86>;
 		else if ( strcmp((char*)mapped_cache, "dyld_v1  x86_64") == 0 ) 
 			callback = segment_callback<x86_64>;
-		else if ( strcmp((char*)mapped_cache, "dyld_v1     ppc") == 0 ) 
-			callback = segment_callback<ppc>;
 		else if ( strcmp((char*)mapped_cache, "dyld_v1   armv5") == 0 ) 
 			callback = segment_callback<arm>;
 		else if ( strcmp((char*)mapped_cache, "dyld_v1   armv6") == 0 ) 
 			callback = segment_callback<arm>;
 		else if ( strcmp((char*)mapped_cache, "dyld_v1   armv7") == 0 ) 
+			callback = segment_callback<arm>;
+		else if ( strcmp((char*)mapped_cache, "dyld_v1  armv7f") == 0 ) 
+			callback = segment_callback<arm>;
+		else if ( strcmp((char*)mapped_cache, "dyld_v1  armv7k") == 0 ) 
 			callback = segment_callback<arm>;
 		else {
 			fprintf(stderr, "Error: unrecognized dyld shared cache magic.\n");

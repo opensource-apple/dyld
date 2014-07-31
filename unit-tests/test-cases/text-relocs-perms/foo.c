@@ -23,6 +23,7 @@
 #include <stdio.h>  // fprintf(), NULL
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <unistd.h>
+#include <Availability.h>
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include <mach/mach.h> 
@@ -30,6 +31,7 @@
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 
 static vm_prot_t getPermission(void* addr)
 {
@@ -98,4 +100,12 @@ void foo()
 	checkStubs(stubAddr);
 }
 
+#else
+
+void foo() 
+{
+	// iOS does not have text relocs
+}
+
+#endif
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005-2008 Apple Inc. All rights reserved.
+ * Copyright (c) 2005-2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -22,15 +22,34 @@
  */
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
+#include <stdbool.h>
 #include <mach-o/dyld-interposing.h>
+#include <malloc/malloc.h>
 
-// return blocks that have preceeding 16-bytes filled with "hello"
+static void* seenAllocations[128];
+static int seenAllocationIndex = 0;
+
+// record each malloc result in a ring buffer
 void* my_malloc(size_t size)
 {
-	char* x = malloc(size+16);
-	strcpy(x, "hello");
-	return &x[16];
+	char* x = malloc(size);
+	seenAllocations[seenAllocationIndex++] = x;
+	seenAllocationIndex = (seenAllocationIndex & 127); //wrap around
+	return x;
 }
 
 DYLD_INTERPOSE(my_malloc, malloc)
+
+bool allocationSeen(void* p)
+{
+	for(int i=0; i < 127; ++i) {
+		if ( seenAllocations[i] == p )
+			return true;
+	}
+	return false;
+}
+
+
+

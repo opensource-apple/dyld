@@ -28,5 +28,5 @@ static int mydata[10];
 
 bool checkdata()
 {
-	return ( mydata[10] == 0 );
+	return ( mydata[9] == 0 );
 }

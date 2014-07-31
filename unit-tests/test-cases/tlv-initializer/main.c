@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010 Apple Inc. All rights reserved.
+ * Copyright (c) 2010-2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -26,24 +26,24 @@
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
-extern int* get_a();		// initially 0
-extern int* get_b();		// initially 5
+__thread int a = 0;		// initially 0
+__thread int b = 5;		// initially 5
 
+// simulate C++ initializer on thread local variables
 void myinit()
 {
-	*get_a() = 11;
-	*get_b() = 42;
+	a = 11;
+	b = 42;
 }
-
 
 static void* work(void* arg)
 {
 	//fprintf(stderr, "self=%p, &a=%p\n", pthread_self(), get_a());
-	if ( *get_a() != 11 ) {
+	if ( a != 11 ) {
 		FAIL("tlv-initializer: get_a() not initialized to 11");
 		exit(0);
 	}
-	if ( *get_b() != 42 ) {
+	if ( b != 42 ) {
 		FAIL("tlv-initializer: get_b() not initialized to 42");
 		exit(0);
 	}

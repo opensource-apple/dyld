@@ -34,12 +34,14 @@ extern int foo();
 
 int main(int argc, const char* argv[])
 {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	int expectedResult = atoi(argv[1]);
 	int actualResult = foo();
 	//fprintf(stderr, "foo() returned %d, expected %d\n", actualResult, expectedResult);
 	if ( actualResult != expectedResult )
 		FAIL("DYLD_VERSIONED_LIBRARY_PATH-basic using wrong dylib. foo() returned %d, expected %d", actualResult, expectedResult);
 	else
+#endif
 		PASS("DYLD_VERSIONED_LIBRARY_PATH-basic");
 		
 	return EXIT_SUCCESS;

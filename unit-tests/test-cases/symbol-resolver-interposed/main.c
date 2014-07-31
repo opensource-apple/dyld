@@ -1,6 +1,5 @@
-/* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
- *
- * Copyright (c) 2010 Apple Inc. All rights reserved.
+/*
+ * Copyright (c) 2012 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -21,23 +20,29 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
+#include <stdio.h>  // fprintf(), NULL
+#include <stdlib.h> // exit(), EXIT_SUCCESS
+#include <dlfcn.h>
 
-#include <stdint.h>
+#include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
-#ifdef __cplusplus
-extern "C" {
-#endif 
+#include "foo.h"
 
-//
-// This function is called with a path to a dyld shared cache file.  It will update the shared cache file 
-// in place.  The update randomizes the load address when the shared cache file is later used by dyld.
-//
-// On success, the return value is zero.  
-// On failure the return value is non-zero and an explanation error was written to the logProc callback.
-//
-extern int update_dyld_shared_cache_load_address(const char* path, void (*logProc)(const char* format, ...) );
-
-
-#ifdef __cplusplus
+int main(int argc, const char* argv[])
+{
+	if ( getenv("DYLD_INSERT_LIBRARIES") == NULL ) {
+		if ( foo() != 0 ) {
+			FAIL("symbol-resolver-interposed: foo() != 0");
+			return EXIT_SUCCESS;
+		}
+	}
+	else {
+		if ( foo() != 20 ) {
+			FAIL("symbol-resolver-interposed: foo() != 20");
+			return EXIT_SUCCESS;
+		}
+	}
+	
+	PASS("symbol-resolver-interposed");
+	return EXIT_SUCCESS;
 }
-#endif 

@@ -29,11 +29,11 @@ include ${TESTROOT}/include/common.makefile
 # Test that fine grain re-exports works
 #
 
-all-check: all_$(OS_BAROLO_FEATURES) check_$(OS_BAROLO_FEATURES)
+all-check: all_$(OS_LION_FEATURES) check_$(OS_LION_FEATURES)
 
-all: all_$(OS_BAROLO_FEATURES)
+all: all_$(OS_LION_FEATURES)
 
-check: check_$(OS_BAROLO_FEATURES)
+check: check_$(OS_LION_FEATURES)
 
 check_1:
 	./main1

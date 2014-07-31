@@ -23,11 +23,11 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-all-check: all_$(OS_BAROLO_FEATURES) check_$(OS_BAROLO_FEATURES)
+all-check: all_$(OS_LION_FEATURES) check_$(OS_LION_FEATURES)
 
-all: all_$(OS_BAROLO_FEATURES) 
+all: all_$(OS_LION_FEATURES) 
 
-check: check_$(OS_BAROLO_FEATURES)
+check: check_$(OS_LION_FEATURES)
 
 check_:
 	${PASS_IFF} true
@@ -43,8 +43,8 @@ all_1:
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib up.c -DSTUB -o libup.stub -install_name libup.dylib 
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib down.c -o libdown.dylib -Wl,-upward_library,libup.stub 
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib up.c libdown.dylib -o libup.dylib  
-	${CC} ${CCFLAGS} -I${TESTROOT}/include main.c  libdown.dylib libup.dylib -o main2
 	${CC} ${CCFLAGS} -I${TESTROOT}/include main.c  libup.dylib libdown.dylib -o main1
+	${CC} ${CCFLAGS} -I${TESTROOT}/include main2.c  libdown.dylib  -o main2
 
 
 clean:

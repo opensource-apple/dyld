@@ -52,6 +52,15 @@ struct uuid_command {
 #ifndef CPU_SUBTYPE_ARM_V7
 	#define CPU_SUBTYPE_ARM_V7			((cpu_subtype_t) 9)
 #endif
+#ifndef CPU_SUBTYPE_ARM_V7F
+	#define CPU_SUBTYPE_ARM_V7F			((cpu_subtype_t) 10)
+#endif
+#ifndef CPU_SUBTYPE_ARM_V7K
+	#define CPU_SUBTYPE_ARM_V7K			((cpu_subtype_t) 12)
+#endif
+#ifndef CPU_SUBTYPE_ARM_V7S
+	#define CPU_SUBTYPE_ARM_V7S			((cpu_subtype_t) 11)
+#endif
 
 #ifndef LC_LOAD_UPWARD_DYLIB
 	#define	LC_LOAD_UPWARD_DYLIB (0x23|LC_REQ_DYLD)	/* load of dylib whose initializers run later */
@@ -63,6 +72,19 @@ struct uuid_command {
 #ifndef EXPORT_SYMBOL_FLAGS_REEXPORT
 	#define EXPORT_SYMBOL_FLAGS_REEXPORT 0x08
 #endif
+
+#ifndef LC_FUNCTION_STARTS
+	#define LC_FUNCTION_STARTS 0x26
+#endif
+
+#ifndef LC_DATA_IN_CODE
+	#define LC_DATA_IN_CODE 0x29
+#endif
+
+#ifndef LC_DYLIB_CODE_SIGN_DRS
+	#define LC_DYLIB_CODE_SIGN_DRS 0x2B
+#endif
+
 
 
 #include "FileAbstraction.hpp"
@@ -787,6 +809,20 @@ public:
             }
         }
 
+        return NULL;
+    }
+
+    const macho_load_command<P>* getLoadCommand(int query) const
+    {
+        const macho_load_command<P>* cmds = (macho_load_command<P>*)((uint8_t*)this + sizeof(macho_header<P>));
+        uint32_t cmd_count = this->ncmds();
+        const macho_load_command<P>* cmd = cmds;
+        for (uint32_t i = 0; i < cmd_count; ++i) {
+            if ( cmd->cmd() == query ) {
+                return cmd;
+            }
+            cmd = (macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
+        }
         return NULL;
     }
 

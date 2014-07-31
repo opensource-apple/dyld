@@ -23,6 +23,8 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+SHELL = bash # use bash shell so we can redirect just stderr
+
 PWD = `pwd`
 
 ifeq "$(OS_NAME)" "iPhoneOS"
@@ -34,7 +36,7 @@ endif
 all-check: all check
 
 check:
-	${RUN_AS_USER} $(PWD)/main-with-env
+	${RUN_AS_USER} $(PWD)/main-with-env insert-libraries-with-suid 2>/dev/null
 
 all: main
 

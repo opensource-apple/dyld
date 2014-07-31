@@ -30,10 +30,12 @@ include ${TESTROOT}/include/common.makefile
 
 
 TEXT_RELOC_FLAGS = -mdynamic-no-pic -read_only_relocs suppress -Wl,-w
+TEXT_STAT_FLAGS = -static
 
-ifeq "ppc64" "$(ARCH)"
-	# ppc64 does not support text relocs
+ifeq "iPhoneOS" "$(OS_NAME)"
+	# iOS does not support text relocs
 	TEXT_RELOC_FLAGS = 
+	TEXT_STAT_FLAGS =
 endif 
 
 
@@ -44,8 +46,8 @@ check:
 
 all:  
 	${CC} ${CCFLAGS} -dynamiclib bar.c space.s -Os -o libbar.dylib  ${TEXT_RELOC_FLAGS}
-	${CC} ${CCFLAGS} bind.c -static -Os -c -o bind.o
-	${CC} ${CCFLAGS} -dynamiclib bind.o libbar.dylib -o libbind.dylib ${TEXT_RELOC_FLAGS}
+	${CC} ${CCFLAGS} bind.c $(TEXT_STAT_FLAGS) -Os -c -o bind.o
+	${CC}  -dynamiclib bind.o libbar.dylib -o libbind.dylib ${TEXT_RELOC_FLAGS}
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c libbar.dylib libbind.dylib
 	
 clean:

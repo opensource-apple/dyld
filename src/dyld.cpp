@@ -56,6 +56,15 @@
 #ifndef CPU_SUBTYPE_ARM_V7
 	#define CPU_SUBTYPE_ARM_V7			((cpu_subtype_t) 9)
 #endif
+#ifndef CPU_SUBTYPE_ARM_V7F
+	#define CPU_SUBTYPE_ARM_V7F			((cpu_subtype_t) 10)
+#endif
+#ifndef CPU_SUBTYPE_ARM_V7S
+	#define CPU_SUBTYPE_ARM_V7S			((cpu_subtype_t) 11)
+#endif
+#ifndef CPU_SUBTYPE_ARM_V7K
+	#define CPU_SUBTYPE_ARM_V7K			((cpu_subtype_t) 12)
+#endif
 #ifndef LC_DYLD_ENVIRONMENT
 	#define LC_DYLD_ENVIRONMENT			0x27
 #endif
@@ -91,8 +100,8 @@ extern "C" char *			_simple_string(_SIMPLE_STRING __b);
 
 
 
-// 32-bit ppc and ARM are the only architecture that use cpu-sub-types
-#define CPU_SUBTYPES_SUPPORTED __ppc__ || __arm__
+// ARM is the only architecture that use cpu-sub-types
+#define CPU_SUBTYPES_SUPPORTED  __arm__
 
 
 
@@ -113,6 +122,8 @@ extern "C" {
 // implemented in dyldStartup.s for CrashReporter
 extern "C" void dyld_fatal_error(const char* errString) __attribute__((noreturn));
 
+// magic linker symbol for start of dyld binary
+extern "C" void* __dso_handle;
 
 
 //
@@ -175,6 +186,8 @@ typedef std::vector<dyld_image_state_change_handler> StateHandlers;
 struct RegisteredDOF { const mach_header* mh; int registrationID; };
 struct DylibOverride { const char* installName; const char* override; };
 
+enum RestrictedReason { restrictedNot, restrictedBySetGUid, restrictedBySegment, restrictedByEntitlements };
+	
 // all global state
 static const char*					sExecPath = NULL;
 static const macho_header*			sMainExecutableMachHeader = NULL;
@@ -184,6 +197,7 @@ static cpu_subtype_t				sHostCPUsubtype;
 #endif
 static ImageLoader*					sMainExecutable = NULL;
 static bool							sProcessIsRestricted = false;
+static RestrictedReason			sRestrictedReason = restrictedNot;
 static unsigned int					sInsertedDylibCount = 0;
 static std::vector<ImageLoader*>	sAllImages;
 static std::vector<ImageLoader*>	sImageRoots;
@@ -334,6 +348,7 @@ void throwf(const char* format, ...)
 
 
 //#define ALTERNATIVE_LOGFILE "/dev/console"
+
 static int sLogfile = STDERR_FILENO;
 
 #if LOG_BINDINGS
@@ -429,19 +444,8 @@ FileOpener::~FileOpener()
 }
 
 
-// forward declaration
-#if __ppc__ || __i386__
-bool isRosetta();
-#endif
-
-
 static void	registerDOFs(const std::vector<ImageLoader::DOFInfo>& dofs)
 {
-#if __ppc__
-	// can't dtrace a program running emulated under rosetta rdar://problem/5179640
-	if ( isRosetta() )
-		return;
-#endif
 	const unsigned int dofSectionCount = dofs.size();
 	if ( !sEnv.DYLD_DISABLE_DOFS && (dofSectionCount != 0) ) {
 		int fd = open("/dev/" DTRACEMNR_HELPER, O_RDWR);
@@ -560,7 +564,7 @@ static void notifySingle(dyld_image_states state, const ImageLoader* image)
 	if ( handlers != NULL ) {
 		dyld_image_info info;
 		info.imageLoadAddress	= image->machHeader();
-		info.imageFilePath		= image->getPath();
+		info.imageFilePath		= image->getRealPath();
 		info.imageFileModDate	= image->lastModified();
 		for (std::vector<dyld_image_state_change_handler>::iterator it = handlers->begin(); it != handlers->end(); ++it) {
 			const char* result = (*it)(state, 1, &info);
@@ -616,7 +620,7 @@ void syncAllImages()
 		dyld_image_info info;
 		ImageLoader* image = *it;
 		info.imageLoadAddress = image->machHeader();
-		info.imageFilePath = image->getPath();
+		info.imageFilePath = image->getRealPath();
 		info.imageFileModDate = image->lastModified();
 		// add to all_image_infos if not already there
 		bool found = false;
@@ -676,7 +680,7 @@ static void notifyBatchPartial(dyld_image_states state, bool orLater, dyld_image
 				ImageLoader* image = images[i];
 				//dyld::log("  state=%d, name=%s\n", state, image->getPath());
 				p->imageLoadAddress = image->machHeader();
-				p->imageFilePath = image->getPath();
+				p->imageFilePath = image->getRealPath();
 				p->imageFileModDate = image->lastModified();
 				// special case for add_image hook
 				if ( state == dyld_image_state_bound )
@@ -757,6 +761,13 @@ static void clearAllDepths()
 	for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++)
 		(*it)->clearDepth();
 }
+
+static void printAllDepths()
+{
+	for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++)
+		dyld::log("%03d %s\n",  (*it)->getDepth(), (*it)->getShortName());
+}
+
 
 static unsigned int imageCount()
 {
@@ -949,15 +960,22 @@ ImageLoader* mainExecutable()
 
 void runTerminators(void* extra)
 {
-	const unsigned int imageCount = sImageFilesNeedingTermination.size();
-	for(unsigned int i=imageCount; i > 0; --i){
-		ImageLoader* image = sImageFilesNeedingTermination[i-1];
-		image->doTermination(gLinkContext);
+	try {
+		const unsigned int imageCount = sImageFilesNeedingTermination.size();
+		for(unsigned int i=imageCount; i > 0; --i){
+			ImageLoader* image = sImageFilesNeedingTermination[i-1];
+			image->doTermination(gLinkContext);
+		}
+		sImageFilesNeedingTermination.clear();
+		notifyBatch(dyld_image_state_terminated);
 	}
-	sImageFilesNeedingTermination.clear();
-	notifyBatch(dyld_image_state_terminated);
+	catch (const char* msg) {
+		halt(msg);
+	}
 }
 
+
+#if SUPPORT_VERSIONED_PATHS
 
 // forward reference
 static bool getDylibVersionAndInstallname(const char* dylibPath, uint32_t* version, char* installName);
@@ -1068,6 +1086,8 @@ static void checkFrameworkOverridesInDir(const char* dirPath)
 		closedir(dirp);
 	}
 }
+#endif // SUPPORT_VERSIONED_PATHS
+
 
 //
 // Turns a colon separated list of strings into a NULL terminated array 
@@ -1480,6 +1500,22 @@ static void pruneEnvironmentVariables(const char* envp[], const char*** applep)
 		}
 	}
 	*d++ = NULL;
+	if ( removedCount != 0 ) {
+		dyld::log("dyld: DYLD_ environment variables being ignored because ");
+		switch (sRestrictedReason) {
+			case restrictedNot:
+				break;
+			case restrictedBySetGUid:
+				dyld::log("main executable (%s) is setuid or setgid\n", sExecPath);
+				break;
+			case restrictedBySegment:
+				dyld::log("main executable (%s) has __RESTRICT/__restrict section\n", sExecPath);
+				break;
+			case restrictedByEntitlements:
+				dyld::log("main executable (%s) is code signed with entitlements\n", sExecPath);
+				break;
+		}
+	}
 	
 	// slide apple parameters
 	if ( removedCount > 0 ) {
@@ -1562,6 +1598,15 @@ static void getHostInfo()
 #elif __ARM_ARCH_6K__
 	sHostCPU		= CPU_TYPE_ARM;
 	sHostCPUsubtype = CPU_SUBTYPE_ARM_V6;
+#elif __ARM_ARCH_7F__
+	sHostCPU		= CPU_TYPE_ARM;
+	sHostCPUsubtype = CPU_SUBTYPE_ARM_V7F;
+#elif __ARM_ARCH_7S__
+	sHostCPU		= CPU_TYPE_ARM;
+	sHostCPUsubtype = CPU_SUBTYPE_ARM_V7S;
+#elif __ARM_ARCH_7K__
+	sHostCPU		= CPU_TYPE_ARM;
+	sHostCPUsubtype = CPU_SUBTYPE_ARM_V7K;
 #else
 	struct host_basic_info info;
 	mach_msg_type_number_t count = HOST_BASIC_INFO_COUNT;
@@ -1742,31 +1787,19 @@ const cpu_subtype_t CPU_SUBTYPE_END_OF_LIST = -1;
 //
 
 
-#if __ppc__
-//	 
-//	32-bit PowerPC sub-type lists
-//
-const int kPPC_RowCount = 4;
-static const cpu_subtype_t kPPC32[kPPC_RowCount][6] = { 
-	// G5 can run any code
-	{  CPU_SUBTYPE_POWERPC_970, CPU_SUBTYPE_POWERPC_7450,  CPU_SUBTYPE_POWERPC_7400, CPU_SUBTYPE_POWERPC_750, CPU_SUBTYPE_POWERPC_ALL, CPU_SUBTYPE_END_OF_LIST },
-	
-	// G4 can run all but G5 code
-	{  CPU_SUBTYPE_POWERPC_7450,  CPU_SUBTYPE_POWERPC_7400,  CPU_SUBTYPE_POWERPC_750, CPU_SUBTYPE_POWERPC_ALL, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST },
-	{  CPU_SUBTYPE_POWERPC_7400,  CPU_SUBTYPE_POWERPC_7450,  CPU_SUBTYPE_POWERPC_750, CPU_SUBTYPE_POWERPC_ALL, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST },
-
-	// G3 cannot run G4 or G5 code
-	{ CPU_SUBTYPE_POWERPC_750,  CPU_SUBTYPE_POWERPC_ALL, CPU_SUBTYPE_END_OF_LIST,  CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST }
-};
-#endif
-
-
 #if __arm__
 //      
 //     ARM sub-type lists
 //
-const int kARM_RowCount = 5;
-static const cpu_subtype_t kARM[kARM_RowCount][6] = { 
+const int kARM_RowCount = 8;
+static const cpu_subtype_t kARM[kARM_RowCount][9] = { 
+
+	// armv7f can run: v7f, v7, v6, v5, and v4
+	{  CPU_SUBTYPE_ARM_V7F, CPU_SUBTYPE_ARM_V7, CPU_SUBTYPE_ARM_V6, CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, CPU_SUBTYPE_END_OF_LIST },
+
+	// armv7k can run: v7k, v6, v5, and v4
+	{  CPU_SUBTYPE_ARM_V7K, CPU_SUBTYPE_ARM_V6, CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, CPU_SUBTYPE_END_OF_LIST },
+
 	// armv7 can run: v7, v6, v5, and v4
 	{  CPU_SUBTYPE_ARM_V7, CPU_SUBTYPE_ARM_V6, CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, CPU_SUBTYPE_END_OF_LIST },
 	
@@ -1789,14 +1822,6 @@ static const cpu_subtype_t kARM[kARM_RowCount][6] = {
 static const cpu_subtype_t* findCPUSubtypeList(cpu_type_t cpu, cpu_subtype_t subtype)
 {
 	switch (cpu) {
-#if __ppc__
-		case CPU_TYPE_POWERPC:
-			for (int i=0; i < kPPC_RowCount ; ++i) {
-				if ( kPPC32[i][0] == subtype )
-					return kPPC32[i];
-			}
-			break;
-#endif
 #if __arm__
 		case CPU_TYPE_ARM:
 			for (int i=0; i < kARM_RowCount ; ++i) {
@@ -1851,15 +1876,6 @@ static bool fatFindRunsOnAllCPUs(cpu_type_t cpu, const fat_header* fh, uint64_t*
 	for(uint32_t i=0; i < OSSwapBigToHostInt32(fh->nfat_arch); ++i) {
 		if ( (cpu_type_t)OSSwapBigToHostInt32(archs[i].cputype) == cpu) {
 			switch (cpu) {
-#if __ppc__
-				case CPU_TYPE_POWERPC:
-					if ( (cpu_subtype_t)OSSwapBigToHostInt32(archs[i].cpusubtype) == CPU_SUBTYPE_POWERPC_ALL ) {
-						*offset = OSSwapBigToHostInt32(archs[i].offset);
-						*len = OSSwapBigToHostInt32(archs[i].size);
-						return true;
-					}
-					break;
-#endif
 #if __arm__
 				case CPU_TYPE_ARM:
 					if ( (cpu_subtype_t)OSSwapBigToHostInt32(archs[i].cpusubtype) == CPU_SUBTYPE_ARM_ALL ) {
@@ -1952,12 +1968,6 @@ bool isCompatibleMachO(const uint8_t* firstPage, const char* path)
 			
 			// cpu type has no ordered list of subtypes
 			switch (mh->cputype) {
-				case CPU_TYPE_POWERPC:
-					// allow _ALL to be used by any client
-					if ( mh->cpusubtype == CPU_SUBTYPE_POWERPC_ALL ) 
-						return true;
-					break;
-				case CPU_TYPE_POWERPC64:
 				case CPU_TYPE_I386:
 				case CPU_TYPE_X86_64:
 					// subtypes are not used or these architectures
@@ -2257,6 +2267,7 @@ static ImageLoader* loadPhase5stat(const char* path, const LoadContext& context,
 {
 	ImageLoader* image = NULL;
 	*imageFound = false;
+	*statErrNo = 0;
 	if ( stat(path, stat_buf) == 0 ) {
 		// in case image was renamed or found via symlinks, check for inode match
 		image = findLoadedImage(*stat_buf);
@@ -2304,7 +2315,7 @@ static ImageLoader* loadPhase5load(const char* path, const char* orgPath, const 
 		// see if this image in the cache was already loaded via a different path
 		for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); ++it) {
 			ImageLoader* anImage = *it;
-			if ( anImage->machHeader() == mhInCache )
+			if ( (const macho_header*)anImage->machHeader() == mhInCache )
 				return anImage;
 		}
 		// do nothing if not already loaded and if RTLD_NOLOAD 
@@ -2329,7 +2340,7 @@ static ImageLoader* loadPhase5load(const char* path, const char* orgPath, const 
 		return image;
 #endif
 	// just return NULL if file not found, but record any other errors
-	if ( statErrNo != ENOENT ) {
+	if ( (statErrNo != ENOENT) && (statErrNo != 0) ) {
 		exceptions->push_back(dyld::mkstringf("%s: stat() failed with errno=%d", path, statErrNo));
 	}
 	return NULL;
@@ -2711,20 +2722,11 @@ ImageLoader* load(const char* path, const LoadContext& context)
 
 
 
-
 #if DYLD_SHARED_CACHE_SUPPORT
 
 
 
-
-#if __ppc__
-	#define ARCH_NAME			"ppc"
-	#define ARCH_NAME_ROSETTA	"rosetta"
-	#define ARCH_CACHE_MAGIC	"dyld_v1     ppc"
-#elif __ppc64__
-	#define ARCH_NAME			"ppc64"
-	#define ARCH_CACHE_MAGIC	"dyld_v1   ppc64"
-#elif __i386__
+#if __i386__
 	#define ARCH_NAME			"i386"
 	#define ARCH_CACHE_MAGIC	"dyld_v1    i386"
 #elif __x86_64__
@@ -2741,9 +2743,25 @@ ImageLoader* load(const char* path, const LoadContext& context)
 #elif __ARM_ARCH_6K__
 	#define ARCH_NAME			"armv6"
 	#define ARCH_CACHE_MAGIC	"dyld_v1   armv6"
+#elif __ARM_ARCH_7F__
+	#define ARCH_NAME			"armv7f"
+	#define ARCH_CACHE_MAGIC	"dyld_v1  armv7f"
+	#define SHARED_REGION_READ_ONLY_START   0x30000000
+	#define SHARED_REGION_READ_ONLY_END     0x3E000000
+	#define SHARED_REGION_WRITABLE_START    0x3E000000
+	#define SHARED_REGION_WRITABLE_END      0x40000000
+	#define SLIDEABLE_CACHE_SUPPORT		    1
 #elif __ARM_ARCH_7A__
 	#define ARCH_NAME			"armv7"
 	#define ARCH_CACHE_MAGIC	"dyld_v1   armv7"
+	#define SHARED_REGION_READ_ONLY_START   0x30000000
+	#define SHARED_REGION_READ_ONLY_END     0x3E000000
+	#define SHARED_REGION_WRITABLE_START    0x3E000000
+	#define SHARED_REGION_WRITABLE_END      0x40000000
+	#define SLIDEABLE_CACHE_SUPPORT		    1
+#elif __ARM_ARCH_7K__
+	#define ARCH_NAME			"armv7k"
+	#define ARCH_CACHE_MAGIC	"dyld_v1  armv7k"
 	#define SHARED_REGION_READ_ONLY_START   0x30000000
 	#define SHARED_REGION_READ_ONLY_END     0x3E000000
 	#define SHARED_REGION_WRITABLE_START    0x3E000000
@@ -2754,7 +2772,7 @@ ImageLoader* load(const char* path, const LoadContext& context)
 
 static int __attribute__((noinline)) _shared_region_check_np(uint64_t* start_address)
 {
-	if ( (gLinkContext.sharedRegionMode == ImageLoader::kUseSharedRegion) ) 
+	if ( gLinkContext.sharedRegionMode == ImageLoader::kUseSharedRegion ) 
 		return syscall(294, start_address);
 	return -1;
 }
@@ -2775,7 +2793,7 @@ static int __attribute__((noinline)) _shared_region_map_and_slide_np(int fd, uin
 			dyld::log("dyld: code signature for shared cache failed with errno=%d\n", errno);
 	}
 #endif
-	if ( (gLinkContext.sharedRegionMode == ImageLoader::kUseSharedRegion) ) {
+	if ( gLinkContext.sharedRegionMode == ImageLoader::kUseSharedRegion ) {
 		return syscall(438, fd, count, mappings, slide, slideInfo, slideInfoSize);
 	}
 
@@ -2861,13 +2879,7 @@ int openSharedCacheFile()
 	char path[1024];
 	strcpy(path, sSharedCacheDir);
 	strcat(path, "/");
-#if __ppc__
-	// rosetta cannot handle optimized _ppc cache, so it use _rosetta cache instead, rdar://problem/5495438
-    if ( isRosetta() )
-		strcat(path, DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME_ROSETTA);
-    else
-#endif
-		strcat(path, DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME);
+	strcat(path, DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME);
 	return ::open(path, O_RDONLY);
 }
 
@@ -3158,8 +3170,7 @@ static void mapSharedCache()
 		// check for file that enables dyld shared cache dylibs to be overridden
 		struct stat enableStatBuf;
 		sDylibsOverrideCache = ( ::stat(IPHONE_DYLD_SHARED_CACHE_DIR "enable-dylibs-to-override-cache", &enableStatBuf) == 0 );
-#endif		
-
+#endif	
 	}
 }
 #endif // #if DYLD_SHARED_CACHE_SUPPORT
@@ -3475,14 +3486,19 @@ void registerImageStateSingleChangeHandler(dyld_image_states state, dyld_image_s
 	// add to list of handlers
 	std::vector<dyld_image_state_change_handler>* handlers = stateToHandlers(state, sSingleHandlers);
 	if ( handlers != NULL ) {
-		handlers->push_back(handler);
+        // <rdar://problem/10332417> need updateAllImages() to be last in dyld_image_state_mapped list
+        // so that if ObjC adds a handler that prevents a load, it happens before the gdb list is updated
+        if ( state == dyld_image_state_mapped )
+            handlers->insert(handlers->begin(), handler);
+        else
+            handlers->push_back(handler);
 
 		// call callback with all existing images
 		for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
 			ImageLoader* image = *it;
 			dyld_image_info	 info;
 			info.imageLoadAddress	= image->machHeader();
-			info.imageFilePath		= image->getPath();
+			info.imageFilePath		= image->getRealPath();
 			info.imageFileModDate	= image->lastModified();
 			// should only call handler if state == image->state
 			if ( image->getState() == state )
@@ -3557,6 +3573,7 @@ static void setContext(const macho_header* mainExecutableMH, int argc, const cha
 	gLinkContext.removeImage			= &removeImage;
 	gLinkContext.registerDOFs			= &registerDOFs;
 	gLinkContext.clearAllDepths			= &clearAllDepths;
+	gLinkContext.printAllDepths			= &printAllDepths;
 	gLinkContext.imageCount				= &imageCount;
 	gLinkContext.setNewProgramVars		= &setNewProgramVars;
 #if DYLD_SHARED_CACHE_SUPPORT
@@ -3582,21 +3599,6 @@ static void setContext(const macho_header* mainExecutableMH, int argc, const cha
 	gLinkContext.prebindUsage			= ImageLoader::kUseAllPrebinding;
 	gLinkContext.sharedRegionMode		= ImageLoader::kUseSharedRegion;
 }
-
-#if __ppc__ || __i386__
-bool isRosetta()
-{
-	int mib[] = { CTL_KERN, KERN_CLASSIC, getpid() };
-	int is_classic = 0;
-	size_t len = sizeof(int);
-	int ret = sysctl(mib, 3, &is_classic, &len, NULL, 0);
-	if ((ret != -1) && is_classic) {
-		// we're running under Rosetta 
-		return true;
-	}
-	return false;
-}
-#endif
 
 
 #if __LP64__
@@ -3644,7 +3646,7 @@ static bool hasRestrictedSegment(const macho_header* mh)
 	return false;
 }
 
-
+#if SUPPORT_VERSIONED_PATHS
 //
 // Peeks at a dylib file and returns its current_version and install_name.
 // Returns false on error.
@@ -3706,7 +3708,8 @@ static bool getDylibVersionAndInstallname(const char* dylibPath, uint32_t* versi
 	
 	return false;
 }
-								
+#endif // SUPPORT_VERSIONED_PATHS
+						
 #if 0
 static void printAllImages()
 {
@@ -3758,8 +3761,14 @@ void garbageCollectImages()
 		for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
 			ImageLoader* image = *it;
 			if ( (image->referenceCount() == 0) && !image->neverUnload() && !image->isBeingRemoved() ) {
+				if ( image->isReferencedUpward() ) {
+					// temp hack for rdar://problem/10973109
+					// if an image is upwardly referenced, we really need to scan all images 
+					// to see if any are still using it.
+					continue;
+				}
 				try {
-					//dyld::log("garbageCollectImages: deleting %s\n", image->getPath());
+					//dyld::log("garbageCollectImages: deleting %p %s\n", image, image->getPath());
 					image->setBeingRemoved();
 					removeImage(image);
 					ImageLoader::deleteImage(image);
@@ -3828,14 +3837,18 @@ static void loadInsertedDylib(const char* path)
 static bool processRestricted(const macho_header* mainExecutableMH)
 {
     // all processes with setuid or setgid bit set are restricted
-    if ( issetugid() )
-        return true;
-        
-	if ( hasRestrictedSegment(mainExecutableMH) && (geteuid() != 0) ) {
-		// existence of __RESTRICT/__restrict section make process restricted
+    if ( issetugid() ) {
+		sRestrictedReason = restrictedBySetGUid;
 		return true;
 	}
-    
+		
+	const uid_t euid = geteuid();
+	if ( (euid != 0) && hasRestrictedSegment(mainExecutableMH) ) {
+		// existence of __RESTRICT/__restrict section make process restricted
+		sRestrictedReason = restrictedBySegment;
+		return true;
+	}
+	
 #if __MAC_OS_X_VERSION_MIN_REQUIRED    
     // ask kernel if code signature of program makes it restricted
     uint32_t flags;
@@ -3844,12 +3857,40 @@ static bool processRestricted(const macho_header* mainExecutableMH)
                 CS_OPS_STATUS,
                 &flags,
                 sizeof(flags)) != -1) {
-        if (flags & CS_RESTRICT)
-            return true;
+        if (flags & CS_RESTRICT) {
+			sRestrictedReason = restrictedByEntitlements;
+			return true;
+		}
     }
 #endif
     return false;
 }
+
+
+
+
+// <rdar://problem/10583252> Add dyld to uuidArray to enable symbolication of stackshots
+static void addDyldImageToUUIDList()
+{
+	const struct macho_header* mh = (macho_header*)&__dso_handle;
+	const uint32_t cmd_count = mh->ncmds;
+	const struct load_command* const cmds = (struct load_command*)((char*)mh + sizeof(macho_header));
+	const struct load_command* cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		switch (cmd->cmd) {
+			case LC_UUID: {
+				uuid_command* uc = (uuid_command*)cmd;
+				dyld_uuid_info info;
+				info.imageLoadAddress = (mach_header*)mh;
+				memcpy(info.imageUUID, uc->uuid, 16);
+				addNonSharedCacheImageUUID(info);
+				return;
+			}
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+}
+
 
 
 //
@@ -3859,8 +3900,11 @@ static bool processRestricted(const macho_header* mainExecutableMH)
 // Returns address of main() in target program which __dyld_start jumps to
 //
 uintptr_t
-_main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int argc, const char* argv[], const char* envp[], const char* apple[])
+_main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, 
+		int argc, const char* argv[], const char* envp[], const char* apple[], 
+		uintptr_t* startGlue)
 {	
+	uintptr_t result = 0;
 	CRSetCrashLogMessage("dyld: launch started");
 #ifdef ALTERNATIVE_LOGFILE
 	sLogfile = open(ALTERNATIVE_LOGFILE, O_WRONLY | O_CREAT | O_APPEND);
@@ -3894,16 +3938,6 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int a
 	// Pickup the pointer to the exec path.
 	sExecPath = apple[0];
 	bool ignoreEnvironmentVariables = false;
-#if __i386__
-	if ( isRosetta() ) {
-		// under Rosetta (x86 side)
-		// When a 32-bit ppc program is run under emulation on an Intel processor,
-		// we want any i386 dylibs (e.g. any used by Rosetta) to not load in the shared region
-		// because the shared region is being used by ppc dylibs
-		gLinkContext.sharedRegionMode = ImageLoader::kDontUseSharedRegion;
-		ignoreEnvironmentVariables = true;
-	}
-#endif
 	if ( sExecPath[0] != '/' ) {
 		// have relative path, use cwd to make absolute
 		char cwdbuff[MAXPATHLEN];
@@ -3916,7 +3950,6 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int a
 			sExecPath = s;
 		}
 	}
-	uintptr_t result = 0;
 	sMainExecutableMachHeader = mainExecutableMH;
     sProcessIsRestricted = processRestricted(mainExecutableMH);
     if ( sProcessIsRestricted ) {
@@ -3954,6 +3987,8 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int a
 #endif
 	
 	try {
+		// add dyld itself to UUID list
+		addDyldImageToUUIDList();
 		CRSetCrashLogMessage("dyld: launch, loading dependent libraries");
 		// instantiate ImageLoader for main executable
 		sMainExecutable = instantiateFromLoadedImage(mainExecutableMH, mainExecutableSlide, sExecPath);
@@ -3983,7 +4018,6 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int a
 			gLinkContext.bindFlat = true;
 			gLinkContext.prebindUsage = ImageLoader::kUseNoPrebinding;
 		}
-		result = (uintptr_t)sMainExecutable->getMain();
 
 		// link any inserted libraries
 		// do this after linking main executable so that any dylibs pulled in by inserted 
@@ -4001,8 +4035,25 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int a
 	#if SUPPORT_OLD_CRT_INITIALIZATION
 		// Old way is to run initializers via a callback from crt1.o
 		if ( ! gRunInitializersOldWay ) 
+			initializeMainExecutable(); 
+	#else
+		// run all initializers
+		initializeMainExecutable(); 
 	#endif
-		initializeMainExecutable(); // run all initializers
+		// find entry point for main executable
+		result = (uintptr_t)sMainExecutable->getThreadPC();
+		if ( result != 0 ) {
+			// main executable uses LC_MAIN, needs to return to glue in libdyld.dylib
+			if ( (gLibSystemHelpers != NULL) && (gLibSystemHelpers->version >= 9) )
+				*startGlue = (uintptr_t)gLibSystemHelpers->startGlueToCallExit;
+			else
+				halt("libdyld.dylib support not present for LC_MAIN");
+		}
+		else {
+			// main executable uses LC_UNIXTHREAD, dyld needs to let "start" in program set up for main()
+			result = (uintptr_t)sMainExecutable->getMain();
+			*startGlue = NULL;
+		}
 	}
 	catch(const char* message) {
 		syncAllImages();

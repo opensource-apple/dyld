@@ -23,10 +23,19 @@
  */
 
 #include <Availability.h>
+#include <stddef.h>
 
 //
 // This is the temporary private interface between libSystem.B.dylib and dyld
 //
+
+
+int          NXArgc = 0;
+const char** NXArgv = NULL;
+const char** environ = NULL;
+const char*  __progname = NULL;
+
+
 
 //
 // Long ago, the compiler driver added -ldylib1.o to every dylib which caused a
@@ -35,9 +44,19 @@
 // to some sort of vtable based interface, libdyld still needs a __DATA,__dyld section.
 // The code below adds that section.
 //
-struct __DATA__dyld { long lazy; int (*lookup)(const char*, void**); };
+struct __DATA__dyld { 
+	long			lazy; 
+	int				(*lookup)(const char*, void**);
+	// ProgramVars
+	const void*		mh;
+	int*			NXArgcPtr;
+	const char***	NXArgvPtr;
+	const char***	environPtr;
+	const char**	__prognamePtr;
+};
 
-static volatile struct __DATA__dyld  myDyldSection __attribute__ ((section ("__DATA,__dyld"))) = { 0, 0 };
+static volatile struct __DATA__dyld  myDyldSection __attribute__ ((section ("__DATA,__dyld"))) 
+	= { 0, 0, NULL, &NXArgc, &NXArgv, &environ, &__progname };
 
 #if __arm__ && __MAC_OS_X_VERSION_MIN_REQUIRED
 // <rdar://problem/8755380>
@@ -52,7 +71,5 @@ int _dyld_func_lookup(const char* dyld_func_name, void **address)
 {
 	return (*myDyldSection.lookup)(dyld_func_name, address);
 }
-
-
 
 

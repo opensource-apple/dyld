@@ -88,7 +88,8 @@ namespace dyld {
 	extern void					removeImage(ImageLoader* image);
 	extern ImageLoader*			cloneImage(ImageLoader* image);
 	extern void					forEachImageDo( void (*)(ImageLoader*, void*), void*);
-	extern uintptr_t			_main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int argc, const char* argv[], const char* envp[], const char* apple[]);
+	extern uintptr_t			_main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int argc, const char* argv[], const char* envp[], 
+										const char* apple[], uintptr_t* startGlue);
 	extern void					halt(const char* message)  __attribute__((noreturn));
 	extern void					setErrorMessage(const char* msg);
 	extern const char*			getErrorMessage();

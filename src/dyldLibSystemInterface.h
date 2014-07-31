@@ -61,6 +61,8 @@ namespace dyld {
 		void*		(*pthread_getspecific)(pthread_key_t);
 		// added in version 8
 		void		(*cxa_finalize)(const void*);
+		// added in version 9
+		void*		startGlueToCallExit;
 	};
 #if __cplusplus
 };

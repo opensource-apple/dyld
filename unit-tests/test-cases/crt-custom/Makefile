@@ -37,7 +37,7 @@ check:
 all: main
 
 main: main.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main mystart.s main.c -e _mystart
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main mystart.s main.c -e _mystart -Wl,-no_new_main
 
 
 clean:

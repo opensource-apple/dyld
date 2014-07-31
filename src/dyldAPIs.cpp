@@ -80,8 +80,7 @@ static int sLastErrorNo;
 // In 10.3.x and earlier all the NSObjectFileImage API's were implemeneted in libSystem.dylib
 // Beginning in 10.4 the NSObjectFileImage API's are implemented in dyld and libSystem just forwards
 // This conditional keeps support for old libSystem's which needed some help implementing the API's
-#define OLD_LIBSYSTEM_SUPPORT (__ppc__ || __i386__)
-
+#define OLD_LIBSYSTEM_SUPPORT (__i386__)
 
 // The following functions have no prototype in any header.  They are special cases
 // where _dyld_func_lookup() is used directly.
@@ -334,7 +333,7 @@ const char* _dyld_get_image_name(uint32_t image_index)
 		dyld::log("%s(%u)\n", __func__, image_index);
 	ImageLoader* image = dyld::getIndexedImage(image_index);
 	if ( image != NULL )
-		return image->getPath();
+		return image->getRealPath();
 	else
 		return NULL;
 }
@@ -582,7 +581,7 @@ const struct mach_header* NSAddImage(const char* path, uint32_t options)
 	const bool dontLoad = ( (options & NSADDIMAGE_OPTION_RETURN_ONLY_IF_LOADED) != 0 );
 	const bool search = ( (options & NSADDIMAGE_OPTION_WITH_SEARCHING) != 0 );
 	const bool matchInstallName = ( (options & NSADDIMAGE_OPTION_MATCH_FILENAME_BY_INSTALLNAME) != 0 );
-	const bool abortOnError = ( (options & NSADDIMAGE_OPTION_RETURN_ON_ERROR|NSADDIMAGE_OPTION_RETURN_ONLY_IF_LOADED) == 0 );
+	const bool abortOnError = ( (options & (NSADDIMAGE_OPTION_RETURN_ON_ERROR|NSADDIMAGE_OPTION_RETURN_ONLY_IF_LOADED)) == 0 );
 	void* callerAddress = __builtin_return_address(1); // note layers: 1: real client, 0: libSystem glue
 	return addImage(callerAddress, path, search, dontLoad, matchInstallName, abortOnError);
 }
@@ -1188,8 +1187,6 @@ void _dyld_fork_child()
 	dyld_all_image_infos.systemOrderFlag = 0;
 }
 
-
-
 typedef void (*MonitorProc)(char *lowpc, char *highpc);
 
 static void monInitCallback(ImageLoader* image, void* userData)
@@ -1584,7 +1581,7 @@ int dladdr(const void* address, Dl_info* info)
 	CRSetCrashLogMessage("dyld: in dladdr()");
 	ImageLoader* image = dyld::findImageContainingAddress(address);
 	if ( image != NULL ) {
-		info->dli_fname = image->getPath();
+		info->dli_fname = image->getRealPath();
 		info->dli_fbase = (void*)image->machHeader();
 		if ( address == info->dli_fbase ) {
 			// special case lookup of header
@@ -1595,6 +1592,13 @@ int dladdr(const void* address, Dl_info* info)
 		}
 		// find closest symbol in the image
 		info->dli_sname = image->findClosestSymbol(address, (const void**)&info->dli_saddr);
+		// never return the mach_header symbol
+		if ( info->dli_saddr == info->dli_fbase ) {
+			info->dli_sname = NULL;
+			info->dli_saddr = NULL;
+			CRSetCrashLogMessage(NULL);
+			return 1; // success
+		}
 		if ( info->dli_sname != NULL ) {
 			if ( info->dli_sname[0] == '_' )
 				info->dli_sname = info->dli_sname +1; // strip off leading underscore
@@ -1675,15 +1679,7 @@ void* dlsym(void* handle, const char* symbolName)
 	
 	// magic "search what I would see" handle
 	if ( handle == RTLD_NEXT ) {
-#if __ppc__
-		// <rdar://problem/7628929> work around for llvmgcc bug
-		void* fa = __builtin_frame_address(0);
-		fa = *(void**)fa;
-		fa = *(void**)fa;
-		void* callerAddress = *((void**)(((int)fa)+8));
-#else	
 		void* callerAddress = __builtin_return_address(1); // note layers: 1: real client, 0: libSystem glue
-#endif
 		ImageLoader* callerImage = dyld::findImageContainingAddress(callerAddress);
 		sym = callerImage->findExportedSymbolInDependentImages(underscoredName, dyld::gLinkContext, &image); // don't search image, but do search what it links against
 		if ( sym != NULL ) {
@@ -1782,7 +1778,7 @@ const char* dyld_image_path_containing_address(const void* address)
 
 	ImageLoader* image = dyld::findImageContainingAddress(address);
 	if ( image != NULL )
-		return image->getPath();
+		return image->getRealPath();
 	return NULL;
 }
 

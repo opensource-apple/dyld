@@ -364,9 +364,6 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<Arch
 					}
 					try {
 						switch ( OSSwapBigToHostInt32(slices[i].cputype) ) {
-							case CPU_TYPE_POWERPC:
-								fLayouts.push_back(new MachOLayout<ppc>(&p[fileOffset], fileOffset, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
-								break;
 							case CPU_TYPE_I386:
 								fLayouts.push_back(new MachOLayout<x86>(&p[fileOffset], fileOffset, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
 								break;
@@ -375,9 +372,6 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<Arch
 								break;
 							case CPU_TYPE_ARM:
 								fLayouts.push_back(new MachOLayout<arm>(&p[fileOffset], fileOffset, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
-								break;
-							case CPU_TYPE_POWERPC64:
-								// ignore ppc64 slices
 								break;
 							default:
 								throw "unknown slice in fat file";
@@ -391,11 +385,7 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<Arch
 		}
 		else {
 			try {
-				if ( (OSSwapBigToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapBigToHostInt32(mh->cputype) == CPU_TYPE_POWERPC)) {
-					if ( requestedSlice(onlyArchs, OSSwapBigToHostInt32(mh->cputype), OSSwapBigToHostInt32(mh->cpusubtype)) ) 
-						fLayouts.push_back(new MachOLayout<ppc>(mh, 0, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
-				}
-				else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_I386)) {
+if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_I386)) {
 					if ( requestedSlice(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
 						fLayouts.push_back(new MachOLayout<x86>(mh, 0, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
 				}
@@ -406,9 +396,6 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<Arch
 				else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_ARM)) {
 					if ( requestedSlice(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
 						fLayouts.push_back(new MachOLayout<arm>(mh, 0, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
-				}
-				else if ( (OSSwapBigToHostInt32(mh->magic) == MH_MAGIC_64) && (OSSwapBigToHostInt32(mh->cputype) == CPU_TYPE_POWERPC64)) {
-					// ignore ppc64 slices
 				}
 				else {
 					throw "unknown file format";
@@ -569,17 +556,10 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 
 }
 
-template <> cpu_type_t MachOLayout<ppc>::arch()     { return CPU_TYPE_POWERPC; }
 template <> cpu_type_t MachOLayout<x86>::arch()     { return CPU_TYPE_I386; }
 template <> cpu_type_t MachOLayout<x86_64>::arch()  { return CPU_TYPE_X86_64; }
 template <> cpu_type_t MachOLayout<arm>::arch()		{ return CPU_TYPE_ARM; }
 
-
-template <>
-bool MachOLayout<ppc>::isSplitSeg() const
-{
-	return ( (this->getFlags() & MH_SPLIT_SEGS) != 0 );
-}
 
 template <>
 bool MachOLayout<x86>::isSplitSeg() const

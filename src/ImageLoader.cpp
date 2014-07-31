@@ -64,7 +64,7 @@ uintptr_t								ImageLoader::fgNextPIEDylibAddress = 0;
 
 
 ImageLoader::ImageLoader(const char* path, unsigned int libCount)
-	: fPath(path), fDevice(0), fInode(0), fLastModified(0), 
+	: fPath(path), fRealPath(NULL), fDevice(0), fInode(0), fLastModified(0), 
 	fPathHash(0), fDlopenReferenceCount(0), fStaticReferenceCount(0),
 	fDynamicReferenceCount(0), fDynamicReferences(NULL), fInitializerRecursiveLock(NULL), 
 	fDepth(0), fLoadOrder(fgLoadOrdinal++), fState(0), fLibraryCount(libCount), 
@@ -72,7 +72,8 @@ ImageLoader::ImageLoader(const char* path, unsigned int libCount)
 	fHideSymbols(false), fMatchByInstallName(false),
 	fInterposed(false), fRegisteredDOF(false), fAllLazyPointersBound(false), 
     fBeingRemoved(false), fAddFuncNotified(false),
-	fPathOwnedByImage(false), fWeakSymbolsBound(false)
+	fPathOwnedByImage(false), fIsReferencedDownward(false), 
+	fIsReferencedUpward(false), fWeakSymbolsBound(false)
 {
 	if ( fPath != NULL )
 		fPathHash = hash(fPath);
@@ -96,6 +97,8 @@ void ImageLoader::deleteImage(ImageLoader* image)
 
 ImageLoader::~ImageLoader()
 {
+	if ( fRealPath != NULL ) 
+		delete [] fRealPath;
 	if ( fPathOwnedByImage && (fPath != NULL) ) 
 		delete [] fPath;
 	if ( fDynamicReferences != NULL ) {
@@ -166,6 +169,7 @@ void ImageLoader::setPath(const char* path)
 	strcpy((char*)fPath, path);
 	fPathOwnedByImage = true;  // delete fPath when this image is destructed
 	fPathHash = hash(fPath);
+	fRealPath = NULL;
 }
 
 void ImageLoader::setPathUnowned(const char* path)
@@ -176,6 +180,21 @@ void ImageLoader::setPathUnowned(const char* path)
 	fPath = path;
 	fPathOwnedByImage = false;  
 	fPathHash = hash(fPath);
+}
+
+void ImageLoader::setPaths(const char* path, const char* realPath)
+{
+	this->setPath(path);
+	fRealPath = new char[strlen(realPath)+1];
+	strcpy((char*)fRealPath, realPath);
+}
+
+const char* ImageLoader::getRealPath() const 
+{ 
+	if ( fRealPath != NULL ) 
+		return fRealPath;
+	else
+		return fPath; 
 }
 
 
@@ -243,8 +262,6 @@ time_t ImageLoader::lastModified() const
 
 bool ImageLoader::containsAddress(const void* addr) const
 {
-	if ( ! this->isLinked() )
-		return false;
 	for(unsigned int i=0, e=segmentCount(); i < e; ++i) {
 		const uint8_t* start = (const uint8_t*)segActualLoadAddress(i);
 		const uint8_t* end = (const uint8_t*)segActualEndAddress(i);
@@ -301,7 +318,6 @@ const ImageLoader::Symbol* ImageLoader::findExportedSymbolInDependentImagesExcep
 			const ImageLoader** dsiStart, const ImageLoader**& dsiCur, const ImageLoader** dsiEnd, const ImageLoader** foundIn) const
 {
 	const ImageLoader::Symbol* sym;
-	
 	// search self
 	if ( notInImgageList(this, dsiStart, dsiCur) ) {
 		sym = this->findExportedSymbol(name, false, foundIn);
@@ -481,7 +497,7 @@ unsigned int ImageLoader::recursiveUpdateDepth(unsigned int maxDepth)
 		unsigned int minDependentDepth = maxDepth;
 		for(unsigned int i=0; i < libraryCount(); ++i) {
 			ImageLoader* dependentImage = libImage(i);
-			if ( dependentImage != NULL ) {
+			if ( (dependentImage != NULL) && !libIsUpward(i) ) {
 				unsigned int d = dependentImage->recursiveUpdateDepth(maxDepth);
 				if ( d < minDependentDepth )
 					minDependentDepth = d;
@@ -538,8 +554,13 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context, bool prefli
 				}
 				if ( fNeverUnload )
 					dependentLib->setNeverUnload();
-				if ( ! requiredLibInfo.upward )
+				if ( requiredLibInfo.upward ) {
+					dependentLib->fIsReferencedUpward = true;
+				}
+				else { 
 					dependentLib->fStaticReferenceCount += 1;
+					dependentLib->fIsReferencedDownward = true;
+				}
 				LibraryInfo actualInfo = dependentLib->doGetLibraryInfo();
 				depLibReRequired = requiredLibInfo.required;
 				depLibCheckSumsMatch = ( actualInfo.checksum == requiredLibInfo.info.checksum );
@@ -549,7 +570,8 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context, bool prefli
 					depLibReExported = dependentLib->isSubframeworkOf(context, this) || this->hasSubLibrary(context, dependentLib);
 				}
 				// check found library version is compatible
-				if ( actualInfo.minVersion < requiredLibInfo.info.minVersion ) {
+				// <rdar://problem/89200806> 0xFFFFFFFF is wildcard that matches any version
+				if ( (requiredLibInfo.info.minVersion != 0xFFFFFFFF) && (actualInfo.minVersion < requiredLibInfo.info.minVersion) ) {
 					// record values for possible use by CrashReporter or Finder
 					dyld::throwf("Incompatible library version: %s requires version %d.%d.%d or later, but %s provides version %d.%d.%d",
 							this->getShortName(), requiredLibInfo.info.minVersion >> 16, (requiredLibInfo.info.minVersion >> 8) & 0xff, requiredLibInfo.info.minVersion & 0xff,
@@ -582,7 +604,7 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context, bool prefli
 						(*context.setErrorStrings)(dyld_error_kind_dylib_wrong_arch, this->getPath(), requiredLibInfo.name, NULL);
 					else
 						(*context.setErrorStrings)(dyld_error_kind_dylib_missing, this->getPath(), requiredLibInfo.name, NULL);
-					dyld::throwf("Library not loaded: %s\n  Referenced from: %s\n  Reason: %s", requiredLibInfo.name, this->getPath(), msg);
+					dyld::throwf("Library not loaded: %s\n  Referenced from: %s\n  Reason: %s", requiredLibInfo.name, this->getRealPath(), msg);
 				}
 				// ok if weak library not found
 				dependentLib = NULL;
@@ -872,20 +894,25 @@ void ImageLoader::recursiveInitialization(const LinkContext& context, mach_port_
 		// break cycles
 		fState = dyld_image_state_dependents_initialized-1;
 		try {
+			bool hasUpwards = false;
 			// initialize lower level libraries first
 			for(unsigned int i=0; i < libraryCount(); ++i) {
 				ImageLoader* dependentImage = libImage(i);
-				if ( dependentImage != NULL )
-				// don't try to initialize stuff "above" me
-				if ( (dependentImage != NULL) && (dependentImage->fDepth >= fDepth) && !libIsUpward(i) )
-					dependentImage->recursiveInitialization(context, this_thread, timingInfo);
+				if ( dependentImage != NULL ) {
+					// don't try to initialize stuff "above" me
+					bool isUpward = libIsUpward(i);
+					if ( (dependentImage->fDepth >= fDepth) && !isUpward ) {
+						dependentImage->recursiveInitialization(context, this_thread, timingInfo);
+					}
+					hasUpwards |= isUpward;
+                }
 			}
 			
 			// record termination order
 			if ( this->needsTermination() )
 				context.terminationRecorder(this);
 			
-			// let objc know we are about to initalize this image
+			// let objc know we are about to initialize this image
 			uint64_t t1 = mach_absolute_time();
 			fState = dyld_image_state_dependents_initialized;
 			oldState = fState;
@@ -894,7 +921,19 @@ void ImageLoader::recursiveInitialization(const LinkContext& context, mach_port_
 			// initialize this image
 			bool hasInitializers = this->doInitialization(context);
 			
-			// let anyone know we finished initalizing this image
+			// <rdar://problem/10491874> initialize any upward depedencies
+			if ( hasUpwards ) {
+				for(unsigned int i=0; i < libraryCount(); ++i) {
+					ImageLoader* dependentImage = libImage(i);
+					// <rdar://problem/10643239> ObjC CG hang
+					// only init upward lib here if lib is not downwardly referenced somewhere 
+					if ( (dependentImage != NULL) && libIsUpward(i) && !dependentImage->isReferencedDownward() ) {
+						dependentImage->recursiveInitialization(context, this_thread, timingInfo);
+					}
+				}
+			}
+            
+			// let anyone know we finished initializing this image
 			fState = dyld_image_state_initialized;
 			oldState = fState;
 			context.notifySingle(dyld_image_state_initialized, this);

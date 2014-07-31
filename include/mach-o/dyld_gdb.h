@@ -35,7 +35,7 @@ extern "C" {
 /*
  * Prior to Mac OS 10.4, this is the interface gdb used to discover the mach-o images loaded in a process
  */
-#if __ppc__ || __i386__
+#if __i386__
 /*
  * gdb_dyld_version is the version of gdb interface that dyld is currently
  * exporting.  For the interface described in this header file gdb_dyld_version

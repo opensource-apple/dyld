@@ -23,6 +23,8 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+SHELL = bash # use bash shell so we can redirect just stderr
+
 ifeq "$(OS_NAME)" "iPhoneOS"
 	RUN_AS_USER = login -f -l mobile
 else
@@ -34,7 +36,7 @@ PWD = `pwd`
 all-check: all check
 
 check:
-	${RUN_AS_USER} $(PWD)/main-with-env
+	${RUN_AS_USER} $(PWD)/main-with-env 2>/dev/null
 
 all: main
 

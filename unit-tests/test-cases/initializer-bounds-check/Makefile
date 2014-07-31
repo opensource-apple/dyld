@@ -26,7 +26,7 @@ include ${TESTROOT}/include/common.makefile
 all-check: all check
 
 check:
-	./main 
+	${PASS_IFF_FAILURE} ./main 
 	
 all:
 	${CC} ${CCFLAGS} -I${TESTROOT}/include bar.c -dynamiclib -o libbar.dylib

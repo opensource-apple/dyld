@@ -125,13 +125,13 @@ int dyld_shared_cache_iterate_segments_with_slide(const void* shared_cache_file,
 			return dyld::walkImages<x86>(cache, callback);
 	else if ( strcmp((char*)cache, "dyld_v1  x86_64") == 0 ) 
 			return dyld::walkImages<x86_64>(cache, callback);
-	else if ( strcmp((char*)cache, "dyld_v1     ppc") == 0 ) 
-			return dyld::walkImages<ppc>(cache, callback);
 	else if ( strcmp((char*)cache, "dyld_v1   armv5") == 0 ) 
 			return dyld::walkImages<arm>(cache, callback);
 	else if ( strcmp((char*)cache, "dyld_v1   armv6") == 0 ) 
 			return dyld::walkImages<arm>(cache, callback);
 	else if ( strcmp((char*)cache, "dyld_v1   armv7") == 0 ) 
+			return dyld::walkImages<arm>(cache, callback);
+	else if ( strncmp((char*)cache, "dyld_v1  armv7", 14) == 0 ) 
 			return dyld::walkImages<arm>(cache, callback);
 	else
 		return -1;

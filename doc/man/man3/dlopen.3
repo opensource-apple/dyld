@@ -1,4 +1,4 @@
-.Dd Aug 28, 2008
+.Dd Nov 7, 2011
 .Os
 .Dt DLOPEN 3
 .Sh NAME
@@ -123,15 +123,18 @@ searches for a compatible Mach-O file in the directories specified by a set of e
 the process's current working directory.
 When set, the environment variables must contain a colon-separated list of directory paths, 
 which can be absolute or relative to the current working directory. The environment variables 
-are LD_LIBRARY_PATH, DYLD_LIBRARY_PATH, and DYLD_FALLBACK_LIBRARY_PATH. 
-The first two variables have no default value. The default value of DYLD_FALLBACK_LIBRARY_PATH
-is $HOME/lib;/usr/local/lib;/usr/lib. 
+are LD_LIBRARY_PATH, DYLD_LIBRARY_PATH, and DYLD_FALLBACK_LIBRARY_PATH, but if the path specified
+is formatted like a framework, then DYLD_FRAMEWORK_PATH and DYLD_FALLBACK_FRAMEWORK_PATH are
+used instead.
+The non-fallback variables have no default value. The default value of DYLD_FALLBACK_LIBRARY_PATH
+is $HOME/lib:/usr/local/lib:/usr/lib, and DYLD_FALLBACK_FRAMEWORK_PATH is 
+$HOME/Library/Frameworks:/Library/Frameworks:/Network/Library/Frameworks:/System/Library/Frameworks. 
 .Fn dlopen 
 searches the directories specified in the environment variables in the order they are listed. 
 .Pp
 When 
 .Fa path
-doesn't contain a slash character (i.e. it is just a leaf name), 
+doesn't contain a slash character (i.e. it is just a leaf name and therefore not a framework), 
 .Fn dlopen
 searches the following the following until it finds a compatible Mach-O file: $LD_LIBRARY_PATH, 
 $DYLD_LIBRARY_PATH, current working directory, $DYLD_FALLBACK_LIBRARY_PATH.
@@ -149,7 +152,8 @@ $DYLD_LIBRARY_PATH (with leaf name from
 .Pp
 Note: There are no configuration files to control dlopen searching.  
 .Pp
-Note: If the main executable is a set[ug]id binary, then all environment variables are ignored, and only a full path can be used. 
+Note: If the main executable is a set[ug]id binary or codesigned with entitlements, 
+then all environment variables are ignored, and only a full path can be used. 
 .Pp
 Note: Mac OS X uses "universal" files to combine 32-bit and 64-bit libraries.  This means there are no separate 32-bit and 64-bit search paths.
 .Pp
