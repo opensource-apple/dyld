@@ -1,4 +1,4 @@
-.Dd February 8, 2005
+.Dd Nov 6, 2006
 .Os
 .Dt DLOPEN 3
 .Sh NAME
@@ -63,7 +63,7 @@ RTLD_LAZY nor RTLD_NOW is specified, the default is RTLD_LAZY.
 One of the following flags may be ORed into the
 .Fa mode
 argument:
-.Bl -tag -width RTLD_GLOBALX
+.Bl -tag -width RTLD_LOCALX
 .It Dv RTLD_GLOBAL
 Symbols exported from this image (dynamic library or bundle) will be available to any 
 images build with -flat_namespace option to  
@@ -77,37 +77,82 @@ and only availble to
 .Fn dlsym
 when directly using the handle returned by this call to 
 .Fn dlopen .
+.Pp
+.El
 If neither 
 RTLD_GLOBAL nor RTLD_LOCAL is specified, the default is RTLD_GLOBAL.
+.Pp
+One of the following may be ORed into the
+.Fa mode
+argument:
+.Bl -tag -width RTLD_NODELETEX
+.It Dv RTLD_NOLOAD
+The specified image is not loaded.  However, a valid  
+.Fa handle
+is returned if the image already exists in the process. This provides a way
+to query if an image is already loaded.  The 
+.Fa handle
+returned is ref-counted, so you eventually need a corresponding call to  
+.Fn dlclose
+.It Dv RTLD_NODELETE
+The specified image is tagged so that will never be removed from the address space,
+even after all clients have released it via 
+.Fn dlclose
+.El
+.Pp
+Additionally, the following may be ORed into the
+.Fa mode
+argument:
+.Bl -tag -width RTLD_FIRSTX
+.It Dv RTLD_FIRST
+The retuned    
+.Fa handle
+is tagged so that any 
+.Fn dlsym
+calls on the 
+.Fa handle
+will only search the image specified, and not subsequent images.  If 
+.Fa path
+is NULL and the option RTLD_FIRST is used, the 
+.Fa handle 
+returned will only search the main executable.
 .El
 .Sh SEARCHING
 .Fn dlopen
-uses a series of steps to find a compatible mach-o file.  The first compatible file found is used.
+searches for a compatible Mach-O file in the directories specified by a set of environment variables and 
+the process's current working directory.
+When set, the environment variables must contain a colon-separated list of directory paths, 
+which can be absolute or relative to the current working directory. The environment variables 
+are LD_LIBRARY_PATH, DYLD_LIBRARY_PATH, and DYLD_FALLBACK_LIBRARY_PATH. 
+The first two variables have no default value. The default value of DYLD_FALLBACK_LIBRARY_PATH
+is $HOME/lib;/usr/local/lib;/usr/lib. 
+.Fn dlopen 
+searches the directories specified in the environment variables in the order they are listed. 
 .Pp
-1) If the directory specified by 
-.Fa path 
-does not contain a slash '/' (i.e. it is a leaf name) then the environment variable LD_LIBRARY_PATH is 
-used.  LD_LIBRARY_PATH should be a colon seperated list of directories.  
-.Fn dlopen
-searches each directory, in the order specified, for the leaf name 
-.Fa path .
-.Pp
-2) If DYLD_LIBRARY_PATH is set, then those directories are searched, in order, 
-with the leaf name of 
-.Fa path .
-.Pp
-3) If DYLD_FALLBACK_LIBRARY_PATH is set, then those directories are searched, in order
-with the leaf name of 
-.Fa path .
-If DYLD_FALLBACK_LIBRARY_PATH is not set, then the following directories are searched: $HOME/lib, /usr/local/lib, /usr/lib
-.Pp
-4) Lastly, 
+When 
 .Fa path
-is tried as-is as a regular file path.  That means it might resolve relative to the current working directory. 
+doesn't contain a slash character (i.e. it is just a leaf name), 
+.Fn dlopen
+searches the following the following until it finds a compatible Mach-O file: $LD_LIBRARY_PATH, 
+$DYLD_LIBRARY_PATH, current working directory, $DYLD_FALLBACK_LIBRARY_PATH.
+.Pp
+When 
+.Fa path 
+contains a slash (i.e. a full path or a partial path)
+.Fn dlopen
+searches the following the following until it finds a compatible Mach-O file: 
+$DYLD_LIBRARY_PATH (with leaf name from 
+.Fa path
+), current working directory (for partial paths), $DYLD_FALLBACK_LIBRARY_PATH
+(with leaf name from 
+.Fa path
+).
 .Pp
 Note: There are no configuration files to control dlopen searching.  
 .Pp
-Note: Mac OS X uses "fat" files to combine 32-bit and 64-bit libraries.  This means there are no separate 32-bit and 64-bit search paths.
+Note: If the main executable is a set[ug]id binary, then all environment variables are ignored, and only a full path can be used. 
+.Pp
+Note: Mac OS X uses "universal" files to combine 32-bit and 64-bit libraries.  This means there are no separate 32-bit and 64-bit search paths.
 .Pp
 .Sh RETURN VALUES
 If 
@@ -121,6 +166,7 @@ and Peter O'Gorman <ogorman@users.sourceforge.net>.
 In Mac OS X 10.4, dlopen was rewritten to be a native part of dyld.
 .Pp
 .Sh SEE ALSO
+.Xr dlopen_preflight 3
 .Xr dlclose 3
 .Xr dlsym 3
 .Xr dlerror 3

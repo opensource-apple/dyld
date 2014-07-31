@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2005-2007 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -27,7 +27,7 @@ run: all
 	${TESTROOT}/bin/exit-zero-pass.pl "dyld did slide" "dyld did not slide" ./main
 
 all:
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations -I${TESTROOT}/include -o main main.c -pagezero_size 0x40000000
 
 clean:
 	${RM} ${RMFLAGS} main

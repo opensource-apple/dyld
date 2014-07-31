@@ -1,5 +1,5 @@
 #
-#  Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+#  Copyright (c) 2004-2006 Apple Computer, Inc. All rights reserved.
 # 
 #  @APPLE_LICENSE_HEADER_START@
 #  
@@ -28,9 +28,11 @@
 
 # Mac OS X 10.4 way to discover a process's images
 _dyld_all_image_infos
+_dyld_shared_cache_ranges
 
 # CrashReporter uses this to get message as to why dyld terminated the process
 _error_string
+_dyld_fatal_error
 
 # Used by various tools to see build number of dyld
 _dyldVersionString

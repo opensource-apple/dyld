@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -29,10 +29,9 @@
 // This builds an executable that is just big enough to force dyld to slide a bit
 //
 
-#define ARRAY_SIZE 301800000
+#define ARRAY_SIZE 335400000
 
 int bigarray1[ARRAY_SIZE];
-int bigarray2[ARRAY_SIZE];
 
 int
 main()

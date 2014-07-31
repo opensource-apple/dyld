@@ -3,6 +3,10 @@
 # cd into test-cases directory
 cd `echo "$0" | sed 's/run-all-unit-tests/test-cases/'`
 
+# save crash reporter state
+CRSTATE=`defaults read com.apple.CrashReporter DialogType`
+defaults write com.apple.CrashReporter DialogType basic
+
 echo ""
 echo " * * * Running all unit tests for 32-bits * * *"
 
@@ -22,11 +26,11 @@ then
 	../bin/make-recursive.pl clean > /dev/null
 
 	# build 64-bit architecture
-	../bin/make-recursive.pl ARCH="-arch ppc64" | ../bin/result-filter.pl
+	../bin/make-recursive.pl ARCH="ppc64" | ../bin/result-filter.pl
 fi
 
 # if Intel, then also run all test cases under emulation
-if [ `sysctl -n hw.machine` = "i386" ] 
+if [ "`sysctl -n hw.machine`" = "i386" ] 
 then
 	echo ""
 	echo " * * * Running all unit tests for emulated 32-bits * * *"
@@ -35,18 +39,24 @@ then
 	../bin/make-recursive.pl clean > /dev/null
 
 	# build ppc architecture
-	../bin/make-recursive.pl ARCH="-arch ppc" | ../bin/result-filter.pl
+	../bin/make-recursive.pl ARCH="ppc" | ../bin/result-filter.pl
+
+
+	# if 64-bit capable Intel, then also run all test cases for 64-bits
+	if [ `sysctl -n hw.optional.x86_64` = "1" ] 
+	then
+		echo ""
+		echo " * * * Running all unit tests for 64-bits * * *"
+		
+		# make clean
+		../bin/make-recursive.pl clean > /dev/null
+
+		# build x86_64 architecture
+		../bin/make-recursive.pl ARCH="x86_64" | ../bin/result-filter.pl
+	fi
 fi
 
-# if 64-bit capable Intel, then also run all test cases for 64-bits
-if [ `sysctl -n hw.optional.x86_64` = "1" ] 
-then
-	echo ""
-	echo " * * * Running all unit tests for 64-bits * * *"
-	
-	# make clean
-	../bin/make-recursive.pl clean > /dev/null
+# restore crash reporter state
+defaults write com.apple.CrashReporter DialogType ${CRSTATE}
 
-	# build x86_64 architecture
-	../bin/make-recursive.pl ARCH="-arch x86_64" | ../bin/result-filter.pl
-fi
+

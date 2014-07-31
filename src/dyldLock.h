@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -27,26 +27,17 @@
 #define __DYLDLOCK__
 
 //
-// This file contains the syncronization utilities used by dyld to be thread safe.
-// Access to all dyld data structures is protected by a reader-writer lock.
-// This lock allows multiple "reader" threads to access dyld data structures at
-// the same time.  If there is a "writer" thread, it is the only thread allowed
-// access to dyld data structures.  
+// This file contains the synchronization utilities used to make dyld APIs be thread safe.
 //
-// The implementation of all dyld API's must acquire the global lock around accesses
-// to dyld's data structures.  This is done using the macros DYLD_*_LOCK_THIS_BLOCK.
+// The implementation of all dyld API's must hold acquire global lock (in libSystem)
+// before calling into dyld proper, and release the lock after returning from dyld.
+// This is done using the macros DYLD_LOCK_THIS_BLOCK.
 // Example:
 //
-//  void dyld_api_modifying_dyld() {
-//		DYLD_WRITER_LOCK_THIS_BLOCK;
+//  void dyld_api() {
+//		DYLD_LOCK_THIS_BLOCK;
 //		// free to do stuff here 
-//		// that modifies dyld data structures
-//	}
-//
-//  void dyld_api_examinging_dyld() {
-//		DYLD_READER_LOCK_THIS_BLOCK
-//		// can only do stuff here 
-//		// that examines but does not modify dyld data structures
+//		// that accesses dyld internal data structures
 //	}
 //
 //  void dyld_api_state_free() {
@@ -56,32 +47,23 @@
 //	}
 //
 
-
-#define DYLD_READER_LOCK_THIS_BLOCK		LockReaderHelper _dyld_lock;
-#define DYLD_WRITER_LOCK_THIS_BLOCK		LockWriterHelper _dyld_lock;
+#define DYLD_LOCK_INITIALIZER			dyldGlobalLockInitialize()
+#define DYLD_LOCK_THIS_BLOCK			LockHelper _dyld_lock;
 #define DYLD_NO_LOCK_THIS_BLOCK
 
 // used by dyld wrapper functions in libSystem
-class LockReaderHelper
+class __attribute__((visibility("hidden"))) LockHelper
 {
 public:
-	LockReaderHelper() __attribute__((visibility("hidden")));
-	~LockReaderHelper() __attribute__((visibility("hidden")));
+	LockHelper();
+	~LockHelper();
 };
 
-// used by dyld wrapper functions in libSystem
-class LockWriterHelper
-{
-public:
-	LockWriterHelper() __attribute__((visibility("hidden")));
-	~LockWriterHelper() __attribute__((visibility("hidden")));
-};
 
-// used by lazy binding
-extern void lockForLazyBinding() __attribute__((visibility("hidden")));
-extern void unlockForLazyBinding() __attribute__((visibility("hidden")));
-
-
+// to initialize
+extern void dyldGlobalLockInitialize()		__attribute__((visibility("hidden")));
+extern void dyldGlobalLockAcquire()			__attribute__((visibility("hidden")));
+extern void dyldGlobalLockRelease()			__attribute__((visibility("hidden")));
 
 #endif // __DYLDLOCK__
 

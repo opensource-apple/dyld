@@ -2,11 +2,17 @@
 
 SHELL = /bin/sh
 
-CC		 = gcc-4.0 ${ARCH}
-CCFLAGS = -Wall -g -std=c99
+# set default to be host
+ARCH ?= $(shell arch)
 
-CXX		  = g++-4.0 ${ARCH}
-CXXFLAGS = -Wall -g
+# set default to be all
+VALID_ARCHS ?= "ppc ppc64 i386 x86_64"
+
+CC		 = gcc-4.0 -arch ${ARCH}
+CCFLAGS = -Wall -std=c99
+
+CXX		  = g++-4.0 -arch ${ARCH}
+CXXFLAGS = -Wall 
 
 RM      = rm
 RMFLAGS = -rf

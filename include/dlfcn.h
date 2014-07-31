@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2006 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -36,7 +36,9 @@ extern "C" {
 
 #include <sys/cdefs.h>
 
-#ifndef _POSIX_C_SOURCE
+#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
+#include <stdbool.h>
+#include <AvailabilityMacros.h>
 /*
  * Structure filled in by dladdr().
  */
@@ -55,20 +57,27 @@ extern char * dlerror(void);
 extern void * dlopen(const char * __path, int __mode);
 extern void * dlsym(void * __handle, const char * __symbol);
 
+#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
+extern bool dlopen_preflight(const char* __path) AVAILABLE_MAC_OS_X_VERSION_10_5_AND_LATER;
+#endif /* not POSIX */
+
+
 #define RTLD_LAZY	0x1
 #define RTLD_NOW	0x2
 #define RTLD_LOCAL	0x4
 #define RTLD_GLOBAL	0x8
 
-#ifndef _POSIX_C_SOURCE
+#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
 #define RTLD_NOLOAD	0x10
 #define RTLD_NODELETE	0x80
+#define RTLD_FIRST	0x100	/* Mac OS X 10.5 and later */
 
 /*
  * Special handle arguments for dlsym().
  */
 #define	RTLD_NEXT		((void *) -1)	/* Search subsequent objects. */
 #define	RTLD_DEFAULT	((void *) -2)	/* Use default search algorithm. */
+#define	RTLD_SELF		((void *) -3)	/* Search this and subsequent objects (Mac OS X 10.5 and later) */
 #endif /* not POSIX */
 
 #ifdef __cplusplus

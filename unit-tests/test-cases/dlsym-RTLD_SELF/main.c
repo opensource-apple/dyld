@@ -37,7 +37,6 @@
 /// We also check that this works in the main executable.
 ///
 
-#ifdef RTLD_SELF 
 
 int foo()
 {
@@ -63,12 +62,10 @@ static void trySO(const char* pathToLoad)
 	(*sym)();	
 }
 
-#endif
 
 
 int main()
 {
-#ifdef RTLD_SELF 
 	trySO("test.bundle");
 	trySO("test.dylib");
 
@@ -77,8 +74,5 @@ int main()
 	}
 	
 	PASS("dlsym-RTLD_SELF bundle and dylib");
-#else
-	XFAIL("dlsym-RTLD_SELF not implemented");
-#endif
 	return EXIT_SUCCESS;
 }

@@ -44,7 +44,6 @@ if(length($entry))
 
 # show totals
 my $percentage = $pass_count * 100 / $total_count;
-print "\n";
 printf " * * * %d of %d unit-tests passed (%.1f percent) * * *\n", $pass_count, $total_count, $percentage;
 
 
@@ -98,16 +97,28 @@ sub process_entry
     }
     my $seen_result = 0;
 
+    #if there was any output to stderr, mark this as a failure
+    foreach $line (@{$$tbl{stderr}})
+    {
+	printf "%-40s FAIL spurious stderr failure: %s\n", $test_name, $line;
+	$total_count++;
+	return;
+    }
+
     # scan all stdout looking for lines that start with PASS or FAIL
     foreach $line (@{$$tbl{stdout}})
     {
 	if($line =~ m/^(PASS|XPASS|FAIL|XFAIL).+/)
 	{
-	    printf "%-40s %s\n", $test_name, $line;
 	    $total_count++;
 	    if($line =~ m/^PASS.+/)
 	    {
 		$pass_count++;
+	    }
+	    else
+	    {
+		# only print failure lines
+		printf "%-40s %s\n", $test_name, $line;
 	    }
 	    $seen_result = 1;
 	}

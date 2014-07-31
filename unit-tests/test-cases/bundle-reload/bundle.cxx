@@ -27,3 +27,4 @@ void foo()
 {
 }
 
+int __attribute__((weak)) blah = 10;

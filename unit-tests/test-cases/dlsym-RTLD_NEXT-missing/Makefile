@@ -23,10 +23,21 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
-	${TESTROOT}/bin/exit-zero-pass.pl "dlsym-RTLD_NEXT-missing with circular libraries" "dlsym-RTLD_NEXT-missing with circular libraries" ./main
+PROG = ./main
 
-all: main 
+ifeq "ppc" "$(ARCH)"
+	MACHINE =  $(shell arch)
+	ifeq "i386" "$(MACHINE)"
+		PROG = /usr/bin/true
+	endif
+endif
+
+
+
+run: all
+	${TESTROOT}/bin/exit-zero-pass.pl "dlsym-RTLD_NEXT-missing with circular libraries" "dlsym-RTLD_NEXT-missing with circular libraries" ${PROG}
+
+all:  main
 
 main : main.c foo1.dylib
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c foo1.dylib

@@ -66,6 +66,8 @@ bool checkRebasing()
 			++dirtyPageCount;
 	}
 
+	//fprintf(stderr, "dirtyPageCount=%d\n", dirtyPageCount);
+
 	// if there are too many dirty pages, then dyld is inefficient
 	return ( dirtyPageCount < 2 );
 }

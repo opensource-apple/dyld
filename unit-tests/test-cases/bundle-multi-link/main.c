@@ -62,7 +62,9 @@ int main()
 
 	NSModule mod2 = NSLinkModule(ofi, "test2.bundle", NSLINKMODULE_OPTION_NONE);
 	if ( mod2 == NULL ) {
-		FAIL("2nd NSLookupSymbolInModule failed");
+		NSLinkEditErrors c; int errorNumber; const char* fileName; const char* errorString;
+		NSLinkEditError(&c, &errorNumber, &fileName, &errorString);
+		FAIL("2nd NSLinkModule failed: %s", errorString);
 		return 0;
 	}
 	if ( mod == mod2 ) {
@@ -150,9 +152,9 @@ int main()
 	}
 
 	// check that this is really a new copy by verifying the getValue() returns zero
-	NSSymbol sym4getter = NSLookupSymbolInModule(mod2, "_getValue");
+	NSSymbol sym4getter = NSLookupSymbolInModule(mod4, "_getValue");
 	if ( sym4getter == NULL ) {
-		FAIL("2nd NSLookupSymbolInModule failed");
+		FAIL("4th NSLookupSymbolInModule failed");
 		return 0;
 	}
 	getter func4getter = NSAddressOfSymbol(sym4getter);

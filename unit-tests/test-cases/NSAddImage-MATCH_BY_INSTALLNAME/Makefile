@@ -29,13 +29,13 @@ run: all
 all: main
 
 main : main.c libbar.dylib libfoo.dylib
-	${CC} -I${TESTROOT}/include main.c -o main
+	${CC} -Wno-deprecated-declarations -I${TESTROOT}/include main.c -o main
 
 libfoo.dylib : foo.c libbar.dylib
 	${CC} -I${TESTROOT}/include -dynamiclib foo.c -o libfoo.dylib libbar.dylib
 
 libbar.dylib : bar.c
-	${CC} -I${TESTROOT}/include -dynamiclib bar.c -o libbar.dylib -install_name /usr/local/hide/libbar.dylib
+	${CC}  -I${TESTROOT}/include -dynamiclib bar.c -o libbar.dylib -install_name /usr/local/hide/libbar.dylib
 
 clean:
 	${RM} ${RMFLAGS} *~  main libbar.dylib libfoo.dylib

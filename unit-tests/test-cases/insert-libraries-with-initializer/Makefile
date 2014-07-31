@@ -23,13 +23,35 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
-	export DYLD_INSERT_LIBRARIES="libfoo.dylib" && ./main
+#
+# verifies that initializers for inserted libraries run before the
+# main executables initializers
+#
 
-all:
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib -o libfoo.dylib foo.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+
+run: all
+	export DYLD_INSERT_LIBRARIES=libinsert.dylib && ./main
+
+all: main libinsert.dylib
+
+
+main: main.c libfoo1.dylib libbase.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c  libfoo1.dylib  libbase.dylib
+
+
+libfoo1.dylib: foo1.c libbase.dylib libfoo2.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib  -o libfoo1.dylib  foo1.c  libbase.dylib libfoo2.dylib
+
+libfoo2.dylib: foo2.c libbase.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib  -o libfoo2.dylib  foo2.c  libbase.dylib
+
+libinsert.dylib: insert.c libbase.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib  -o libinsert.dylib  insert.c  libbase.dylib
+
+libbase.dylib: base.c
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib  -o libbase.dylib  base.c
+
 
 clean:
-	${RM} ${RMFLAGS} *~ main libfoo.dylib
-
+	${RM} ${RMFLAGS} *~ main  lib*.dylib
+	

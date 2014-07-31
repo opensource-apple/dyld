@@ -24,7 +24,6 @@
 
 int dummy_dyld_symbol = 1;
 
-#include <stdio.h> 
 #include <stdlib.h>
 
 // The following API's are deprecated.
@@ -164,9 +163,10 @@ void (*func)(struct dyld_debug_error_data *e))
 
 
 
-// Examine a mach_header in another process and determine its slid
+// Examine a mach_header in another process and determine its slide
 static ptrdiff_t slideForHeader(task_port_t target_task, const struct mach_header* otherAddressHeader)
 {
+	ptrdiff_t result = 0;
 	const struct mach_header* mh = xprocess_read(target_task, otherAddressHeader, 0x2000);
 	if ( mh != NULL ) {
 		int i;
@@ -176,14 +176,15 @@ static ptrdiff_t slideForHeader(task_port_t target_task, const struct mach_heade
 		for (i = 0; i < mh->ncmds; i++){
 			if (sgp->cmd == LC_SEGMENT) {
 				if (sgp->fileoff == 0  &&  sgp->filesize != 0) {
-					return (uintptr_t)mh - (uintptr_t)sgp->vmaddr;
+					result = (uintptr_t)mh - (uintptr_t)sgp->vmaddr;
+					break;
 				}
 			}
 			sgp = (const struct segment_command *)((char *)sgp + sgp->cmdsize);
 		}
 		free((void*)mh);
 	}
-	return 0;  
+	return result;  
 }
 
 

@@ -24,8 +24,8 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 #include <mach-o/loader.h>
+#include <unistd.h>
 
 //
 // BEGIN copy of code from libgcc.a source file unwind-dw2-fde-darwin.c
@@ -98,8 +98,8 @@ const Tinfo_Node* __keymgr_global[3] = { NULL, NULL, &keymgr_info };
 static __attribute__((noreturn)) 
 void dyld_abort() 
 {
-	fprintf(stderr, "internal dyld error\n");
-	abort();
+	//dyld::log("internal dyld error\n");
+	_exit(1);
 }
 
 void* _keymgr_get_and_lock_processwide_ptr(unsigned int key)

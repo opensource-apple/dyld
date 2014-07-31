@@ -29,7 +29,7 @@ run: all
 all: main 
 
 main : main.c bar.dylib foo.dylib
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c foo.dylib
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations -I${TESTROOT}/include -o main main.c foo.dylib
 
 foo.dylib : foo.c
 	${CC} ${CCFLAGS} -dynamiclib -o foo.dylib foo.c

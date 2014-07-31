@@ -30,7 +30,8 @@ If
 is called with the special
 .Fa handle
 .Dv RTLD_DEFAULT ,
-then every mach-o image in the process is searched in the order they were loaded.
+then all mach-o images in the process (except those loaded with dlopen(xxx, RTLD_LOCAL))
+are searched in the order they were loaded.
 This can be a costly search and should be avoided.  
 .Pp
 If

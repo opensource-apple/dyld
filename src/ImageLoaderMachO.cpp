@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -22,9 +22,16 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+// work around until conformance work is complete rdar://problem/4508801
+#define __srr0	srr0 
+#define __eip	eip 
+#define __rip	rip 
+
+
 #include <string.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <sys/fcntl.h>
 #include <sys/stat.h> 
 #include <sys/mman.h>
 #include <mach/shared_memory_server.h>
@@ -35,6 +42,7 @@
 #include <mach-o/nlist.h> 
 #include <sys/sysctl.h>
 #include <libkern/OSAtomic.h>
+#include <libkern/OSCacheControl.h>
 #if __ppc__ || __ppc64__
 	#include <mach-o/ppc/reloc.h>
 #endif
@@ -42,15 +50,20 @@
 	#include <mach-o/x86_64/reloc.h>
 #endif
 
+#ifndef MH_PIE
+	#define MH_PIE 0x200000 
+#endif
+
+#ifndef S_DTRACE_DOF
+  #define S_DTRACE_DOF 0xF
+#endif
+
 #ifndef S_ATTR_SELF_MODIFYING_CODE
   #define S_ATTR_SELF_MODIFYING_CODE 0x04000000
 #endif
 
 #include "ImageLoaderMachO.h"
-#include "mach-o/dyld_gdb.h"
-
-// no header for this yet, rdar://problem/3850825
-extern "C" void sys_icache_invalidate(void *, size_t);
+#include "mach-o/dyld_images.h"
 
 // optimize strcmp for ppc
 #if __ppc__
@@ -58,6 +71,11 @@ extern "C" void sys_icache_invalidate(void *, size_t);
 #else
 	#define astrcmp(a,b) strcmp(a,b)
 #endif
+
+// in libc.a
+extern "C" void _spin_lock(uint32_t*);
+extern "C" void _spin_unlock(uint32_t*);
+
 
 // relocation_info.r_length field has value 3 for 64-bit executables and value 2 for 32-bit executables
 #if __LP64__
@@ -90,6 +108,9 @@ uint32_t ImageLoaderMachO::fgHintedBinaryTreeSearchs = 0;
 uint32_t ImageLoaderMachO::fgUnhintedBinaryTreeSearchs = 0;
 uint32_t ImageLoaderMachO::fgCountOfImagesWithWeakExports = 0;
 
+#if __i386__
+uint32_t ImageLoaderMachO::fgReadOnlyImportSpinLock = 0;
+#endif
 
 //#define LINKEDIT_USAGE_DEBUG 1
 
@@ -104,8 +125,11 @@ uint32_t ImageLoaderMachO::fgCountOfImagesWithWeakExports = 0;
 	static void noteAccessedLinkEditAddress(const void* addr)
 	{
 		uintptr_t page = ((uintptr_t)addr) & (-4096);
+		if ( sLinkEditPageBuckets.count(page) == 0 ) {
+			ImageLoader* inImage = dyld::findImageContainingAddress(addr);
+			dyld::log("dyld: accessing page 0x%016lX in __LINKEDIT of %s\n", page, inImage != NULL ? inImage->getPath() : "unknown" );
+		}
 		sLinkEditPageBuckets.insert(page);
-		fprintf(stderr, "dyld: accessing page 0x%08lX in __LINKEDIT of %s\n", page, dyld::findImageContainingAddress(addr)->getPath());
 	}
 #endif
 
@@ -118,19 +142,78 @@ void ImageLoaderMachO::init()
 	fStrings		= NULL;
 	fDynamicInfo	= NULL;
 	fSlide			= 0;
-	fIsSplitSeg		= false;
-	fHasSubLibraries= false;
-	fHasSubUmbrella = false;
-	fDashInit		= NULL;
-	fModInitSection	= NULL;
-	fModTermSection	= NULL;
-	fDATAdyld		= NULL;
-	fImageNotifySection	= NULL;
 	fTwoLevelHints	= NULL;
 	fDylibID		= NULL;
-	fReExportThruFramework	= NULL;
+#if TEXT_RELOC_SUPPORT
 	fTextSegmentWithFixups = NULL;
+#endif
+#if __i386__
+	fReadOnlyImportSegment = NULL;
+#endif
+	fIsSplitSeg		= false;
+	fInSharedCache	= false;
+#if __ppc64__
+	f4GBWritable	= false;
+#endif
+	fHasSubLibraries= false;
+	fHasSubUmbrella = false;
+	fInUmbrella     = false;
+	fHasDOFSections = false;
+	fHasDashInit	= false;
+	fHasInitializers= false;
+	fHasTerminators = false;
+#if IMAGE_NOTIFY_SUPPORT
+	fHasImageNotifySection = false;
+#endif
 }
+
+// create image for main executable
+ImageLoaderMachO::ImageLoaderMachO(const struct mach_header* mh, uintptr_t slide, const char* path, const LinkContext& context)
+ : ImageLoader(path)
+{
+	// clean slate
+	this->init();
+
+	// temporary use this buffer until TEXT is mapped in
+	fMachOData = (const uint8_t*)mh;
+
+	// create segments
+	this->instantiateSegments((const uint8_t*)mh);
+		
+	// set slide for PIE programs
+	this->setSlide(slide);
+
+	// get pointers to interesting things 
+	this->parseLoadCmds();
+
+	// update segments to reference load commands in mapped in __TEXT segment
+	this->adjustSegments();
+
+#if __i386__
+	// kernel may have mapped in __IMPORT segment read-only, we need it read/write to do binding
+	if ( fReadOnlyImportSegment != NULL )
+		fReadOnlyImportSegment->tempWritable(context, this);
+#endif
+	
+	// for PIE record end of program, to know where to start loading dylibs
+	if ( mh->flags & MH_PIE )
+		Segment::fgNextPIEDylibAddress = (uintptr_t)this->getEnd();
+	
+	// notify state change
+	this->setMapped(context);
+	
+	if ( context.verboseMapping ) {
+		dyld::log("dyld: Main executable mapped %s\n", this->getPath());
+		for (ImageLoader::SegmentIterator it = this->beginSegments(); it != this->endSegments(); ++it ) {
+			Segment* seg = *it;
+			if ( (strcmp(seg->getName(), "__PAGEZERO") == 0) || (strcmp(seg->getName(), "__UNIXSTACK") == 0)  )
+				dyld::log("%18s at 0x%08lX->0x%08lX\n", seg->getName(), seg->getPreferredLoadAddress(), seg->getPreferredLoadAddress()+seg->getSize());
+			else
+				dyld::log("%18s at 0x%08lX->0x%08lX\n", seg->getName(), seg->getActualLoadAddress(this), seg->getActualLoadAddress(this)+seg->getSize());
+		}
+	}
+}
+
 
 // create image by copying an in-memory mach-o file
 ImageLoaderMachO::ImageLoaderMachO(const char* moduleName, const struct mach_header* mh, uint64_t len, const LinkContext& context)
@@ -145,12 +228,68 @@ ImageLoaderMachO::ImageLoaderMachO(const char* moduleName, const struct mach_hea
 	// create segments
 	this->instantiateSegments((const uint8_t*)mh);
 	
-	// map segments
-	if ( mh->filetype != MH_EXECUTE )
+	// map segments 
+	if ( mh->filetype == MH_EXECUTE ) {
+		throw "can't load another MH_EXECUTE";
+	}
+	else {
 		ImageLoader::mapSegments((const void*)mh, len, context);
+	}
 	
+	// for compatibility, never unload dylibs loaded from memory
+	this->setNeverUnload();
+
 	// get pointers to interesting things 
 	this->parseLoadCmds();
+
+	// update segments to reference load commands in mapped in __TEXT segment
+	this->adjustSegments();
+
+	// bundle loads need path copied
+	if ( moduleName != NULL ) 
+		this->setPath(moduleName);
+	
+	// notify state change
+	this->setMapped(context);
+		
+}
+
+// create image by using cached mach-o file
+ImageLoaderMachO::ImageLoaderMachO(const struct mach_header* mh, const char* path, const struct stat& info, const LinkContext& context)
+ : ImageLoader(path, 0, info)
+{
+	// clean slate
+	this->init();
+
+	// already mapped to mh address
+	fMachOData = (const uint8_t*)mh;
+
+	// usually a split seg
+	fIsSplitSeg = ((mh->flags & MH_SPLIT_SEGS) != 0);	
+	
+	// remember this is from shared cache and cannot be unloaded
+	fInSharedCache = true;
+	this->setNeverUnload();
+
+	// create segments
+	this->instantiateSegments((const uint8_t*)mh);
+		
+	// segments already mapped in cache
+	if ( context.verboseMapping ) {
+		dyld::log("dyld: Using shared cached for %s\n", path);
+		for (ImageLoader::SegmentIterator it = this->beginSegments(); it != this->endSegments(); ++it ) {
+			Segment* seg = *it;
+			dyld::log("%18s at 0x%08lX->0x%08lX\n", seg->getName(), seg->getActualLoadAddress(this), seg->getActualLoadAddress(this)+seg->getSize());
+		}
+	}
+
+	// get pointers to interesting things 
+	this->parseLoadCmds();
+
+	// note: path is mapped into cache so no need for ImageLoader to make a copy
+
+	// notify state change
+	this->setMapped(context);
 }
 
 
@@ -185,16 +324,62 @@ ImageLoaderMachO::ImageLoaderMachO(const char* path, int fd, const uint8_t first
 	// map segments, except for main executable which is already mapped in by kernel
 	if ( ((macho_header*)fileData)->filetype != MH_EXECUTE )
 		this->mapSegments(fd, offsetInFat, lenInFat, info.st_size, context);
-			
+	
 	// get pointers to interesting things 
 	this->parseLoadCmds();
+	
+	// update segments to reference load commands in mapped in __TEXT segment
+	this->adjustSegments();
+	
+	// notify state change
+	this->setMapped(context);
+	
+	// if path happens to be same as in LC_DYLIB_ID load command use that, otherwise malloc a copy of the path
+	const char* installName = getInstallPath();
+	if ( (installName != NULL) && (strcmp(installName, path) == 0) && (path[0] == '/') )
+		this->setPathUnowned(installName);
+	if ( path[0] != '/' ) {
+		// rdar://problem/5135363 turn relative paths into absolute paths so gdb, Symbolication can later find them
+		char realPath[MAXPATHLEN];
+		if ( realpath(path, realPath) != NULL )
+			this->setPath(realPath);
+		else
+			this->setPath(path);
+	}
+	else 
+		this->setPath(path);
+	
+	// tell kernel about pages we are going to need soon
+	if ( ! context.preFetchDisabled )
+		this->preFetch(fd, offsetInFat, context);
+
 }
+
+
 
 ImageLoaderMachO::~ImageLoaderMachO()
 {
 	// keep count of images with weak exports
 	if ( this->hasCoalescedExports() )
 		--fgCountOfImagesWithWeakExports;
+
+	// keep count of images used in shared cache
+	if ( fInSharedCache )
+		--fgImagesUsedFromSharedCache;
+
+	// usually unmap image when done
+	if ( ! this->leaveMapped() && (this->getState() >= dyld_image_state_mapped) ) {
+		// first segment has load commands, so unmap last
+		Segment* firstSeg = *(this->beginSegments());
+		for(ImageLoader::SegmentIterator it = this->beginSegments(); it != this->endSegments(); ++it ) {
+			Segment* seg = *it;
+			if ( seg != firstSeg )
+				seg->unmap(this);
+		}
+		firstSeg->unmap(this);
+	}
+	// free segment objects
+	free(fSegmentsArray);
 }
 
 
@@ -204,18 +389,114 @@ void ImageLoaderMachO::instantiateSegments(const uint8_t* fileData)
 	const uint32_t cmd_count = ((macho_header*)fileData)->ncmds;
 	const struct load_command* const cmds = (struct load_command*)&fileData[sizeof(macho_header)];
 
-	// construct Segment object for each LC_SEGMENT cmd and add to list
+	// count LC_SEGMENT cmd and reserve that many segment slots
+	uint32_t segCount = 0;
 	const struct load_command* cmd = cmds;
 	for (unsigned long i = 0; i < cmd_count; ++i) {
 		if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
-			if ( (((struct macho_segment_command*)cmd)->vmsize != 0) || !fIsSplitSeg )
-				fSegments.push_back(new SegmentMachO((struct macho_segment_command*)cmd, this, fileData));
+			// ignore zero-sized segments
+			if ( ((struct macho_segment_command*)cmd)->vmsize != 0 )
+				++segCount;
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+	// fSegmentsArrayCount is only 8-bits
+	if ( segCount > 255 )
+		dyld::throwf("more than 255 segments in %s", this->getPath());
+		
+	// allocate array of segment objects in one call to malloc()
+	//fSegmentsArray = static_cast<SegmentMachO*>(operator new[](segCount*sizeof(SegmentMachO)));
+	fSegmentsArray = static_cast<SegmentMachO*>(malloc(segCount*sizeof(SegmentMachO)));
+	fSegmentsArrayCount = segCount;
+	
+	// construct Segment object for each LC_SEGMENT cmd using "placment new"
+	uint32_t segIndex = 0;
+	cmd = cmds;
+	for (unsigned long i = 0; i < cmd_count; ++i) {
+		if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
+			const struct macho_segment_command* segCmd = (struct macho_segment_command*)cmd;
+			// ignore zero-sized segments
+			if ( segCmd->vmsize != 0 ) 
+				new (&fSegmentsArray[segIndex++]) SegmentMachO(segCmd);
 		}
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 	}
 }
 
 
+void ImageLoaderMachO::adjustSegments()
+{
+	// tell each segment where is load command is finally mapped
+	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+	uint32_t segIndex = 0;
+	const struct load_command* cmd = cmds;
+	for (unsigned long i = 0; i < cmd_count; ++i) {
+		if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
+			const struct macho_segment_command* segCmd = (struct macho_segment_command*)cmd;
+			// ignore zero-sized segments
+			if ( segCmd->vmsize != 0 ) {
+				fSegmentsArray[segIndex].adjust(segCmd);
+				++segIndex;
+			}
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+}
+
+void ImageLoaderMachO::preFetch(int fd, uint64_t offsetInFat, const LinkContext& context)
+{
+	// always prefetch a subrange of __LINKEDIT pages
+	uintptr_t symbolTableOffset = (uintptr_t)fSymbolTable - (uintptr_t)fLinkEditBase;
+	uintptr_t stringTableOffset = (uintptr_t)fStrings - (uintptr_t)fLinkEditBase;
+	uintptr_t start;
+	// if image did not load at preferred address
+	if ( fSegmentsArray[0].getPreferredLoadAddress() != (uintptr_t)fMachOData ) {
+		// local relocations will be processed, so start pre-fetch at local symbols
+		start = offsetInFat + fDynamicInfo->locreloff;
+	}
+	else {
+		// otherwise start pre-fetch at global symbols section of symbol table
+		start = offsetInFat + symbolTableOffset + fDynamicInfo->iextdefsym * sizeof(macho_nlist);
+	}
+	// prefetch ends at end of last undefined string in string pool
+	uintptr_t end = offsetInFat + stringTableOffset;
+	if ( fDynamicInfo->nundefsym != 0 )
+		end += fSymbolTable[fDynamicInfo->iundefsym+fDynamicInfo->nundefsym-1].n_un.n_strx;
+	else if ( fDynamicInfo->nextdefsym != 0 )
+		end += fSymbolTable[fDynamicInfo->iextdefsym+fDynamicInfo->nextdefsym-1].n_un.n_strx;
+	
+	radvisory advice;
+	advice.ra_offset = start & (-4096); // page align
+	advice.ra_count = (end-advice.ra_offset+4095) & (-4096);
+	fgTotalBytesPreFetched += advice.ra_count;
+	fcntl(fd, F_RDADVISE, &advice);
+	if ( context.verboseMapping ) {
+		dyld::log("%18s prefetching 0x%0llX -> 0x%0llX\n", 
+			"__LINKEDIT", advice.ra_offset+(uintptr_t)fLinkEditBase-offsetInFat, advice.ra_offset+advice.ra_count+(uintptr_t)fLinkEditBase-offsetInFat);
+	}
+	
+	// prefetch __DATA/__OBJC pages during launch, but not for dynamically loaded code
+	if ( context.linkingMainExecutable ) {
+		for (ImageLoader::SegmentIterator it = this->beginSegments(); it != this->endSegments(); ++it ) {
+			Segment* seg = *it;
+			if ( seg->writeable() && (seg->getFileSize() > 0) ) {
+				// prefetch writable segment that have mmap'ed regions
+				advice.ra_offset = offsetInFat + seg->getFileOffset();
+				advice.ra_count = seg->getFileSize();
+				// limit prefetch to 1MB (256 pages)
+				if ( advice.ra_count > 1024*1024 )
+					advice.ra_count = 1024*1024;
+				fgTotalBytesPreFetched += advice.ra_count;
+				fcntl(fd, F_RDADVISE, &advice);
+				if ( context.verboseMapping ) {
+					dyld::log("%18s prefetching 0x%0lX -> 0x%0lX\n", 
+						seg->getName(), seg->getActualLoadAddress(this), seg->getActualLoadAddress(this)+advice.ra_count-1);
+				}
+			}
+		}
+	}
+}
 
 bool ImageLoaderMachO::segmentsMustSlideTogether() const 
 {
@@ -270,9 +551,12 @@ bool ImageLoaderMachO::needsCoalescing() const
 	return ( (mh->flags & MH_BINDS_TO_WEAK) != 0 );
 }
 
-#if !__LP64__   // split segs not supported for 64-bits
 
-#if 1 // hack until kernel headers and glue are in system
+
+
+
+
+// hack until kernel headers and glue are in system
 struct _shared_region_mapping_np {
     mach_vm_address_t   address;
     mach_vm_size_t      size;
@@ -285,6 +569,7 @@ struct _shared_region_range_np {
     mach_vm_size_t      size;
 };
 		
+#if SPLIT_SEG_SHARED_REGION_SUPPORT	
 // Called by dyld.  
 // Requests the kernel to map a number of regions from the fd into the
 // shared sections address range (0x90000000-0xAFFFFFFF).
@@ -304,13 +589,13 @@ _shared_region_map_file_np(
 	const _shared_region_mapping_np regions[],	// the array of regions to map
 	uint64_t* slide)					// the amount all regions were slid,  NULL means don't attempt to slide
 {
-	//fprintf(stderr, "%s(%i, %u, %8p, %8p)\n", __func__, fd, regionCount, regions, slide);
+	//dyld::log("%s(%i, %u, %8p, %8p)\n", __func__, fd, regionCount, regions, slide);
 	//for ( unsigned int i=0; i < regionCount; ++i) {
-	//	fprintf(stderr, "\taddress=0x%08llX, size=0x%08llX\n", regions[i].address, regions[i].size);
+	//	dyld::log("\taddress=0x%08llX, size=0x%08llX\n", regions[i].address, regions[i].size);
 	//}
 	int r = syscall(299, fd, regionCount, regions, slide);
 // 	if(0 != r)
-// 		fprintf(stderr, "%s(%i, %u, %8p, %8p) errno=%i (%s)\n", __func__, fd, regionCount, regions, slide, errno, strerror(errno));
+// 		dyld::log("%s(%i, %u, %8p, %8p) errno=%i (%s)\n", __func__, fd, regionCount, regions, slide, errno, strerror(errno));
     return r;
 }
 // Called by dyld if shared_region_map_file() fails.
@@ -321,21 +606,14 @@ _shared_region_make_private_np(
 	unsigned int rangeCount,				// number of entres in array of msrp_range
 	const _shared_region_range_np ranges[])	// the array of shared regions to make private
 {
- 	//fprintf(stderr, "%s(%u, %8p)\n", __func__, rangeCount, ranges);
+ 	//dyld::log("%s(%u, %8p)\n", __func__, rangeCount, ranges);
 	int r = syscall(300, rangeCount, ranges);
 // 	if(0 != r)
-// 		fprintf(stderr, "%s(%u, %8p) errno=%i (%s)\n", __func__, rangeCount, ranges, errno, strerror(errno));
+// 		dyld::log("%s(%u, %8p) errno=%i (%s)\n", __func__, rangeCount, ranges, errno, strerror(errno));
     return r;
 }
 #define KERN_SHREG_PRIVATIZABLE	54
-#endif // hack until kernel headers and glue are in system
 
-static uintptr_t sNextAltLoadAddress 
-#if __ppc_
-	= 0xC0000000;
-#else
-	= 0;
-#endif
 
 static int 
 _shared_region_map_file_with_mmap(
@@ -359,8 +637,8 @@ _shared_region_map_file_with_mmap(
 			if ( regions[i].init_prot & VM_PROT_WRITE )
 				protection   |= PROT_WRITE;
 			off_t offset = regions[i].file_offset;
-			//fprintf(stderr, "mmap(%p, 0x%08lX, block=0x%08X, %s\n", mmapAddress, size, biggestDiff, fPath);
-			mmapAddress = mmap(mmapAddress, size, protection, MAP_FILE | MAP_FIXED | MAP_PRIVATE, fd, offset);
+			//dyld::log("mmap(%p, 0x%08lX, block=0x%08X, %s\n", mmapAddress, size, biggestDiff, fPath);
+			mmapAddress = mmap(mmapAddress, size, protection, MAP_FIXED | MAP_PRIVATE, fd, offset);
 			if ( mmapAddress == ((void*)(-1)) )
 				throw "mmap error";
 		}
@@ -388,6 +666,56 @@ hasSharedRegionMapFile(void)
 	return 0 != value;
 }
 
+#endif // SPLIT_SEG_SHARED_REGION_SUPPORT	
+
+
+#if SPLIT_SEG_DYLIB_SUPPORT	
+unsigned int
+ImageLoaderMachO::getExtraZeroFillEntriesCount()
+{
+	// calculate mapping entries
+	unsigned int extraZeroFillEntries = 0;
+	for(ImageLoader::SegmentIterator it = this->beginSegments(); it != this->endSegments(); ++it ) {
+		Segment* seg = *it;
+		if ( seg->hasTrailingZeroFill() )
+			++extraZeroFillEntries;
+	}
+	
+	return extraZeroFillEntries;
+}
+
+void
+ImageLoaderMachO::initMappingTable(uint64_t offsetInFat,
+								   _shared_region_mapping_np *mappingTable)
+{
+	unsigned int segmentCount = fSegmentsArrayCount;
+	for(unsigned int segIndex=0,entryIndex=0; segIndex < segmentCount; ++segIndex, ++entryIndex){
+		Segment* seg = &fSegmentsArray[segIndex];
+		_shared_region_mapping_np* entry = &mappingTable[entryIndex];
+		entry->address			= seg->getActualLoadAddress(this);
+		entry->size				= seg->getFileSize();
+		entry->file_offset		= seg->getFileOffset() + offsetInFat;
+		entry->init_prot		= VM_PROT_NONE;
+		if ( !seg->unaccessible() ) {
+			if ( seg->executable() )
+				entry->init_prot   |= VM_PROT_EXECUTE;
+			if ( seg->readable() )
+				entry->init_prot   |= VM_PROT_READ;
+			if ( seg->writeable() )
+				entry->init_prot   |= VM_PROT_WRITE | VM_PROT_COW;
+		}
+		entry->max_prot			= entry->init_prot;
+		if ( seg->hasTrailingZeroFill() ) {
+			_shared_region_mapping_np* zfentry = &mappingTable[++entryIndex];
+			zfentry->address		= entry->address + seg->getFileSize();
+			zfentry->size			= seg->getSize() - seg->getFileSize();
+			zfentry->file_offset	= 0;
+			zfentry->init_prot		= entry->init_prot | VM_PROT_COW | VM_PROT_ZF;
+			zfentry->max_prot		= zfentry->init_prot;
+		}
+	}
+}
+
 int
 ImageLoaderMachO::sharedRegionMapFilePrivateOutside(int fd,
 													uint64_t offsetInFat,
@@ -395,7 +723,14 @@ ImageLoaderMachO::sharedRegionMapFilePrivateOutside(int fd,
 													uint64_t fileLen,
 													const LinkContext& context)
 {
-	const unsigned int segmentCount = fSegments.size();
+	static uintptr_t sNextAltLoadAddress 
+	#if __ppc_
+		= 0xC0000000;
+	#else
+		= 0;
+	#endif
+
+	const unsigned int segmentCount = fSegmentsArrayCount;
 	const unsigned int extraZeroFillEntries = getExtraZeroFillEntriesCount();
 	const unsigned int regionCount = segmentCount+extraZeroFillEntries;
 	_shared_region_mapping_np regions[regionCount];
@@ -435,8 +770,8 @@ ImageLoaderMachO::sharedRegionMapFilePrivateOutside(int fd,
 		uintptr_t slide = sNextAltLoadAddress - regions[0].address;
 		this->setSlide(slide);
 		for(unsigned int i=0; i < regionCount; ++i) {
-			if ( (regions[i].init_prot & VM_PROT_ZF) != 0 ) {
-				// do nothing vm_allocate() zero-fills by default
+			if ( ((regions[i].init_prot & VM_PROT_ZF) != 0) || (regions[i].size == 0) ) {
+				// nothing to mmap for zero-fills areas, they are just vm_allocated 
 			}
 			else {
 				void* mmapAddress = (void*)(uintptr_t)(regions[i].address + slide);
@@ -449,8 +784,8 @@ ImageLoaderMachO::sharedRegionMapFilePrivateOutside(int fd,
 				if ( regions[i].init_prot & VM_PROT_WRITE )
 					protection   |= PROT_WRITE;
 				off_t offset = regions[i].file_offset;
-				//fprintf(stderr, "mmap(%p, 0x%08lX, block=0x%08X, %s\n", mmapAddress, size, biggestDiff, fPath);
-				mmapAddress = mmap(mmapAddress, size, protection, MAP_FILE | MAP_FIXED | MAP_PRIVATE, fd, offset);
+				//dyld::log("mmap(%p, 0x%08lX, block=0x%08X, %s\n", mmapAddress, size, biggestDiff, fPath);
+				mmapAddress = mmap(mmapAddress, size, protection, MAP_FIXED | MAP_PRIVATE, fd, offset);
 				if ( mmapAddress == ((void*)(-1)) )
 					throw "mmap error";
 			}
@@ -461,19 +796,19 @@ ImageLoaderMachO::sharedRegionMapFilePrivateOutside(int fd,
 		
 		// logging
 		if ( context.verboseMapping ) {
-			fprintf(stderr, "dyld: Mapping split-seg outside shared region, slid by 0x%08lX %s\n", this->fSlide, this->getPath());
+			dyld::log("dyld: Mapping split-seg outside shared region, slid by 0x%08lX %s\n", this->fSlide, this->getPath());
 			for(unsigned int segIndex=0,entryIndex=0; segIndex < segmentCount; ++segIndex, ++entryIndex){
-				Segment* seg = fSegments[segIndex];
+				Segment* seg = &fSegmentsArray[segIndex];
 				const _shared_region_mapping_np* entry = &regions[entryIndex];
 				if ( (entry->init_prot & VM_PROT_ZF) == 0 ) 
-					fprintf(stderr, "%18s at 0x%08lX->0x%08lX\n",
-							seg->getName(), seg->getActualLoadAddress(), seg->getActualLoadAddress()+seg->getFileSize()-1);
+					dyld::log("%18s at 0x%08lX->0x%08lX\n",
+							seg->getName(), seg->getActualLoadAddress(this), seg->getActualLoadAddress(this)+seg->getFileSize()-1);
 				if ( entryIndex < (regionCount-1) ) {
 					const _shared_region_mapping_np* nextEntry = &regions[entryIndex+1];
 					if ( (nextEntry->init_prot & VM_PROT_ZF) != 0 ) {
 						uint64_t segOffset = nextEntry->address - entry->address;
-						fprintf(stderr, "%18s at 0x%08lX->0x%08lX (zerofill)\n",
-								seg->getName(), (uintptr_t)(seg->getActualLoadAddress() + segOffset), (uintptr_t)(seg->getActualLoadAddress() + segOffset + nextEntry->size - 1));
+						dyld::log("%18s at 0x%08lX->0x%08lX (zerofill)\n",
+								seg->getName(), (uintptr_t)(seg->getActualLoadAddress(this) + segOffset), (uintptr_t)(seg->getActualLoadAddress(this) + segOffset + nextEntry->size - 1));
 						++entryIndex;
 					}
 				}
@@ -486,10 +821,14 @@ ImageLoaderMachO::sharedRegionMapFilePrivateOutside(int fd,
 
 void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context)
 {
+	// non-split segment libraries handled by super class
+	if ( !fIsSplitSeg )
+		return ImageLoader::mapSegments(fd, offsetInFat, lenInFat, fileLen, context);
+
+#if SPLIT_SEG_SHARED_REGION_SUPPORT	
 	enum SharedRegionState
 	{
 		kSharedRegionStartState = 0,
-		kSharedRegionLoadFileState,
 		kSharedRegionMapFileState,
 		kSharedRegionMapFilePrivateState,
 		kSharedRegionMapFilePrivateMMapState,
@@ -497,25 +836,16 @@ void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInF
 	};
 	static SharedRegionState sSharedRegionState = kSharedRegionStartState;
 
-	// non-split segment libraries handled by super class
-	if ( !fIsSplitSeg )
-		return ImageLoader::mapSegments(fd, offsetInFat, lenInFat, fileLen, context);
-	
 	if ( kSharedRegionStartState == sSharedRegionState ) {
 		if ( hasSharedRegionMapFile() ) {
-			if ( context.slideAndPackDylibs ) { 
-				sharedRegionMakePrivate(context);
-				// remove underlying submap and block out 0x90000000 to 0xAFFFFFFF
-				vm_address_t addr = (vm_address_t)0x90000000;
-				vm_deallocate(mach_task_self(), addr, 0x20000000);
-				vm_allocate(mach_task_self(), &addr, 0x20000000, false);
-				sSharedRegionState = kSharedRegionMapFilePrivateMMapState;
-			}
-			else if ( context.sharedRegionMode == kUsePrivateSharedRegion ) { 
+			if ( context.sharedRegionMode == kUsePrivateSharedRegion ) { 
 				sharedRegionMakePrivate(context);
 				sSharedRegionState = kSharedRegionMapFilePrivateState;
 			}
 			else if ( context.sharedRegionMode == kDontUseSharedRegion ) {
+				sSharedRegionState = kSharedRegionMapFilePrivateOutsideState;
+			}
+			else if ( context.sharedRegionMode == kSharedRegionIsSharedCache ) {
 				sSharedRegionState = kSharedRegionMapFilePrivateOutsideState;
 			}
 			else {
@@ -523,16 +853,10 @@ void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInF
 			}
 		}
 		else {
-			sSharedRegionState = kSharedRegionLoadFileState;
-		}
-	}
-	
-	if ( kSharedRegionLoadFileState == sSharedRegionState ) {
-		if ( 0 != sharedRegionLoadFile(fd, offsetInFat, lenInFat, fileLen, context) ) {
 			sSharedRegionState = kSharedRegionMapFilePrivateOutsideState;
 		}
 	}
-	else
+	
 	if ( kSharedRegionMapFileState == sSharedRegionState ) {
 		if ( 0 != sharedRegionMapFile(fd, offsetInFat, lenInFat, fileLen, context) ) {
 			sharedRegionMakePrivate(context);
@@ -551,77 +875,37 @@ void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInF
 			throw "mapping error";
 		}
 	}
-}
-
-unsigned int
-ImageLoaderMachO::getExtraZeroFillEntriesCount()
-{
-	// calculate mapping entries
-	const unsigned int segmentCount = fSegments.size();
-	unsigned int extraZeroFillEntries = 0;
-	for(unsigned int i=0; i < segmentCount; ++i){
-		Segment* seg = fSegments[i];
-		if ( seg->hasTrailingZeroFill() )
-			++extraZeroFillEntries;
+#else
+	// support old split-seg dylibs by mapping them where ever we find space
+	if ( sharedRegionMapFilePrivateOutside(fd, offsetInFat, lenInFat, fileLen, context) != 0 ) {
+		throw "mapping error";
 	}
-	
-	return extraZeroFillEntries;
+#endif
 }
+#endif // SPLIT_SEG_DYLIB_SUPPORT
 
-void
-ImageLoaderMachO::initMappingTable(uint64_t offsetInFat,
-								   _shared_region_mapping_np *mappingTable)
-{
-	unsigned int segmentCount = fSegments.size();
-	for(unsigned int segIndex=0,entryIndex=0; segIndex < segmentCount; ++segIndex, ++entryIndex){
-		Segment* seg = fSegments[segIndex];
-		_shared_region_mapping_np* entry = &mappingTable[entryIndex];
-		entry->address			= seg->getActualLoadAddress();
-		entry->size				= seg->getFileSize();
-		entry->file_offset		= seg->getFileOffset() + offsetInFat;
-		entry->init_prot		= VM_PROT_NONE;
-		if ( !seg->unaccessible() ) {
-			if ( seg->executable() )
-				entry->init_prot   |= VM_PROT_EXECUTE;
-			if ( seg->readable() )
-				entry->init_prot   |= VM_PROT_READ;
-			if ( seg->writeable() )
-				entry->init_prot   |= VM_PROT_WRITE | VM_PROT_COW;
-		}
-		entry->max_prot			= entry->init_prot;
-		if ( seg->hasTrailingZeroFill() ) {
-			_shared_region_mapping_np* zfentry = &mappingTable[++entryIndex];
-			zfentry->address		= entry->address + seg->getFileSize();
-			zfentry->size			= seg->getSize() - seg->getFileSize();
-			zfentry->file_offset	= 0;
-			zfentry->init_prot		= entry->init_prot | VM_PROT_COW | VM_PROT_ZF;
-			zfentry->max_prot		= zfentry->init_prot;
-		}
-	}
-}
-	
-int
-ImageLoaderMachO::sharedRegionMakePrivate(const LinkContext& context)
+
+#if SPLIT_SEG_SHARED_REGION_SUPPORT	
+int ImageLoaderMachO::sharedRegionMakePrivate(const LinkContext& context)
 {
 	if ( context.verboseMapping )
-		fprintf(stderr, "dyld: making shared regions private\n");
+		dyld::log("dyld: making shared regions private\n");
 
 	// shared mapping failed, so make private copy of shared region and try mapping private
-	RegionsVector allRegions;
-	context.getAllMappedRegions(allRegions);
-	std::vector<_shared_region_range_np> splitSegRegions;
-	const unsigned int allRegiontCount = allRegions.size();
-	for(unsigned int i=0; i < allRegiontCount; ++i){
-		MappedRegion region = allRegions[i];
-		uint8_t highByte = region.address >> 28;
+	MappedRegion allRegions[context.imageCount()*8]; // assume average of less that eight segments per image
+	MappedRegion* end = context.getAllMappedRegions(allRegions);
+	_shared_region_range_np	splitSegRegions[end-allRegions];
+	_shared_region_range_np* sp = splitSegRegions;
+	for (MappedRegion* p=allRegions; p < end; ++p) {
+		uint8_t highByte = p->address >> 28;
 		if ( (highByte == 9) || (highByte == 0xA) ) {
 			_shared_region_range_np splitRegion;
-			splitRegion.address = region.address;
-			splitRegion.size = region.size;
-			splitSegRegions.push_back(splitRegion);
+			splitRegion.address = p->address;
+			splitRegion.size = p->size;
+			*sp++ = splitRegion;
 		}
 	}
-	int result = _shared_region_make_private_np(splitSegRegions.size(), &splitSegRegions[0]);
+	int result = _shared_region_make_private_np(sp-splitSegRegions, splitSegRegions);
 	// notify gdb or other lurkers that this process is no longer using the shared region
 	dyld_all_image_infos.processDetachedFromSharedRegion = true;
 	return result;
@@ -635,7 +919,7 @@ ImageLoaderMachO::sharedRegionMapFile(int fd,
                                          const LinkContext& context)
 {
 	// build table of segments to map
-	const unsigned int segmentCount = fSegments.size();
+	const unsigned int segmentCount = fSegmentsArrayCount;
 	const unsigned int extraZeroFillEntries = getExtraZeroFillEntriesCount();
 	const unsigned int mappingTableCount = segmentCount+extraZeroFillEntries;
 	_shared_region_mapping_np mappingTable[mappingTableCount];
@@ -649,20 +933,21 @@ ImageLoaderMachO::sharedRegionMapFile(int fd,
 		if(NULL != slidep && 0 != *slidep) {
 			// update with actual load addresses
 		}
+		this->setNeverUnload();
 		if ( context.verboseMapping ) {
-			fprintf(stderr, "dyld: Mapping split-seg shared %s\n", this->getPath());
+			dyld::log("dyld: Mapping split-seg shared %s\n", this->getPath());
 			for(unsigned int segIndex=0,entryIndex=0; segIndex < segmentCount; ++segIndex, ++entryIndex){
-				Segment* seg = fSegments[segIndex];
+				Segment* seg = &fSegmentsArray[segIndex];
 				const _shared_region_mapping_np* entry = &mappingTable[entryIndex];
 				if ( (entry->init_prot & VM_PROT_ZF) == 0 ) 
-					fprintf(stderr, "%18s at 0x%08lX->0x%08lX\n",
-							seg->getName(), seg->getActualLoadAddress(), seg->getActualLoadAddress()+seg->getFileSize()-1);
+					dyld::log("%18s at 0x%08lX->0x%08lX\n",
+							seg->getName(), seg->getActualLoadAddress(this), seg->getActualLoadAddress(this)+seg->getFileSize()-1);
 				if ( entryIndex < (mappingTableCount-1) ) {
 					const _shared_region_mapping_np* nextEntry = &mappingTable[entryIndex+1];
 					if ( (nextEntry->init_prot & VM_PROT_ZF) != 0 ) {
 						uint64_t segOffset = nextEntry->address - entry->address;
-						fprintf(stderr, "%18s at 0x%08lX->0x%08lX\n",
-								seg->getName(), (uintptr_t)(seg->getActualLoadAddress() + segOffset), (uintptr_t)(seg->getActualLoadAddress() + segOffset + nextEntry->size - 1));
+						dyld::log("%18s at 0x%08lX->0x%08lX\n",
+								seg->getName(), (uintptr_t)(seg->getActualLoadAddress(this) + segOffset), (uintptr_t)(seg->getActualLoadAddress(this) + segOffset + nextEntry->size - 1));
 						++entryIndex;
 					}
 				}
@@ -681,33 +966,8 @@ ImageLoaderMachO::sharedRegionMapFilePrivate(int fd,
 											 const LinkContext& context,
 											 bool usemmap)
 {
-	const unsigned int segmentCount = fSegments.size();
+	const unsigned int segmentCount = fSegmentsArrayCount;
 
-	// adjust base address of segments to pack next to last dylib
-	if ( context.slideAndPackDylibs ) {
-		uintptr_t lowestReadOnly = (uintptr_t)(-1);
-		uintptr_t lowestWritable = (uintptr_t)(-1);
-		for(unsigned int segIndex=0; segIndex < segmentCount; ++segIndex){
-			Segment* seg = fSegments[segIndex];
-			uintptr_t segEnd = seg->getActualLoadAddress();
-			if ( seg->writeable() ) {
-				if ( segEnd < lowestWritable )
-					lowestWritable = segEnd;
-			}
-			else {
-				if ( segEnd < lowestReadOnly )
-					lowestReadOnly = segEnd;
-			}
-		}
-		uintptr_t baseAddress;
-		if ( lowestWritable - 256*1024*1024 < lowestReadOnly )
-			baseAddress = lowestWritable - 256*1024*1024;
-		else
-			baseAddress = lowestReadOnly;
-		// record that we want dylb slid to fgNextSplitSegAddress
-		this->setSlide(fgNextSplitSegAddress - baseAddress);
-	}
-	
 	// build table of segments to map
 	const unsigned int extraZeroFillEntries = getExtraZeroFillEntriesCount();
 	const unsigned int mappingTableCount = segmentCount+extraZeroFillEntries;
@@ -720,150 +980,50 @@ ImageLoaderMachO::sharedRegionMapFilePrivate(int fd,
 	if ( usemmap )
 		r = _shared_region_map_file_with_mmap(fd, mappingTableCount, mappingTable);
 	else
-		r = _shared_region_map_file_np(fd, mappingTableCount, mappingTable, context.slideAndPackDylibs ? NULL : &slide);
+		r = _shared_region_map_file_np(fd, mappingTableCount, mappingTable, &slide);
 	if ( 0 == r ) {
 		if ( 0 != slide ) {
 			slide = (slide) & (-4096); // round down to page boundary
 			this->setSlide(slide);
 		}
+		this->setNeverUnload();
 		if ( context.verboseMapping ) {
 			if ( slide == 0 )
-				fprintf(stderr, "dyld: Mapping split-seg un-shared %s\n", this->getPath());
+				dyld::log("dyld: Mapping split-seg un-shared %s\n", this->getPath());
 			else
-				fprintf(stderr, "dyld: Mapping split-seg un-shared slid by 0x%08llX %s\n", slide, this->getPath());
+				dyld::log("dyld: Mapping split-seg un-shared slid by 0x%08llX %s\n", slide, this->getPath());
 			for(unsigned int segIndex=0,entryIndex=0; segIndex < segmentCount; ++segIndex, ++entryIndex){
-				Segment* seg = fSegments[segIndex];
+				Segment* seg = &fSegmentsArray[segIndex];
 				const _shared_region_mapping_np* entry = &mappingTable[entryIndex];
 				if ( (entry->init_prot & VM_PROT_ZF) == 0 ) 
-					fprintf(stderr, "%18s at 0x%08lX->0x%08lX\n",
-							seg->getName(), seg->getActualLoadAddress(), seg->getActualLoadAddress()+seg->getFileSize()-1);
+					dyld::log("%18s at 0x%08lX->0x%08lX\n",
+							seg->getName(), seg->getActualLoadAddress(this), seg->getActualLoadAddress(this)+seg->getFileSize()-1);
 				if ( entryIndex < (mappingTableCount-1) ) {
 					const _shared_region_mapping_np* nextEntry = &mappingTable[entryIndex+1];
 					if ( (nextEntry->init_prot & VM_PROT_ZF) != 0 ) {
 						uint64_t segOffset = nextEntry->address - entry->address;
-						fprintf(stderr, "%18s at 0x%08lX->0x%08lX (zerofill)\n",
-								seg->getName(), (uintptr_t)(seg->getActualLoadAddress() + segOffset), (uintptr_t)(seg->getActualLoadAddress() + segOffset + nextEntry->size - 1));
-						++entryIndex;
-					}
-				}
-			}
-		}
-		if ( context.slideAndPackDylibs ) {
-			// calculate where next split-seg dylib can load
-			uintptr_t largestReadOnly = 0;
-			uintptr_t largestWritable = 0;
-			for (unsigned int segIndex=0; segIndex < segmentCount; ++segIndex) {
-				Segment* seg = fSegments[segIndex];
-				uintptr_t segEnd = seg->getActualLoadAddress()+seg->getSize();
-				segEnd = (segEnd+4095) & (-4096); // page align
-				if ( seg->writeable() ) {
-					if ( segEnd > largestWritable )
-						largestWritable = segEnd;
-				}
-				else {
-					if ( segEnd > largestReadOnly )
-						largestReadOnly = segEnd;
-				}
-			}
-			if ( largestWritable - 256*1024*1024 > largestReadOnly )
-				fgNextSplitSegAddress = largestWritable - 256*1024*1024;
-			else
-				fgNextSplitSegAddress = largestReadOnly;
-		}
-	}
-	if ( context.slideAndPackDylibs && (r != 0) )
-		throwf("can't rebase split-seg dylib %s because shared_region_map_file_np() returned %d", this->getPath(), r);
-	
-	return r;
-}
-
-
-int
-ImageLoaderMachO::sharedRegionLoadFile(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context)
-{
-	
-	// map in split segment file at random address, then tell kernel to share it
-	void* loadAddress = 0;
-	loadAddress = mmap(NULL, fileLen, PROT_READ, MAP_FILE, fd, 0);
-	if ( loadAddress == ((void*)(-1)) )
-		throw "mmap error";
-
-	// calculate mapping entries
-	const unsigned int segmentCount = fSegments.size();
-	unsigned int extraZeroFillEntries = getExtraZeroFillEntriesCount();
-	
-	// build table of segments to map
-	const unsigned int mappingTableCount = segmentCount+extraZeroFillEntries;
-	const uintptr_t baseAddress = fSegments[0]->getPreferredLoadAddress();
-	sf_mapping mappingTable[mappingTableCount];
-	initMappingTable(offsetInFat, mappingTable, baseAddress);
-	
-	
-	// use load_shared_file() to map all segments at once
-	int flags = 0; // might need to set NEW_LOCAL_SHARED_REGIONS on first use
-	static bool firstTime = true;
-	if ( firstTime ) {
-		// when NEW_LOCAL_SHARED_REGIONS bit is set, this process will get is own shared region
-		// this is used by Xcode to prevent development libraries from polluting the global shared segment
-		if ( context.sharedRegionMode == kUsePrivateSharedRegion )
-			flags |= NEW_LOCAL_SHARED_REGIONS;
-		firstTime = false;
-	}
-	
-	caddr_t base_address = (caddr_t)baseAddress;
-	kern_return_t r;
-	r = load_shared_file(   (char*)fPath,		// path of file to map shared
-							(char*)loadAddress, // beginning of local copy of sharable pages in file
-							fileLen,			// end of shareable pages in file
-							&base_address,		// beginning of address range to map
-							mappingTableCount,  // number of entres in array of sf_mapping
-							mappingTable,		// the array of sf_mapping
-							&flags);			// in/out flags
-	if ( 0 != r ) {
-		// try again but tell kernel it is ok to slide
-		flags |= ALTERNATE_LOAD_SITE;
-		r = load_shared_file((char*)fPath,(char*)loadAddress, fileLen, &base_address,	
-							mappingTableCount, mappingTable, &flags);
-	}
-	
-	// unmap file from random address now that they are (hopefully) mapped into the shared region
-	munmap(loadAddress, fileLen);
-
-	if ( 0 == r ) {
-		if ( base_address != (caddr_t)baseAddress )
-			this->setSlide((uintptr_t)base_address - baseAddress);
-		if ( context.verboseMapping ) {
-			if ( base_address != (caddr_t)baseAddress )
-				fprintf(stderr, "dyld: Mapping split-seg load_shared_alt_region %s\n", this->getPath());
-			else
-				fprintf(stderr, "dyld: Mapping split-seg load_shared %s\n", this->getPath());
-			for(unsigned int segIndex=0,entryIndex=0; segIndex < segmentCount; ++segIndex, ++entryIndex){
-				Segment* seg = fSegments[segIndex];
-				const sf_mapping* entry = &mappingTable[entryIndex];
-				if ( (entry->protection & VM_PROT_ZF) == 0 )
-					fprintf(stderr, "%18s at 0x%08lX->0x%08lX\n",
-							seg->getName(), seg->getActualLoadAddress(), seg->getActualLoadAddress()+seg->getFileSize()-1);
-				if ( entryIndex < (mappingTableCount-1) ) {
-					const sf_mapping* nextEntry = &mappingTable[entryIndex+1];
-					if ( (nextEntry->protection & VM_PROT_ZF) != 0 ) {
-						fprintf(stderr, "%18s at 0x%08lX->0x%08lX\n",
-							seg->getName(), (uintptr_t)(nextEntry->mapping_offset + base_address), (uintptr_t)(nextEntry->mapping_offset + base_address + nextEntry->size - 1));
+						dyld::log("%18s at 0x%08lX->0x%08lX (zerofill)\n",
+								seg->getName(), (uintptr_t)(seg->getActualLoadAddress(this) + segOffset), (uintptr_t)(seg->getActualLoadAddress(this) + segOffset + nextEntry->size - 1));
 						++entryIndex;
 					}
 				}
 			}
 		}
 	}
+	if ( r != 0 )
+		dyld::throwf("can't rebase split-seg dylib %s because shared_region_map_file_np() returned %d", this->getPath(), r);
+	
 	return r;
 }
+
 void
 ImageLoaderMachO::initMappingTable(uint64_t offsetInFat,
 								   sf_mapping *mappingTable,
 								   uintptr_t baseAddress)
 {
-	unsigned int segmentCount = fSegments.size();
+	unsigned int segmentCount = fSegmentsArrayCount;
 	for(unsigned int segIndex=0,entryIndex=0; segIndex < segmentCount; ++segIndex, ++entryIndex){
-		Segment* seg = fSegments[segIndex];
+		Segment* seg = &fSegmentsArray[segIndex];
 		sf_mapping* entry = &mappingTable[entryIndex];
 		entry->mapping_offset   = seg->getPreferredLoadAddress() - baseAddress;
 		entry->size				= seg->getFileSize();
@@ -890,7 +1050,8 @@ ImageLoaderMachO::initMappingTable(uint64_t offsetInFat,
 	}
 }
 
-#endif //  !__LP64__  split segs not supported for 64-bits
+#endif // SPLIT_SEG_SHARED_REGION_SUPPORT	
+
 
 
 void ImageLoaderMachO::setSlide(intptr_t slide)
@@ -901,26 +1062,41 @@ void ImageLoaderMachO::setSlide(intptr_t slide)
 void ImageLoaderMachO::parseLoadCmds()
 {
 	// now that segments are mapped in, get real fMachOData, fLinkEditBase, and fSlide
-	const unsigned int segmentCount = fSegments.size();
-	for(unsigned int i=0; i < segmentCount; ++i){
-		Segment* seg = fSegments[i];
+	for (ImageLoader::SegmentIterator it = this->beginSegments(); it != this->endSegments(); ++it ) {
+		Segment* seg = *it;
 		// set up pointer to __LINKEDIT segment
 		if ( strcmp(seg->getName(),"__LINKEDIT") == 0 ) 
-			fLinkEditBase = (uint8_t*)(seg->getActualLoadAddress() - seg->getFileOffset());
+			fLinkEditBase = (uint8_t*)(seg->getActualLoadAddress(this) - seg->getFileOffset());
+#if TEXT_RELOC_SUPPORT
 		// __TEXT segment always starts at beginning of file and contains mach_header and load commands
 		if ( strcmp(seg->getName(),"__TEXT") == 0 ) {
-			if ( seg->hasFixUps() )
+			if ( ((SegmentMachO*)seg)->hasFixUps() )
 				fTextSegmentWithFixups = (SegmentMachO*)seg;
 		}
+#endif
+#if __i386__
+		if ( seg->readOnlyImportStubs() )
+			fReadOnlyImportSegment = (SegmentMachO*)seg;
+#endif
 		// some segment always starts at beginning of file and contains mach_header and load commands
 		if ( (seg->getFileOffset() == 0) && (seg->getFileSize() != 0) ) {
-			fMachOData = (uint8_t*)(seg->getActualLoadAddress());
+			fMachOData = (uint8_t*)(seg->getActualLoadAddress(this));
 		}
+	#if __ppc64__
+		// in 10.5 to support images that span 4GB (including pagezero) switch meaning of r_address
+		if ( ((seg->getPreferredLoadAddress() + seg->getSize() - fSegmentsArray[0].getPreferredLoadAddress()) > 0x100000000) 
+		 && seg->writeable() )
+			f4GBWritable = true;
+	#endif
 	}
-
+	
 	// keep count of prebound images with weak exports
 	if ( this->hasCoalescedExports() )
 		++fgCountOfImagesWithWeakExports;
+
+	// keep count of images used in shared cache
+	if ( fInSharedCache )
+		++fgImagesUsedFromSharedCache;
 
 	// walk load commands (mapped in at start of __TEXT segment)
 	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
@@ -942,34 +1118,34 @@ void ImageLoaderMachO::parseLoadCmds()
 				fHasSubUmbrella = true;
 				break;
 			case LC_SUB_FRAMEWORK:
-				{
-					const struct sub_framework_command* subf = (struct sub_framework_command*)cmd;
-					fReExportThruFramework = (char*)cmd + subf->umbrella.offset;
-				}
+				fInUmbrella = true;
 				break;
 			case LC_SUB_LIBRARY:
 				fHasSubLibraries = true;
 				break;
 			case LC_ROUTINES_COMMAND:
-				fDashInit = (struct macho_routines_command*)cmd;
+				fHasDashInit = true;
 				break;
 			case LC_SEGMENT_COMMAND:
 				{
 					const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+#if IMAGE_NOTIFY_SUPPORT
 					const bool isDataSeg = (strcmp(seg->segname, "__DATA") == 0);
+#endif
 					const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
 					const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
 					for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
 						const uint8_t type = sect->flags & SECTION_TYPE;
 						if ( type == S_MOD_INIT_FUNC_POINTERS )
-							fModInitSection = sect;
+							fHasInitializers = true;
 						else if ( type == S_MOD_TERM_FUNC_POINTERS )
-							fModTermSection = sect;
-						else if ( isDataSeg && (strcmp(sect->sectname, "__dyld") == 0) ) {
-								fDATAdyld = sect;
-						}
+							fHasTerminators = true;
+						else if ( type == S_DTRACE_DOF )
+							fHasDOFSections = true;
+#if IMAGE_NOTIFY_SUPPORT
 						else if ( isDataSeg && (strcmp(sect->sectname, "__image_notify") == 0) )
-							fImageNotifySection = sect;
+							fHasImageNotifySection = true;
+#endif
 					}
 				}
 				break;
@@ -981,12 +1157,14 @@ void ImageLoaderMachO::parseLoadCmds()
 					fDylibID = (struct dylib_command*)cmd;
 				}
 				break;
+			case LC_RPATH:
 			case LC_LOAD_WEAK_DYLIB:
+		    case LC_REEXPORT_DYLIB:
 				// do nothing, just prevent LC_REQ_DYLD exception from occuring
 				break;
 			default:
 				if ( (cmd->cmd & LC_REQ_DYLD) != 0 )
-					throwf("unknown required load command 0x%08X", cmd->cmd);
+					dyld::throwf("unknown required load command 0x%08X", cmd->cmd);
 		}
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 	}
@@ -1006,23 +1184,33 @@ const char* ImageLoaderMachO::getInstallPath() const
 // test if this image is re-exported through parent (the image that loaded this one)
 bool ImageLoaderMachO::isSubframeworkOf(const LinkContext& context, const ImageLoader* parent) const
 {
-	if ( fReExportThruFramework != NULL ) {
-		// need to match LC_SUB_FRAMEWORK string against the leaf name of the install location of parent...
-		const char* parentInstallPath = parent->getInstallPath();
-		if ( parentInstallPath != NULL ) {
-			const char* lastSlash = strrchr(parentInstallPath, '/');
-			if ( lastSlash != NULL ) {
-				if ( strcmp(&lastSlash[1], fReExportThruFramework) == 0 )
-					return true;
-				if ( context.imageSuffix != NULL ) {
-					// when DYLD_IMAGE_SUFFIX is used, lastSlash string needs imageSuffix removed from end
-					char reexportAndSuffix[strlen(context.imageSuffix)+strlen(fReExportThruFramework)+1];
-					strcpy(reexportAndSuffix, fReExportThruFramework);
-					strcat(reexportAndSuffix, context.imageSuffix);
-					if ( strcmp(&lastSlash[1], reexportAndSuffix) == 0 )
-						return true;
+	if ( fInUmbrella ) {
+		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+		const struct load_command* cmd = cmds;
+		for (uint32_t i = 0; i < cmd_count; ++i) {
+			if (cmd->cmd == LC_SUB_FRAMEWORK) {
+				const struct sub_framework_command* subf = (struct sub_framework_command*)cmd;
+				const char* exportThruName = (char*)cmd + subf->umbrella.offset;
+				// need to match LC_SUB_FRAMEWORK string against the leaf name of the install location of parent...
+				const char* parentInstallPath = parent->getInstallPath();
+				if ( parentInstallPath != NULL ) {
+					const char* lastSlash = strrchr(parentInstallPath, '/');
+					if ( lastSlash != NULL ) {
+						if ( strcmp(&lastSlash[1], exportThruName) == 0 )
+							return true;
+						if ( context.imageSuffix != NULL ) {
+							// when DYLD_IMAGE_SUFFIX is used, lastSlash string needs imageSuffix removed from end
+							char reexportAndSuffix[strlen(context.imageSuffix)+strlen(exportThruName)+1];
+							strcpy(reexportAndSuffix, exportThruName);
+							strcat(reexportAndSuffix, context.imageSuffix);
+							if ( strcmp(&lastSlash[1], reexportAndSuffix) == 0 )
+								return true;
+						}
+					}
 				}
 			}
+			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 		}
 	}
 	return false;
@@ -1109,7 +1297,8 @@ bool ImageLoaderMachO::hasSubLibrary(const LinkContext& context, const ImageLoad
 	return false;
 }
 
-	
+
+
 void* ImageLoaderMachO::getMain() const
 {
 	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
@@ -1121,16 +1310,16 @@ void* ImageLoaderMachO::getMain() const
 			{
 			#if __ppc__
 				const ppc_thread_state_t* registers = (ppc_thread_state_t*)(((char*)cmd) + 16);
-				return (void*)registers->srr0;
+				return (void*)(registers->srr0 + fSlide);
 			#elif __ppc64__
 				const ppc_thread_state64_t* registers = (ppc_thread_state64_t*)(((char*)cmd) + 16);
-				return (void*)registers->srr0;
+				return (void*)(registers->srr0 + fSlide);
 			#elif __i386__
 				const i386_thread_state_t* registers = (i386_thread_state_t*)(((char*)cmd) + 16);
-				return (void*)registers->eip;
+				return (void*)(registers->eip + fSlide);
 			#elif __x86_64__
 				const x86_thread_state64_t* registers = (x86_thread_state64_t*)(((char*)cmd) + 16);
-				return (void*)registers->rip;
+				return (void*)(registers->rip + fSlide);
 			#else
 				#warning need processor specific code
 			#endif
@@ -1153,6 +1342,7 @@ uint32_t ImageLoaderMachO::doGetDependentLibraryCount()
 		switch (cmd->cmd) {
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
+			case LC_REEXPORT_DYLIB:
 				++count;
 				break;
 		}
@@ -1161,7 +1351,7 @@ uint32_t ImageLoaderMachO::doGetDependentLibraryCount()
 	return count;
 }
 
-void ImageLoaderMachO::doGetDependentLibraries(DependentLibrary libs[])
+void ImageLoaderMachO::doGetDependentLibraries(DependentLibraryInfo libs[])
 {
 	uint32_t index = 0;
 	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
@@ -1171,18 +1361,17 @@ void ImageLoaderMachO::doGetDependentLibraries(DependentLibrary libs[])
 		switch (cmd->cmd) {
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
+			case LC_REEXPORT_DYLIB:
 			{
 				const struct dylib_command* dylib = (struct dylib_command*)cmd;
-				DependentLibrary* lib = &libs[index++];
+				DependentLibraryInfo* lib = &libs[index++];
 				lib->name = (char*)cmd + dylib->dylib.name.offset;
 				//lib->name = strdup((char*)cmd + dylib->dylib.name.offset);
-				lib->image = NULL;
 				lib->info.checksum = dylib->dylib.timestamp;
 				lib->info.minVersion = dylib->dylib.compatibility_version;
 				lib->info.maxVersion = dylib->dylib.current_version;
-				lib->required = (cmd->cmd == LC_LOAD_DYLIB);
-				lib->checksumMatches = false;
-				lib->isReExported = false;
+				lib->required = (cmd->cmd != LC_LOAD_WEAK_DYLIB);
+				lib->reExported = (cmd->cmd == LC_REEXPORT_DYLIB);
 			}
 			break;
 		}
@@ -1206,33 +1395,94 @@ ImageLoader::LibraryInfo ImageLoaderMachO::doGetLibraryInfo()
 	return info;
 }
 
+void ImageLoaderMachO::getRPaths(const LinkContext& context, std::vector<const char*>& paths) const
+{
+	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+	const struct load_command* cmd = cmds;
+	for (unsigned long i = 0; i < cmd_count; ++i) {
+		switch (cmd->cmd) {
+			case LC_RPATH:
+				const char* path = (char*)cmd + ((struct rpath_command*)cmd)->path.offset;
+				if ( strncmp(path, "@loader_path/", 13) == 0 ) {
+					if ( issetugid() && (context.mainExecutable == this) ) {
+						dyld::warn("LC_RPATH %s in %s being ignored in setuid program because of @loader_path\n", path, this->getPath());
+						break;
+					}
+					char resolvedPath[PATH_MAX];
+					if ( realpath(this->getPath(), resolvedPath) != NULL ) {
+						char newRealPath[strlen(resolvedPath) + strlen(path)];
+						strcpy(newRealPath, resolvedPath);
+						char* addPoint = strrchr(newRealPath,'/');
+						if ( addPoint != NULL )
+							strcpy(&addPoint[1], &path[13]);
+						else
+							strcpy(newRealPath, &path[13]);
+						path = strdup(newRealPath);
+					}
+				}
+				else if ( strncmp(path, "@executable_path/", 17) == 0 ) {
+					if ( issetugid() ) {
+						dyld::warn("LC_RPATH %s in %s being ignored in setuid program because of @executable_path\n", path, this->getPath());
+						break;
+					}
+					char resolvedPath[PATH_MAX];
+					if ( realpath(context.mainExecutable->getPath(), resolvedPath) != NULL ) {
+						char newRealPath[strlen(resolvedPath) + strlen(path)];
+						strcpy(newRealPath, resolvedPath);
+						char* addPoint = strrchr(newRealPath,'/');
+						if ( addPoint != NULL )
+							strcpy(&addPoint[1], &path[17]);
+						else
+							strcpy(newRealPath, &path[17]);
+						path = strdup(newRealPath);
+					}
+				}
+				else if ( (path[0] != '/') && issetugid() ) {
+					dyld::warn("LC_RPATH %s in %s being ignored in setuid program because it is a relative path\n", path, this->getPath());
+					break;
+				}
+				else {
+					// make copy so that all elements of 'paths' can be freed
+					path = strdup(path);
+				}
+				paths.push_back(path);
+				break;
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+}
+
 uintptr_t ImageLoaderMachO::getFirstWritableSegmentAddress()
 {
 	// in split segment libraries r_address is offset from first writable segment
-	for (std::vector<class Segment*>::iterator it=fSegments.begin(); it != fSegments.end(); ++it) {
-		if ( (*it)->writeable() ) {
-			return (*it)->getActualLoadAddress();
-		}
+	for(ImageLoader::SegmentIterator it = this->beginSegments(); it != this->endSegments(); ++it ) {
+		Segment* seg = *it;
+		if ( seg->writeable() ) 
+			return seg->getActualLoadAddress(this);
 	}
 	throw "no writable segment";
 }
 
 uintptr_t ImageLoaderMachO::getRelocBase()
 {
-#if __x86_64__
-	// r_address is offset from first writable segment
+	// r_address is either an offset from the first segment address
+	// or from the first writable segment address
+#if __ppc__ || __i386__
+	if ( fIsSplitSeg )
+		return getFirstWritableSegmentAddress();
+	else
+		return fSegmentsArray[0].getActualLoadAddress(this);
+#elif __ppc64__
+	if ( f4GBWritable )
+		return getFirstWritableSegmentAddress();
+	else
+		return fSegmentsArray[0].getActualLoadAddress(this);
+#elif __x86_64__
 	return getFirstWritableSegmentAddress();
 #endif
-#if __ppc__ || __i386__
-	if ( fIsSplitSeg ) {
-		// in split segment libraries r_address is offset from first writable segment
-		return getFirstWritableSegmentAddress();
-	}
-#endif
-	
-	// in non-split segment libraries r_address is offset from first segment
-	return fSegments[0]->getActualLoadAddress();
 }
+
 
 #if __ppc__
 static inline void otherRelocsPPC(uintptr_t* locationToFix, uint8_t relocationType, uint16_t otherHalf, uintptr_t slide)
@@ -1257,7 +1507,7 @@ static inline void otherRelocsPPC(uintptr_t* locationToFix, uint8_t relocationTy
 			instruction->immediateValue = temp >> 16;
 	}
 	//uint32_t after = *((uint32_t*)locationToFix);
-	//fprintf(stderr, "dyld: ppc fixup %0p type %d from 0x%08X to 0x%08X\n", locationToFix, relocationType, before, after);
+	//dyld::log("dyld: ppc fixup %0p type %d from 0x%08X to 0x%08X\n", locationToFix, relocationType, before, after);
 }
 #endif
 
@@ -1295,34 +1545,27 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 {
 	// if prebound and loaded at prebound address, then no need to rebase
 	if ( this->usablePrebinding(context) ) {
-		// skip rebasing cause prebound and prebinding not disabled
+		// skip rebasing because prebinding is valid
 		++fgImagesWithUsedPrebinding; // bump totals for statistics
 		return;
 	}
 	
-	// <rdar://problem/5146059> update_prebinding fails if a prebound dylib depends on a non-prebound dylib
-	// In the unusual case that we find a prebound dylib dependent on un-prebound dylib and we are running
-	// update_prebinding, we want the link of the prebound dylib to fail so that it will be excluded from 
-	// the list of dylibs to be re-written.
-	if ( context.prebinding && !this->isPrebindable() )
-		throwf("dylib not prebound: %s", this->getPath());
-	
 	// print why prebinding was not used
 	if ( context.verbosePrebinding ) {
 		if ( !this->isPrebindable() ) {
-			fprintf(stderr, "dyld: image not prebound, so could not use prebinding in %s\n", this->getPath());
+			dyld::log("dyld: image not prebound, so could not use prebinding in %s\n", this->getPath());
 		}
 		else if ( fSlide != 0 ) {
-			fprintf(stderr, "dyld: image slid, so could not use prebinding in %s\n", this->getPath());
+			dyld::log("dyld: image slid, so could not use prebinding in %s\n", this->getPath());
 		}
 		else if ( !this->allDependentLibrariesAsWhenPreBound() ) {
-			fprintf(stderr, "dyld: dependent libraries changed, so could not use prebinding in %s\n", this->getPath());
+			dyld::log("dyld: dependent libraries changed, so could not use prebinding in %s\n", this->getPath());
 		}
 		else if ( !this->usesTwoLevelNameSpace() ){
-			fprintf(stderr, "dyld: image uses flat-namespace so, parts of prebinding ignored %s\n", this->getPath());
+			dyld::log("dyld: image uses flat-namespace so, parts of prebinding ignored %s\n", this->getPath());
 		}
 		else {
-			fprintf(stderr, "dyld: environment variable disabled use of prebinding in %s\n", this->getPath());
+			dyld::log("dyld: environment variable disabled use of prebinding in %s\n", this->getPath());
 		}
 	}
 
@@ -1330,24 +1573,35 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 	const uintptr_t relocBase = this->getRelocBase();
 	register const uintptr_t slide = this->fSlide;
 
+	//dyld::log("slide=0x%08lX for %s\n", slide, this->getPath());
+
 #if __ppc__ || __i386__
 	// if prebound and we got here, then prebinding is not valid, so reset all lazy pointers
-	if ( this->isPrebindable() )
+	// if this image is in the shared cache, do not reset, they will be bound in doBind()
+	if ( this->isPrebindable() && !fInSharedCache )
 		this->resetPreboundLazyPointers(context, relocBase);
 #endif
+
+	// if in shared cache and got here, then we depend on something not in the shared cache
+	if ( fInSharedCache ) 
+		context.notifySharedCacheInvalid();
 
 	// if loaded at preferred address, no rebasing necessary
 	if ( slide == 0 ) 
 		return;
 
+#if TEXT_RELOC_SUPPORT
 	// if there are __TEXT fixups, temporarily make __TEXT writable
 	if ( fTextSegmentWithFixups != NULL ) 
-		fTextSegmentWithFixups->tempWritable();
-
+		fTextSegmentWithFixups->tempWritable(context, this);
+#endif
 	// loop through all local (internal) relocation records
 	const relocation_info* const relocsStart = (struct relocation_info*)(&fLinkEditBase[fDynamicInfo->locreloff]);
 	const relocation_info* const relocsEnd = &relocsStart[fDynamicInfo->nlocrel];
 	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
+#if LINKEDIT_USAGE_DEBUG
+		noteAccessedLinkEditAddress(reloc);
+#endif
 	#if __x86_64__
 		// only one kind of local relocation supported for x86_64
 		if ( reloc->r_length != 3 ) 
@@ -1359,8 +1613,7 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 		if ( reloc->r_extern != 0 ) 
 			throw "extern relocation found with local relocations";
 		*((uintptr_t*)(reloc->r_address + relocBase)) += slide;
-	#endif
-	#if __ppc__ || __ppc64__ || __i386__
+	#else	
 		if ( (reloc->r_address & R_SCATTERED) == 0 ) {
 			if ( reloc->r_symbolnum == R_ABS ) {
 				// ignore absolute relocations
@@ -1403,15 +1656,14 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 						++reloc; // these relocations come in pairs, get next one
 						otherRelocsPPC(locationToFix, sreloc->r_type, reloc->r_address, slide);
 						break;
-		#endif
-		#if __ppc__ 
 					case PPC_RELOC_PB_LA_PTR:
 						// do nothing
 						break;
 		#elif __ppc64__
 					case PPC_RELOC_PB_LA_PTR:
-						// these should never exist in ppc64, but the first ld64 had a bug and created them
-						*locationToFix = sreloc->r_value + slide;
+						// needed for compatibility with ppc64 binaries built with the first ld64
+						// which used PPC_RELOC_PB_LA_PTR relocs instead of GENERIC_RELOC_VANILLA for lazy pointers
+						*locationToFix += slide;
 						break;
 		#elif __i386__
 					case GENERIC_RELOC_PB_LA_PTR:
@@ -1426,22 +1678,23 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 				throw "bad local scattered relocation length";
 			}
 		}
-	#endif
+	#endif // x86_64
 	}
 	
+#if TEXT_RELOC_SUPPORT
 	// if there were __TEXT fixups, restore write protection
 	if ( fTextSegmentWithFixups != NULL ) {
-		fTextSegmentWithFixups->setPermissions();
-		sys_icache_invalidate((void*)fTextSegmentWithFixups->getActualLoadAddress(), fTextSegmentWithFixups->getSize());
+		fTextSegmentWithFixups->setPermissions(context,this);
+		sys_icache_invalidate((void*)fTextSegmentWithFixups->getActualLoadAddress(this), fTextSegmentWithFixups->getSize());
 	}
-	
+#endif	
 	// update stats
 	fgTotalRebaseFixups += fDynamicInfo->nlocrel;
 }
 
 
 const struct macho_nlist* ImageLoaderMachO::binarySearchWithToc(const char* key, const char stringPool[], const struct macho_nlist symbols[], 
-												const struct dylib_table_of_contents toc[], uint32_t symbolCount, uint32_t hintIndex)
+												const struct dylib_table_of_contents toc[], uint32_t symbolCount, uint32_t hintIndex) const
 {
 	int32_t high = symbolCount-1;
 	int32_t mid = hintIndex;
@@ -1454,6 +1707,9 @@ const struct macho_nlist* ImageLoaderMachO::binarySearchWithToc(const char* key,
 	else {
 		++ImageLoaderMachO::fgHintedBinaryTreeSearchs;
 	}
+	++fgTotalBindImageSearches;	
+
+	//dyld::log("dyld: binarySearchWithToc for %s in %s\n", key, this->getShortName());
 
 	for (int32_t low = 0; low <= high; mid = (low+high)/2) {
 		const uint32_t index = toc[mid].symbol_index;
@@ -1479,9 +1735,15 @@ const struct macho_nlist* ImageLoaderMachO::binarySearchWithToc(const char* key,
 	return NULL;
 }
 
-const struct macho_nlist* ImageLoaderMachO::binarySearch(const char* key, const char stringPool[], const struct macho_nlist symbols[], uint32_t symbolCount)
+const struct macho_nlist* ImageLoaderMachO::binarySearch(const char* key, const char stringPool[], const struct macho_nlist symbols[], uint32_t symbolCount) const
 {
+	// update stats
+	++fgTotalBindImageSearches;	
 	++ImageLoaderMachO::fgUnhintedBinaryTreeSearchs;
+	
+	//dyld::log("dyld: binarySearch for %s in %s, stringpool=%p, symbols=%p, symbolCount=%u\n", 
+	//				key, this->getShortName(), stringPool, symbols, symbolCount);
+
 	const struct macho_nlist* base = symbols;
 	for (uint32_t n = symbolCount; n > 0; n /= 2) {
 		const struct macho_nlist* pivot = &base[n/2];
@@ -1507,7 +1769,7 @@ const struct macho_nlist* ImageLoaderMachO::binarySearch(const char* key, const 
 	return NULL;
 }
 
-const ImageLoader::Symbol* ImageLoaderMachO::findExportedSymbol(const char* name, const void* hint, bool searchReExports, ImageLoader** foundIn) const
+const ImageLoader::Symbol* ImageLoaderMachO::findExportedSymbol(const char* name, const void* hint, bool searchReExports, const ImageLoader** foundIn) const
 {
 	const struct macho_nlist* sym = NULL;
 	const struct twolevel_hint* theHint = (struct twolevel_hint*)hint;
@@ -1596,15 +1858,22 @@ const ImageLoader::Symbol* ImageLoaderMachO::findExportedSymbol(const char* name
 		}
 	}
 
-    
+
 	return NULL;
 }
 
 
-uintptr_t ImageLoaderMachO::getExportedSymbolAddress(const Symbol* sym) const
+
+
+uintptr_t ImageLoaderMachO::getExportedSymbolAddress(const Symbol* sym, const LinkContext& context, const ImageLoader* requestor) const
 {
-	const struct macho_nlist* nlistSym = (const struct macho_nlist*)sym;
-	return nlistSym->n_value + fSlide;
+	return this->getSymbolAddress((const struct macho_nlist*)sym, requestor, context);
+}
+
+uintptr_t ImageLoaderMachO::getSymbolAddress(const struct macho_nlist* sym, const ImageLoader* requestor, const LinkContext& context) const
+{
+	uintptr_t result = sym->n_value + fSlide;
+	return result;
 }
 
 ImageLoader::DefinitionFlags ImageLoaderMachO::getExportedSymbolInfo(const Symbol* sym) const
@@ -1751,33 +2020,38 @@ bool ImageLoaderMachO::symbolRequiresCoalescing(const struct macho_nlist* symbol
 
 static void __attribute__((noreturn)) throwSymbolNotFound(const char* symbol, const char* referencedFrom, const char* expectedIn)
 {
-	const char* formatString = "Symbol not found: %s\n  Referenced from: %s\n  Expected in: %s\n";
-	char buf[strlen(symbol)+strlen(referencedFrom)+strlen(expectedIn)+strlen(formatString)];
-	sprintf(buf, formatString, symbol, referencedFrom, expectedIn);
-	throw strdup(buf);  // this is a leak if exception doesn't halt program
+	dyld::throwf("Symbol not found: %s\n  Referenced from: %s\n  Expected in: %s\n", symbol, referencedFrom, expectedIn); 
 }
 
-uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const struct macho_nlist* undefinedSymbol, bool twoLevel, ImageLoader** foundIn)
+uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const struct macho_nlist* undefinedSymbol, bool twoLevel, const ImageLoader** foundIn)
 {
+	++fgTotalBindSymbolsResolved;
 	const char* symbolName = &fStrings[undefinedSymbol->n_un.n_strx];
 
+#if LINKEDIT_USAGE_DEBUG
+	noteAccessedLinkEditAddress(undefinedSymbol);
+	noteAccessedLinkEditAddress(symbolName);
+#endif
 	if ( context.bindFlat || !twoLevel ) {
 		// flat lookup
 		if ( ((undefinedSymbol->n_type & N_PEXT) != 0) && ((undefinedSymbol->n_type & N_TYPE) == N_SECT) ) {
 			// is a multi-module private_extern internal reference that the linker did not optimize away
-			uintptr_t addr = undefinedSymbol->n_value + this->fSlide;
+			uintptr_t addr = this->getSymbolAddress(undefinedSymbol, this, context);
 			*foundIn = this;
 			return addr;
 		}
 		const Symbol* sym;
-		if ( context.flatExportFinder(symbolName, &sym, foundIn) )
-			return (*foundIn)->getExportedSymbolAddress(sym);
+		if ( context.flatExportFinder(symbolName, &sym, foundIn) ) {
+			if ( (*foundIn != this) && !(*foundIn)->neverUnload() )
+					this->addDynamicReference(*foundIn);
+			return (*foundIn)->getExportedSymbolAddress(sym, context, this);
+		}
 		// if a bundle is loaded privately the above will not find its exports
 		if ( this->isBundle() && this->hasHiddenExports() ) {
 			// look in self for needed symbol
 			sym = this->findExportedSymbol(symbolName, NULL, false, foundIn);
 			if ( sym != NULL )
-				return (*foundIn)->getExportedSymbolAddress(sym);
+				return (*foundIn)->getExportedSymbolAddress(sym, context, this);
 		}
 		if ( (undefinedSymbol->n_desc & N_WEAK_REF) != 0 ) {
 			// definition can't be found anywhere
@@ -1787,15 +2061,26 @@ uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const s
 		throwSymbolNotFound(symbolName, this->getPath(), "flat namespace");
 	}
 	else {
-		// symbol requires searching images with coalesced symbols
+		// symbol requires searching images with coalesced symbols (not done during prebinding)
 		if ( !context.prebinding && this->needsCoalescing() && symbolRequiresCoalescing(undefinedSymbol) ) {
 			const Symbol* sym;
-			if ( context.coalescedExportFinder(symbolName, &sym, foundIn) )
-				return (*foundIn)->getExportedSymbolAddress(sym);
+			if ( context.coalescedExportFinder(symbolName, &sym, foundIn) ) {
+				if ( (*foundIn != this) && !(*foundIn)->neverUnload() )
+					this->addDynamicReference(*foundIn);
+				return (*foundIn)->getExportedSymbolAddress(sym, context, this);
+			}
 			//throwSymbolNotFound(symbolName, this->getPath(), "coalesced namespace");
-			//fprintf(stderr, "dyld: coalesced symbol %s not found in any coalesced image, falling back to two-level lookup", symbolName);
+			//dyld::log("dyld: coalesced symbol %s not found in any coalesced image, falling back to two-level lookup", symbolName);
 		}
 		
+		// if this is a real definition (not an undefined symbol) there is no ordinal
+		if ( (undefinedSymbol->n_type & N_TYPE) == N_SECT ) {
+			// static linker should never generate this case, but if it does, do something sane
+			uintptr_t addr = this->getSymbolAddress(undefinedSymbol, this, context);
+			*foundIn = this;
+			return addr;
+		}
+
 		// two level lookup
 		void* hint = NULL;
 		ImageLoader* target = NULL;
@@ -1811,13 +2096,13 @@ uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const s
 			// flat lookup
 			const Symbol* sym;
 			if ( context.flatExportFinder(symbolName, &sym, foundIn) )
-				return (*foundIn)->getExportedSymbolAddress(sym);
+				return (*foundIn)->getExportedSymbolAddress(sym, context, this);
 			// no image has exports this symbol
 			// either report error or hope ZeroLink can just-in-time load an image
 			context.undefinedHandler(symbolName);
 			// try looking again
 			if ( context.flatExportFinder(symbolName, &sym, foundIn) )
-				return (*foundIn)->getExportedSymbolAddress(sym);
+				return (*foundIn)->getExportedSymbolAddress(sym, context, this);
 			
 			throwSymbolNotFound(symbolName, this->getPath(), "dynamic lookup");
 		}
@@ -1830,11 +2115,12 @@ uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const s
 			}
 		}
 		else {
-			throw "corrupt binary, library ordinal too big";
+			dyld::throwf("bad mach-o binary, library ordinal (%u) too big (max %u) for symbol %s in %s",
+				ord, fLibrariesCount, symbolName, this->getPath());
 		}
 		
 		if ( target == NULL ) {
-			//fprintf(stderr, "resolveUndefined(%s) in %s\n", symbolName, this->getPath());
+			//dyld::log("resolveUndefined(%s) in %s\n", symbolName, this->getPath());
 			throw "symbol not found";
 		}
 		
@@ -1851,12 +2137,12 @@ uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const s
 		
 		const Symbol* sym = target->findExportedSymbol(symbolName, hint, true, foundIn);
 		if ( sym!= NULL ) {
-			return (*foundIn)->getExportedSymbolAddress(sym);
+			return (*foundIn)->getExportedSymbolAddress(sym, context, this);
 		}
 		else if ( (undefinedSymbol->n_type & N_PEXT) != 0 ) {
 			// don't know why the static linker did not eliminate the internal reference to a private extern definition
 			*foundIn = this;
-			return undefinedSymbol->n_value + fSlide;
+			return this->getSymbolAddress(undefinedSymbol, this, context);
 		}
 		else if ( (undefinedSymbol->n_desc & N_WEAK_REF) != 0 ) {
 			// if definition not found and reference is weak return 0
@@ -1902,14 +2188,15 @@ void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, boo
 	const bool twoLevel = this->usesTwoLevelNameSpace();
 	const bool prebound = this->isPrebindable();
 	
+#if TEXT_RELOC_SUPPORT
 	// if there are __TEXT fixups, temporarily make __TEXT writable
 	if ( fTextSegmentWithFixups != NULL ) 
-		fTextSegmentWithFixups->tempWritable();
-
+		fTextSegmentWithFixups->tempWritable(context, this);
+#endif
 	// cache last lookup
-	const struct macho_nlist*	lastUndefinedSymbol = 0;
+	const struct macho_nlist*	lastUndefinedSymbol = NULL;
 	uintptr_t					symbolAddr = 0;
-	ImageLoader*				image = NULL;
+	const ImageLoader*			image = NULL;
 	
 	// loop through all external relocation records and bind each
 	const relocation_info* const relocsStart = (struct relocation_info*)(&fLinkEditBase[fDynamicInfo->extreloff]);
@@ -1925,6 +2212,7 @@ void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, boo
 							continue;
 						uintptr_t* location = ((uintptr_t*)(reloc->r_address + relocBase));
 						uintptr_t value = *location;
+						bool symbolAddrCached = true;
 					#if __i386__
 						if ( reloc->r_pcrel ) {
 							value += (uintptr_t)location + 4 - fSlide;
@@ -1955,21 +2243,25 @@ void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, boo
 						if ( undefinedSymbol != lastUndefinedSymbol ) {
 							symbolAddr = this->resolveUndefined(context, undefinedSymbol, twoLevel, &image);
 							lastUndefinedSymbol = undefinedSymbol;
+							symbolAddrCached = false;
 						}
 						if ( context.verboseBind ) {
 							const char *path = NULL;
-							if(NULL != image) {
+							if ( image != NULL ) {
 								path = image->getShortName();
 							}
-							if(0 == value) {
-								fprintf(stderr, "dyld: bind: %s:0x%08lx = %s:%s, *0x%08lx = 0x%08lx\n",
+							const char* cachedString = "(cached)";
+							if ( !symbolAddrCached ) 
+								cachedString = "";
+							if ( value == 0 ) {
+								dyld::log("dyld: bind: %s:0x%08lX = %s:%s, *0x%08lX = 0x%08lX%s\n",
 										this->getShortName(), (uintptr_t)location,
-										path, &fStrings[undefinedSymbol->n_un.n_strx], (uintptr_t)location, symbolAddr);
+										path, &fStrings[undefinedSymbol->n_un.n_strx], (uintptr_t)location, symbolAddr, cachedString);
 							}
 							else {
-								fprintf(stderr, "dyld: bind: %s:0x%08lx = %s:%s, *0x%08lx = 0x%08lx + %ld\n",
+								dyld::log("dyld: bind: %s:0x%08lX = %s:%s, *0x%08lX = 0x%08lX%s + %ld\n",
 										this->getShortName(), (uintptr_t)location,
-										path, &fStrings[undefinedSymbol->n_un.n_strx], (uintptr_t)location, symbolAddr, value);
+										path, &fStrings[undefinedSymbol->n_un.n_strx], (uintptr_t)location, symbolAddr, cachedString, value);
 							}
 						}
 						value += symbolAddr;
@@ -1987,6 +2279,8 @@ void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, boo
 						if ( !prebound || (*location != value) )
 							*location = value; 
 					#endif
+						// update stats
+						++fgTotalBindFixups;
 					}
 					break;
 				default:
@@ -1998,14 +2292,13 @@ void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, boo
 		}
 	}
 	
+#if TEXT_RELOC_SUPPORT
 	// if there were __TEXT fixups, restore write protection
 	if ( fTextSegmentWithFixups != NULL ) {
-		fTextSegmentWithFixups->setPermissions();
-		sys_icache_invalidate((void*)fTextSegmentWithFixups->getActualLoadAddress(), fTextSegmentWithFixups->getSize());
+		fTextSegmentWithFixups->setPermissions(context, this);
+		sys_icache_invalidate((void*)fTextSegmentWithFixups->getActualLoadAddress(this), fTextSegmentWithFixups->getSize());
 	}
-	
-	// update stats
-	fgTotalBindFixups += fDynamicInfo->nextrel;
+#endif
 }
 
 const mach_header* ImageLoaderMachO::machHeader() const
@@ -2019,19 +2312,25 @@ uintptr_t ImageLoaderMachO::getSlide() const
 }
 
 // hmm. maybe this should be up in ImageLoader??
-const void* ImageLoaderMachO::getBaseAddress() const
+const void* ImageLoaderMachO::getEnd() const
 {
-	Segment* seg = fSegments[0];
-	return (const void*)seg->getActualLoadAddress();
+	uintptr_t lastAddress = 0;
+	for (ImageLoader::SegmentIterator it = this->beginSegments(); it != this->endSegments(); ++it ) {
+		Segment* seg = *it;
+		uintptr_t segEnd = seg->getActualLoadAddress(this) + seg->getSize();
+		if ( segEnd > lastAddress )
+			lastAddress = segEnd;
+	}
+	return (const void*)lastAddress;
 }
 
-uintptr_t ImageLoaderMachO::bindIndirectSymbol(uintptr_t* ptrToBind, const struct macho_section* sect, const char* symbolName, uintptr_t targetAddr, ImageLoader* targetImage, const LinkContext& context)
+uintptr_t ImageLoaderMachO::bindIndirectSymbol(uintptr_t* ptrToBind, const struct macho_section* sect, const char* symbolName, uintptr_t targetAddr, const ImageLoader* targetImage, const LinkContext& context)
 {
 	if ( context.verboseBind ) {
 		const char* path = NULL;
 		if ( targetImage != NULL )
 			path = targetImage->getShortName();
-		fprintf(stderr, "dyld: bind: %s:%s$%s = %s:%s, *0x%08lx = 0x%08lx\n",
+		dyld::log("dyld: bind: %s:%s$%s = %s:%s, *0x%08lx = 0x%08lx\n",
 				this->getShortName(), symbolName, (((sect->flags & SECTION_TYPE)==S_NON_LAZY_SYMBOL_POINTERS) ? "non_lazy_ptr" : "lazy_ptr"),
 				path, symbolName, (uintptr_t)ptrToBind, targetAddr);
 	}
@@ -2125,10 +2424,16 @@ uintptr_t ImageLoaderMachO::doBindLazySymbol(uintptr_t* lazyPointer, const LinkC
 					#endif
 						if ( symbolIndex != INDIRECT_SYMBOL_ABS && symbolIndex != INDIRECT_SYMBOL_LOCAL ) {
 							const char* symbolName = &fStrings[fSymbolTable[symbolIndex].n_un.n_strx];
-							ImageLoader* image = NULL;
-							uintptr_t symbolAddr = this->resolveUndefined(context,  &fSymbolTable[symbolIndex], twoLevel, &image);
+							const ImageLoader* image = NULL;
+							uintptr_t symbolAddr = this->resolveUndefined(context, &fSymbolTable[symbolIndex],  twoLevel, &image);
+					#if __i386__
+							this->makeImportSegmentWritable(context);
+					#endif
 							symbolAddr = this->bindIndirectSymbol(lazyPointer, sect, symbolName, symbolAddr, image,  context);
 							++fgTotalLazyBindFixups;
+					#if __i386__
+							this->makeImportSegmentReadOnly(context);
+					#endif
 							return symbolAddr;
 						}
 					}
@@ -2137,14 +2442,57 @@ uintptr_t ImageLoaderMachO::doBindLazySymbol(uintptr_t* lazyPointer, const LinkC
 		}
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 	}
-	throw "lazy pointer not found";
+	dyld::throwf("lazy pointer not found at address %p in image %s", lazyPointer, this->getPath());
 }
 
 
-
-
-void ImageLoaderMachO::doBindIndirectSymbolPointers(const LinkContext& context, BindingLaziness bindness, bool onlyCoalescedSymbols)
+#if __i386__
+//
+// For security the __IMPORT segments in the shared cache are normally not writable.
+// Any image can also be linked with -read_only_stubs to make their __IMPORT segments normally not writable.
+// For these images, dyld must change the page protection before updating them.
+// The spin lock is required because lazy symbol binding is done without taking the global dyld lock.
+// It keeps only one __IMPORT segment writable at a time.
+// Pre-main(), the shared cache __IMPORT segments are always writable, so we don't need to change the protection.
+//
+void ImageLoaderMachO::makeImportSegmentWritable(const LinkContext& context)
 {
+	if ( fReadOnlyImportSegment != NULL ) {
+		if ( fInSharedCache ) {
+			if ( !context.linkingMainExecutable ) {
+				_spin_lock(&fgReadOnlyImportSpinLock);
+				context.makeSharedCacheImportSegmentsWritable(true);
+			}
+		}
+		else {
+			_spin_lock(&fgReadOnlyImportSpinLock);
+			fReadOnlyImportSegment->tempWritable(context, this);
+		}
+	}
+}
+
+void ImageLoaderMachO::makeImportSegmentReadOnly(const LinkContext& context)
+{
+	if ( fReadOnlyImportSegment != NULL ) {
+		if ( fInSharedCache ) {
+			if ( !context.linkingMainExecutable ) {
+				context.makeSharedCacheImportSegmentsWritable(false);
+				_spin_unlock(&fgReadOnlyImportSpinLock);
+			}
+		}
+		else {
+			fReadOnlyImportSegment->setPermissions(context, this);
+			_spin_unlock(&fgReadOnlyImportSpinLock);
+		}
+	}
+}
+#endif
+
+void ImageLoaderMachO::doBindIndirectSymbolPointers(const LinkContext& context, bool bindNonLazys, bool bindLazys, bool onlyCoalescedSymbols)
+{
+#if __i386__
+	this->makeImportSegmentWritable(context);
+#endif
 	// scan for all non-lazy-pointer sections 
 	const bool twoLevel = this->usesTwoLevelNameSpace();
 	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
@@ -2163,13 +2511,13 @@ void ImageLoaderMachO::doBindIndirectSymbolPointers(const LinkContext& context, 
 						uint32_t elementSize = sizeof(uintptr_t);
 						uint32_t elementCount = sect->size / elementSize;
 						if ( type == S_NON_LAZY_SYMBOL_POINTERS ) {
-							if ( (bindness == kLazyOnly) || (bindness == kLazyOnlyNoDependents) )
+							if ( ! bindNonLazys )
 								continue;
 						}
 						else if ( type == S_LAZY_SYMBOL_POINTERS ) {
 							// process each symbol pointer in this section
 							fgTotalPossibleLazyBindFixups += elementCount;
-							if ( bindness == kNonLazyOnly )
+							if ( ! bindLazys )
 								continue;
 						}
 				#if __i386__
@@ -2178,7 +2526,7 @@ void ImageLoaderMachO::doBindIndirectSymbolPointers(const LinkContext& context, 
 							elementCount = sect->size / 5;
 							elementSize = 5;
 							fgTotalPossibleLazyBindFixups += elementCount;
-							if ( bindness == kNonLazyOnly )
+							if ( ! bindLazys )
 								continue;
 						}
 				#endif
@@ -2188,6 +2536,9 @@ void ImageLoaderMachO::doBindIndirectSymbolPointers(const LinkContext& context, 
 						const uint32_t indirectTableOffset = sect->reserved1;
 						uint8_t* ptrToBind = (uint8_t*)(sect->addr + fSlide);
 						for (uint32_t j=0; j < elementCount; ++j, ptrToBind += elementSize) {
+				#if LINKEDIT_USAGE_DEBUG
+							noteAccessedLinkEditAddress(&indirectTable[indirectTableOffset + j]);
+				#endif
 							uint32_t symbolIndex = indirectTable[indirectTableOffset + j];
 							if ( symbolIndex == INDIRECT_SYMBOL_LOCAL) {
 								*((uintptr_t*)ptrToBind) += this->fSlide;
@@ -2214,7 +2565,7 @@ void ImageLoaderMachO::doBindIndirectSymbolPointers(const LinkContext& context, 
 											// symbol table entry is an import entry (usually it is a local symbol
 											// definition).
 											if ( context.verboseWarnings && !alreadyWarned ) {
-												fprintf(stderr, "dyld: malformed executable '%s', skipping indirect symbol to %s\n",
+												dyld::log("dyld: malformed executable '%s', skipping indirect symbol to %s\n",
 														this->getPath(), &fStrings[sym->n_un.n_strx]);
 												alreadyWarned = true;
 											}
@@ -2222,7 +2573,7 @@ void ImageLoaderMachO::doBindIndirectSymbolPointers(const LinkContext& context, 
 										}
 									}
 								}
-								ImageLoader *image = NULL;
+								const ImageLoader* image = NULL;
 								// if only processing coalesced symbols and this one does not require coalesceing, skip to next
 								if ( onlyCoalescedSymbols && !symbolRequiresCoalescing(sym) )
 									continue;
@@ -2231,43 +2582,35 @@ void ImageLoaderMachO::doBindIndirectSymbolPointers(const LinkContext& context, 
 									
 								// update pointer
 								symbolAddr = this->bindIndirectSymbol((uintptr_t*)ptrToBind, sect, &fStrings[sym->n_un.n_strx], symbolAddr, image,  context);
+								// update stats
+								++fgTotalBindFixups;
 							}
 						}
-						// update stats
-						fgTotalBindFixups += elementCount;
 					}
 				}
 				break;
 		}
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 	}
+#if __i386__
+	this->makeImportSegmentReadOnly(context);
+#endif
 }
 
-/*
- * The address of these symbols are written in to the (__DATA,__dyld) section
- * at the following offsets:
- *	at offset 0	stub_binding_helper_interface
- *	at offset 4	_dyld_func_lookup
- *	at offset 8	start_debug_thread
- * The 'C' types (if any) for these symbols are ignored here and all are
- * declared as longs so the assignment of their address in to the section will
- * not require a cast.  stub_binding_helper_interface is really a label in the
- * assembly code interface for the stub binding.  It does not have a meaningful 
- * 'C' type.  _dyld_func_lookup is the routine in dyld_libfuncs.c.
- * start_debug_thread is the routine in debug.c.
- *
- * For ppc the image's stub_binding_binding_helper is read from:
- *	at offset 20	the image's stub_binding_binding_helper address
- * and saved into to the image structure.
- */
+#if SUPPORT_OLD_CRT_INITIALIZATION
+// first 16 bytes of "start" in crt1.o
+#if __ppc__
+	static uint32_t sStandardEntryPointInstructions[4] = { 0x7c3a0b78, 0x3821fffc, 0x54210034, 0x38000000 };
+#elif __i386__
+	static uint8_t sStandardEntryPointInstructions[16] = { 0x6a, 0x00, 0x89, 0xe5, 0x83, 0xe4, 0xf0, 0x83, 0xec, 0x10, 0x8b, 0x5d, 0x04, 0x89, 0x5c, 0x24 };
+#endif
+#endif
+
 struct DATAdyld {
-	void*   dyldLazyBinder;		// filled in at launch by dyld to point into dyld to &stub_binding_helper_interface
-	void*   dyldFuncLookup;		// filled in at launch by dyld to point into dyld to &_dyld_func_lookup
-	void*   startDebugThread;   // debugger interface ???
-	void*   debugPort;			// debugger interface ???
-	void*   debugThread;		// debugger interface ???
-	void*   stubBindHelper;		// filled in at static link time to point to stub helper in image
-	void*   coreDebug;			// ???
+	void*			dyldLazyBinder;		// filled in at launch by dyld to point into dyld to &stub_binding_helper_interface
+	void*			dyldFuncLookup;		// filled in at launch by dyld to point into dyld to &_dyld_func_lookup
+	// the following only exist in main executables built for 10.5 or later
+	ProgramVars		vars;
 };
 
 // These are defined in dyldStartup.s
@@ -2278,29 +2621,68 @@ extern "C" void fast_stub_binding_helper_interface();
 
 void ImageLoaderMachO::setupLazyPointerHandler(const LinkContext& context)
 {
-	if ( fDATAdyld != NULL ) {
-		struct DATAdyld* dd = (struct DATAdyld*)(fDATAdyld->addr + fSlide);
-		if ( fDATAdyld->size > offsetof(DATAdyld, dyldLazyBinder) ) {
-			if ( dd->dyldLazyBinder != (void*)&stub_binding_helper )
-				dd->dyldLazyBinder = (void*)&stub_binding_helper;
+	const macho_header* mh = (macho_header*)fMachOData;
+	const uint32_t cmd_count = mh->ncmds;
+	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+	const struct load_command* cmd;
+	// set up __dyld section
+	// optimizations:
+	//   1) do nothing if image is in dyld shared cache and dyld loaded at same address as when cache built
+	//	 2) first read __dyld value, if already correct don't write, this prevents dirtying a page
+	if ( !fInSharedCache || !context.dyldLoadedAtSameAddressNeededBySharedCache ) {
+		cmd = cmds;
+		for (uint32_t i = 0; i < cmd_count; ++i) {
+			if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
+				const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+				if ( strcmp(seg->segname, "__DATA") == 0 ) {
+					const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
+					const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
+					for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+						if ( strcmp(sect->sectname, "__dyld" ) == 0 ) {
+							struct DATAdyld* dd = (struct DATAdyld*)(sect->addr + fSlide);
+							if ( sect->size > offsetof(DATAdyld, dyldLazyBinder) ) {
+								if ( dd->dyldLazyBinder != (void*)&stub_binding_helper )
+									dd->dyldLazyBinder = (void*)&stub_binding_helper;
+							}
+							if ( sect->size > offsetof(DATAdyld, dyldFuncLookup) ) {
+								if ( dd->dyldFuncLookup != (void*)&dyld_func_lookup )
+									dd->dyldFuncLookup = (void*)&dyld_func_lookup;
+							}
+							if ( mh->filetype == MH_EXECUTE ) {
+								// there are two ways to get the program variables
+								if ( (sect->size > offsetof(DATAdyld, vars)) && (dd->vars.mh == mh) ) {
+									// some really old binaries have space for vars, but it is zero filled
+									// main executable has 10.5 style __dyld section that has program variable pointers
+									context.setNewProgramVars(dd->vars);
+								}
+								else {
+									// main executable is pre-10.5 and requires the symbols names to be looked up
+									this->lookupProgramVars(context);
+				#if SUPPORT_OLD_CRT_INITIALIZATION
+									// If the first 16 bytes of the entry point's instructions do not 
+									// match what crt1.o supplies, then the program has a custom entry point.
+									// This means it might be doing something that needs to be executed before 
+									// initializers are run. 
+									if ( memcmp(this->getMain(), sStandardEntryPointInstructions, 16) != 0 ) {
+										if ( context.verboseInit )
+											dyld::log("dyld: program uses non-standard entry point so delaying running of initializers\n");
+										context.setRunInitialzersOldWay();
+									}
+				#endif
+								}
+							}
+						}
+					}
+				}
+			}
+			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 		}
-		if ( fDATAdyld->size > offsetof(DATAdyld, dyldFuncLookup) ) {
-			if ( dd->dyldFuncLookup != (void*)&dyld_func_lookup )
-				dd->dyldFuncLookup = (void*)&dyld_func_lookup;
-		}
-		//if ( fDATAdyld->size > offsetof(DATAdyld, startDebugThread) ) 
-		//	dd->startDebugThread = &start_debug_thread;
-#ifdef __ppc__
-		//if ( fDATAdyld->size > offsetof(DATAdyld, stubBindHelper) )
-		//	save = dd->stubBindHelper;	
-#endif
 	}
 #if __i386__
-	if ( ! this->usablePrebinding(context) || !this->usesTwoLevelNameSpace() ) {
+	if ( ! this->usablePrebinding(context) ) {
 		// reset all "fast" stubs
-		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
-		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
-		const struct load_command* cmd = cmds;
+		this->makeImportSegmentWritable(context);
+		cmd = cmds;
 		for (uint32_t i = 0; i < cmd_count; ++i) {
 			switch (cmd->cmd) {
 				case LC_SEGMENT_COMMAND:
@@ -2328,7 +2710,7 @@ void ImageLoaderMachO::setupLazyPointerHandler(const LinkContext& context)
 									// the latest linker marks 64-byte crossing stubs with INDIRECT_SYMBOL_ABS so they are not used
 									if ( symbolIndex != INDIRECT_SYMBOL_ABS ) {
 										const char* symbolName = &fStrings[fSymbolTable[symbolIndex].n_un.n_strx];
-										ImageLoader* image = NULL;
+										const ImageLoader* image = NULL;
 										try {
 											uintptr_t symbolAddr = this->resolveUndefined(context, &fSymbolTable[symbolIndex], this->usesTwoLevelNameSpace(), &image);
 											symbolAddr = this->bindIndirectSymbol((uintptr_t*)entry, sect, symbolName, symbolAddr, image, context);
@@ -2362,16 +2744,50 @@ void ImageLoaderMachO::setupLazyPointerHandler(const LinkContext& context)
 			}
 			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 		}
+		this->makeImportSegmentReadOnly(context);
 	}
 #endif
 }
 
+									
+void ImageLoaderMachO::lookupProgramVars(const LinkContext& context) const
+{
+	ProgramVars vars = context.programVars;
+	const ImageLoader::Symbol* sym;
+	
+	// get mach header directly
+	vars.mh = (macho_header*)fMachOData;
+	
+	// lookup _NXArgc
+	sym = this->findExportedSymbol("_NXArgc", NULL, false, NULL);
+	if ( sym != NULL )
+		vars.NXArgcPtr = (int*)this->getExportedSymbolAddress(sym, context, this);
+		
+	// lookup _NXArgv
+	sym = this->findExportedSymbol("_NXArgv", NULL, false, NULL);
+	if ( sym != NULL )
+		vars.NXArgvPtr = (const char***)this->getExportedSymbolAddress(sym, context, this);
+		
+	// lookup _environ
+	sym = this->findExportedSymbol("_environ", NULL, false, NULL);
+	if ( sym != NULL )
+		vars.environPtr = (const char***)this->getExportedSymbolAddress(sym, context, this);
+		
+	// lookup __progname
+	sym = this->findExportedSymbol("___progname", NULL, false, NULL);
+	if ( sym != NULL )
+		vars.__prognamePtr = (const char**)this->getExportedSymbolAddress(sym, context, this);
+		
+	context.setNewProgramVars(vars);
+}
+
+
 bool ImageLoaderMachO::usablePrebinding(const LinkContext& context) const
 {
 	// if prebound and loaded at prebound address, and all libraries are same as when this was prebound, then no need to bind
-	if ( this->isPrebindable() 
+	if ( (this->isPrebindable() || fInSharedCache)
 		&& (this->getSlide() == 0) 
-		&& (this->usesTwoLevelNameSpace() || context.prebinding)
+		&& this->usesTwoLevelNameSpace()
 		&& this->allDependentLibrariesAsWhenPreBound() ) {
 		// allow environment variables to disable prebinding
 		if ( context.bindFlat )
@@ -2390,63 +2806,134 @@ bool ImageLoaderMachO::usablePrebinding(const LinkContext& context) const
 	return false;
 }
 
-void ImageLoaderMachO::doBind(const LinkContext& context, BindingLaziness bindness)
+void ImageLoaderMachO::doBind(const LinkContext& context, bool forceLazysBound)
 {
+	// check for runtime forcing of lazy pointers to be bound
+	if ( forceLazysBound && (this->getState() > dyld_image_state_bound) ) {
+		this->doBindIndirectSymbolPointers(context, false, forceLazysBound, false);
+		return;
+	}
+
 	// set dyld entry points in image
 	this->setupLazyPointerHandler(context);
 
 	// if prebound and loaded at prebound address, and all libraries are same as when this was prebound, then no need to bind
-	// note: flat-namespace binaries need to be imports rebound (even if correctly prebound)
-	if ( this->usablePrebinding(context) && this->usesTwoLevelNameSpace() ) {
+	// note: flat-namespace binaries need to have imports rebound (even if correctly prebound)
+	if ( this->usablePrebinding(context) ) {
 		// if image has coalesced symbols, then these need to be rebound, unless this is the only image with weak symbols
 		if ( this->needsCoalescing() && (fgCountOfImagesWithWeakExports > 1) ) {
 			this->doBindExternalRelocations(context, true);
-			this->doBindIndirectSymbolPointers(context, kLazyAndNonLazy, true);
+			this->doBindIndirectSymbolPointers(context, true, true, true);
 		}
+		else {
+			++fgImagesRequiringNoFixups;
+		}
+		
 		// skip binding because prebound and prebinding not disabled
 		return;
 	}
 	
- 	// values bound by name are stored two different ways in mach-o
-	switch (bindness) {
-		case kNonLazyOnly:
-		case kLazyAndNonLazy:
-			// external relocations are used for data initialized to external symbols
-			this->doBindExternalRelocations(context, false);
-			break;
-		case kLazyOnly:
-		case kLazyOnlyNoDependents:
-			break;
-	}
-	// "indirect symbols" are used for code references to external symbols
-	this->doBindIndirectSymbolPointers(context, bindness, false);
+ 	// values bound by name are stored two different ways in mach-o:
+	
+	// 1) external relocations are used for data initialized to external symbols
+	this->doBindExternalRelocations(context, false);
+	
+	// 2) "indirect symbols" are used for code references to external symbols
+	// if this image is in the shared cache, there is noway to reset the lazy pointers, so bind them now
+	this->doBindIndirectSymbolPointers(context, true, forceLazysBound || fInSharedCache, false);
 }
 
-
+void ImageLoaderMachO::doUpdateMappingPermissions(const LinkContext& context)
+{
+#if __i386__
+	if ( (fReadOnlyImportSegment != NULL) && !fInSharedCache )
+		fReadOnlyImportSegment->setPermissions(context, this);
+#endif
+}
 
 void ImageLoaderMachO::doImageInit(const LinkContext& context)
 {
-	if ( fDashInit != NULL ) {
-		Initializer func = (Initializer)(fDashInit->init_address + fSlide);
-		if ( context.verboseInit )
-			fprintf(stderr, "dyld: calling -init function 0x%p in %s\n", func, this->getPath());
-		func(context.argc, context.argv, context.envp, context.apple);
+	if ( fHasDashInit ) {
+		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+		const struct load_command* cmd = cmds;
+		for (unsigned long i = 0; i < cmd_count; ++i) {
+			switch (cmd->cmd) {
+				case LC_ROUTINES_COMMAND:
+					Initializer func = (Initializer)(((struct macho_routines_command*)cmd)->init_address + fSlide);
+					if ( context.verboseInit )
+						dyld::log("dyld: calling -init function 0x%p in %s\n", func, this->getPath());
+					func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
+					break;
+			}
+			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+		}
 	}
 }
 
 void ImageLoaderMachO::doModInitFunctions(const LinkContext& context)
 {
-	if ( fModInitSection != NULL ) {
-		Initializer* inits = (Initializer*)(fModInitSection->addr + fSlide);
-		const uint32_t count = fModInitSection->size / sizeof(uintptr_t);
-		for (uint32_t i=0; i < count; ++i) {
-			Initializer func = inits[i];
-			if ( context.verboseInit )
-				fprintf(stderr, "dyld: calling initializer function %p in %s\n", func, this->getPath());
-			func(context.argc, context.argv, context.envp, context.apple);
+	if ( fHasInitializers ) {
+		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+		const struct load_command* cmd = cmds;
+		for (unsigned long i = 0; i < cmd_count; ++i) {
+			if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
+				const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+				const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
+				const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
+				for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+					const uint8_t type = sect->flags & SECTION_TYPE;
+					if ( type == S_MOD_INIT_FUNC_POINTERS ) {
+						Initializer* inits = (Initializer*)(sect->addr + fSlide);
+						const uint32_t count = sect->size / sizeof(uintptr_t);
+						for (uint32_t i=0; i < count; ++i) {
+							Initializer func = inits[i];
+							if ( context.verboseInit )
+								dyld::log("dyld: calling initializer function %p in %s\n", func, this->getPath());
+							func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
+						}
+					}
+				}
+				cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+			}
 		}
 	}
 }
+
+
+
+
+void ImageLoaderMachO::doGetDOFSections(const LinkContext& context, std::vector<ImageLoader::DOFInfo>& dofs)
+{
+	if ( fHasDOFSections ) {
+		// walk load commands (mapped in at start of __TEXT segment)
+		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+		const struct load_command* cmd = cmds;
+		for (uint32_t i = 0; i < cmd_count; ++i) {
+			switch (cmd->cmd) {
+				case LC_SEGMENT_COMMAND:
+					{
+						const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+						const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
+						const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
+						for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+							if ( (sect->flags & SECTION_TYPE) == S_DTRACE_DOF ) {
+								ImageLoader::DOFInfo info;
+								info.dof			= (void*)(sect->addr + fSlide);
+								info.imageHeader	= this->machHeader();
+								info.imageShortName = this->getShortName();
+								dofs.push_back(info);
+							}
+						}
+					}
+					break;
+			}
+			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+		}
+	}
+}	
 
 
 void ImageLoaderMachO::doInitialization(const LinkContext& context)
@@ -2458,411 +2945,213 @@ void ImageLoaderMachO::doInitialization(const LinkContext& context)
 
 bool ImageLoaderMachO::needsInitialization()
 {
-	return ( (fDashInit != NULL) || (fModInitSection != NULL) );
+	return ( fHasDashInit || fHasInitializers );
 }
 
 
 bool ImageLoaderMachO::needsTermination()
 {
-	return ( fModTermSection != NULL );
+	return fHasTerminators;
 }
 
+#if IMAGE_NOTIFY_SUPPORT
 bool ImageLoaderMachO::hasImageNotification()
 {
-	return ( fImageNotifySection != NULL );
+	return fHasImageNotifySection;
 }
-
+#endif
 
 void ImageLoaderMachO::doTermination(const LinkContext& context)
 {
-	if ( fModTermSection != NULL ) {
-		Terminator* terms = (Terminator*)(fModTermSection->addr + fSlide);
-		const uint32_t count = fModTermSection->size / sizeof(uintptr_t);
-		for (uint32_t i=count; i > 0; --i) {
-			Terminator func = terms[i-1];
-			if ( context.verboseInit )
-				fprintf(stderr, "dyld: calling terminaton function %p in %s\n", func, this->getPath());
-			func();
+	if ( fHasTerminators ) {
+		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+		const struct load_command* cmd = cmds;
+		for (unsigned long i = 0; i < cmd_count; ++i) {
+			if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
+				const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+				const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
+				const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
+				for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+					const uint8_t type = sect->flags & SECTION_TYPE;
+					if ( type == S_MOD_TERM_FUNC_POINTERS ) {
+						Terminator* terms = (Terminator*)(sect->addr + fSlide);
+						const uint32_t count = sect->size / sizeof(uintptr_t);
+						for (uint32_t i=count; i > 0; --i) {
+							Terminator func = terms[i-1];
+							if ( context.verboseInit )
+								dyld::log("dyld: calling terminaton function %p in %s\n", func, this->getPath());
+							func();
+						}
+					}
+				}
+			}
+			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 		}
 	}
 }
 
+#if IMAGE_NOTIFY_SUPPORT
 void ImageLoaderMachO::doNotification(enum dyld_image_mode mode, uint32_t infoCount, const struct dyld_image_info info[])
 {
-	if ( fImageNotifySection != NULL ) {
-		dyld_image_notifier* notes = (dyld_image_notifier*)(fImageNotifySection->addr + fSlide);
-		const uint32_t count = fImageNotifySection->size / sizeof(uintptr_t);
-		for (uint32_t i=count; i > 0; --i) {
-			dyld_image_notifier func = notes[i-1];
-			func(mode, infoCount, info);
+	if ( fHasImageNotifySection ) {
+		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+		const struct load_command* cmd = cmds;
+		for (unsigned long i = 0; i < cmd_count; ++i) {
+			if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
+				const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+				if ( strcmp(seg->segname, "__DATA") == 0 ) {
+					const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
+					const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
+					for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+						if ( strcmp(sect->sectname, "__image_notify") == 0 ) {
+							dyld_image_notifier* notes = (dyld_image_notifier*)(sect->addr + fSlide);
+							const uint32_t count = sect->size / sizeof(uintptr_t);
+							for (uint32_t i=count; i > 0; --i) {
+								dyld_image_notifier func = notes[i-1];
+								func(mode, infoCount, info);
+							}
+						}
+					}
+				}
+			}
+			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 		}
 	}
 }
+#endif
 
 void ImageLoaderMachO::printStatistics(unsigned int imageCount)
 {
 	ImageLoader::printStatistics(imageCount);
-	fprintf(stderr, "total hinted binary tree searches:    %d\n", fgHintedBinaryTreeSearchs);
-	fprintf(stderr, "total unhinted binary tree searches:  %d\n", fgUnhintedBinaryTreeSearchs);
-	fprintf(stderr, "total images with weak exports:  %d\n", fgCountOfImagesWithWeakExports);
+	//dyld::log("total hinted binary tree searches:    %d\n", fgHintedBinaryTreeSearchs);
+	//dyld::log("total unhinted binary tree searches:  %d\n", fgUnhintedBinaryTreeSearchs);
+	dyld::log("total images with weak exports:  %d\n", fgCountOfImagesWithWeakExports);
 	
 #if LINKEDIT_USAGE_DEBUG
-	fprintf(stderr, "linkedit pages accessed (%lu):\n", sLinkEditPageBuckets.size());
+	dyld::log("linkedit pages accessed (%lu):\n", sLinkEditPageBuckets.size());
 #endif	
 }
 
-void ImageLoaderMachO::doPrebinding(const LinkContext& context, time_t timestamp, uint8_t* fileToPrebind)
+
+ImageLoader::SegmentIterator	ImageLoaderMachO::beginSegments() const
 {
-	// update __DATA segment
-	this->applyPrebindingToDATA(fileToPrebind);
-	
-	// update load commands 
-	this->applyPrebindingToLoadCommands(context, fileToPrebind, timestamp);
-	
-	// update symbol table  
-	this->applyPrebindingToLinkEdit(context, fileToPrebind);
+	return SegmentIterator(fSegmentsArray);
 }
 
-void ImageLoaderMachO::applyPrebindingToDATA(uint8_t* fileToPrebind)
+ImageLoader::SegmentIterator	ImageLoaderMachO::endSegments() const
 {
-	const unsigned int segmentCount = fSegments.size();
-	for(unsigned int i=0; i < segmentCount; ++i) {
-		SegmentMachO* seg = (SegmentMachO*)fSegments[i];
-		if ( seg->writeable() ) {
-			memcpy(&fileToPrebind[seg->fFileOffset], (void*)seg->getActualLoadAddress(), seg->fFileSize);
-		}
-	}
+	return SegmentIterator(&fSegmentsArray[fSegmentsArrayCount]);
 }
 
-void ImageLoaderMachO::applyPrebindingToLoadCommands(const LinkContext& context, uint8_t* fileToPrebind, time_t timestamp)
+SegmentMachO::SegmentMachO(const struct macho_segment_command* cmd)
+ : fSegmentLoadCommand(cmd)
 {
-	macho_header* mh = (macho_header*)fileToPrebind;
-	const uint32_t cmd_count = mh->ncmds;
-	const struct load_command* const cmds = (struct load_command*)&fileToPrebind[sizeof(macho_header)];
-	const struct load_command* cmd = cmds;
-	for (uint32_t i = 0; i < cmd_count; ++i) {
-		switch (cmd->cmd) {
-			case LC_LOAD_DYLIB:
-			case LC_LOAD_WEAK_DYLIB:
-				{
-					// update each dylib load command with the timestamp of the target dylib
-					struct dylib_command* dylib  = (struct dylib_command*)cmd;
-					const char* name = (char*)cmd + dylib->dylib.name.offset;
-					for (const DependentLibrary* dl=fLibraries; dl < &fLibraries[fLibrariesCount]; dl++) {
-						if (strcmp(dl->name, name) == 0 ) {
-							// found matching DependentLibrary for this load command
-							if ( dl->image == NULL ) {
-								// missing weak linked dylib
-								dylib->dylib.timestamp = 0;
-							}
-							else {
-								ImageLoaderMachO* targetImage = (ImageLoaderMachO*)(dl->image); // !!! assume only mach-o images are prebound
-								if ( ! targetImage->isPrebindable() )
-									throw "dependent dylib is not prebound";
-								// if the target is currently being re-prebound then its timestamp will be the same as this one
-								if ( ! targetImage->usablePrebinding(context) ) {
-									dylib->dylib.timestamp = timestamp;
-								}
-								else {
-									// otherwise dependent library is already correctly prebound, so use its checksum
-									dylib->dylib.timestamp = targetImage->doGetLibraryInfo().checksum;
-								}
-							}
-							break;
-						}
-					}
-				}
-				break;
-			case LC_ID_DYLIB:
-				{
-					// update the ID of this library with the new timestamp
-					struct dylib_command* dylib  = (struct dylib_command*)cmd;
-					dylib->dylib.timestamp = timestamp;
-				}
-				break;
-			case LC_SEGMENT_COMMAND:
-				// if dylib was rebased, update segment commands
-				if ( fSlide != 0 ) {
-					struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
-					seg->vmaddr += fSlide;
-					struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
-					struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
-					for (struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
-						sect->addr += fSlide;
-					}
-				}
-				break;
-			case LC_ROUTINES_COMMAND:
-				// if dylib was rebased, update -init command
-				if ( fSlide != 0 ) {
-					struct macho_routines_command* routines = (struct macho_routines_command*)cmd;
-					routines->init_address += fSlide;
-				}
-				break;
-		}
-		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
-	}	
-}
-
-void ImageLoaderMachO::applyPrebindingToLinkEdit(const LinkContext& context, uint8_t* fileToPrebind)
-{
-	// In prebound images, the n_value of the symbol table entry for is the prebound address
-	// This is needed when prebinding can't be used, to back solve for any possible addend in non-lazy pointers
-	const char* stringPool = NULL;
-	struct macho_nlist* symbolTable = NULL;
-	const struct dysymtab_command* dysymtab = NULL;
-	
-	// get symbol table info
-	macho_header* mh = (macho_header*)fileToPrebind;
-	const uint32_t cmd_count = mh->ncmds;
-	const struct load_command* const cmds = (struct load_command*)&fileToPrebind[sizeof(macho_header)];
-	const struct load_command* cmd = cmds;
-	for (uint32_t i = 0; i < cmd_count; ++i) {
-		switch (cmd->cmd) {
-			case LC_SYMTAB:
-				{
-					const struct symtab_command* symtab = (struct symtab_command*)cmd;
-					stringPool = (const char*)&fileToPrebind[symtab->stroff];
-					symbolTable = (struct macho_nlist*)(&fileToPrebind[symtab->symoff]);
-				}
-				break;
-			case LC_DYSYMTAB:
-				dysymtab = (struct dysymtab_command*)cmd;
-				break;
-		}
-		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
-	}	
-
-	// walk all imports and re-resolve their n_value (needed incase prebinding is invalid)
-	struct macho_nlist* lastImport = &symbolTable[dysymtab->iundefsym+dysymtab->nundefsym];
-	for (struct macho_nlist* entry = &symbolTable[dysymtab->iundefsym]; entry < lastImport; ++entry) {
-		ImageLoader* dummy;
-		entry->n_value = this->resolveUndefined(context, entry, this->usesTwoLevelNameSpace(), &dummy);
-	}
-	
-	// walk all exports and slide their n_value
-	struct macho_nlist* lastExport = &symbolTable[dysymtab->iextdefsym+dysymtab->nextdefsym];
-	for (struct macho_nlist* entry = &symbolTable[dysymtab->iextdefsym]; entry < lastExport; ++entry) {
-		if ( (entry->n_type & N_TYPE) == N_SECT )
-			entry->n_value += fSlide;
-	}
-
-	// walk all local symbols and slide their n_value
-	struct macho_nlist* lastLocal = &symbolTable[dysymtab->ilocalsym+dysymtab->nlocalsym];
-	for (struct macho_nlist* entry = &symbolTable[dysymtab->ilocalsym]; entry < lastLocal; ++entry) {
-		if ( entry->n_sect != NO_SECT )
-			entry->n_value += fSlide;
-	}
-	
-	// walk all local relocations and reset every PPC_RELOC_PB_LA_PTR r_value
-	relocation_info* const relocsStart = (struct relocation_info*)(&fileToPrebind[dysymtab->locreloff]);
-	relocation_info* const relocsEnd = &relocsStart[dysymtab->nlocrel];
-	for (relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
-		if ( (reloc->r_address & R_SCATTERED) != 0 ) {
-			struct scattered_relocation_info* sreloc = (struct scattered_relocation_info*)reloc;
-			if (sreloc->r_length == RELOC_SIZE) {
-				switch(sreloc->r_type) {
-		#if __ppc__ || __ppc64__
-					case PPC_RELOC_PB_LA_PTR:
-		#elif __i386__ || __x86_64__
-					case GENERIC_RELOC_PB_LA_PTR:
-		#else
-			#error unknown architecture
-		#endif
-						sreloc->r_value += fSlide;
-						break;
-				}
-			}
-		}
-	}
-	
-	// if multi-module, fix up objc_addr (10.4 and later runtime does not use this, but we want to keep file checksum consistent)
-	if ( dysymtab->nmodtab != 0 ) {
-		dylib_module* const modulesStart = (struct dylib_module*)(&fileToPrebind[dysymtab->modtaboff]);
-		dylib_module* const modulesEnd = &modulesStart[dysymtab->nmodtab];
-		for (dylib_module* module=modulesStart; module < modulesEnd; ++module) {
-			if ( module->objc_module_info_size != 0 ) {
-				module->objc_module_info_addr += fSlide;
-			}
-		}
-	}
-}
-
-// file on disk has been reprebound, but we are still mapped to old file
-void ImageLoaderMachO::prebindUnmap(const LinkContext& context)
-{
-	// this removes all mappings to the old file, so the kernel will unlink (delete) it.
-	//  We need to leave the load commands and __LINKEDIT in place
-	for (std::vector<class Segment*>::iterator it=fSegments.begin(); it != fSegments.end(); ++it) {
-		void* segmentAddress = (void*)((*it)->getActualLoadAddress());
-		uintptr_t segmentSize = (*it)->getSize();
-		//fprintf(stderr, "unmapping segment %s at %p for %s\n", (*it)->getName(), segmentAddress, this->getPath());
-		// save load commands at beginning of __TEXT segment
-		if ( segmentAddress == fMachOData ) {
-			// typically load commands are one or two pages in size, so ok to alloc on stack
-			uint32_t loadCmdSize = sizeof(macho_header) + ((macho_header*)fMachOData)->sizeofcmds;
-			uint32_t loadCmdPages = (loadCmdSize+4095) & (-4096);
-			uint8_t loadcommands[loadCmdPages];
-			memcpy(loadcommands, fMachOData, loadCmdPages);
-			// unmap whole __TEXT segment
-			munmap((void*)(fMachOData), segmentSize);
-			// allocate and copy back mach_header and load commands
-			vm_address_t addr = (vm_address_t)fMachOData;
-			int r2 = vm_allocate(mach_task_self(), &addr, loadCmdPages, false /*at this address*/);
-			if ( r2 != 0 )
-				fprintf(stderr, "prebindUnmap() vm_allocate for __TEXT %d failed\n", loadCmdPages);
-			memcpy((void*)fMachOData, loadcommands, loadCmdPages);
-			//fprintf(stderr, "copying back load commands to %p size=%u for %s\n", segmentAddress, loadCmdPages, this->getPath());
-		}
-		else if ( strcmp((*it)->getName(), "__LINKEDIT") == 0 ) {
-			uint32_t linkEditSize = segmentSize;
-			uint32_t linkEditPages = (linkEditSize+4095) & (-4096);
-			void* linkEditTmp = malloc(linkEditPages);
-			memcpy(linkEditTmp, segmentAddress, linkEditPages);
-			// unmap whole __LINKEDIT segment
-			munmap(segmentAddress, segmentSize);
-			vm_address_t addr = (vm_address_t)segmentAddress;
-			int r2 = vm_allocate(mach_task_self(), &addr, linkEditPages, false /*at this address*/);
-			if ( r2 != 0 )
-				fprintf(stderr, "prebindUnmap() vm_allocate for __LINKEDIT %d failed\n", linkEditPages);
-			memcpy(segmentAddress, linkEditTmp, linkEditPages);
-			//fprintf(stderr, "copying back __LINKEDIT to %p size=%u for %s\n", segmentAddress, linkEditPages, this->getPath());
-			free(linkEditTmp);
-		}
-		else {
-			// unmap any other segment
-			munmap((void*)(segmentAddress), (*it)->getSize());
-		}
-	}
-}
-
-
-
-SegmentMachO::SegmentMachO(const struct macho_segment_command* cmd, ImageLoaderMachO* image, const uint8_t* fileData)
- : fImage(image), fSize(cmd->vmsize), fFileSize(cmd->filesize), fFileOffset(cmd->fileoff), fPreferredLoadAddress(cmd->vmaddr), 
-	fVMProtection(cmd->initprot), fHasFixUps(false), fUnMapOnDestruction(false)
-{
-	strncpy(fName, cmd->segname, 16);
-	fName[16] = '\0';
-	// scan sections for fix-up bit
-	const struct macho_section* const sectionsStart = (struct macho_section*)((char*)cmd + sizeof(struct macho_segment_command));
-	const struct macho_section* const sectionsEnd = &sectionsStart[cmd->nsects];
-	for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
-		if ( (sect->flags & (S_ATTR_EXT_RELOC | S_ATTR_LOC_RELOC)) != 0 )
-			fHasFixUps = true;
-	}
 }
 
 SegmentMachO::~SegmentMachO()
 {
-	if ( fUnMapOnDestruction ) {
-		//fprintf(stderr, "unmapping segment %s at 0x%08lX\n", getName(), getActualLoadAddress());
-		munmap((void*)(this->getActualLoadAddress()), this->getSize());
-	}
 }
 
-const ImageLoader* SegmentMachO::getImage()
+void SegmentMachO::adjust(const struct macho_segment_command* cmd)
 {
-	return fImage;
+	fSegmentLoadCommand = cmd;
 }
+
+void SegmentMachO::unmap(const ImageLoader* image)
+{
+	// update stats
+	--ImageLoader::fgTotalSegmentsMapped;
+	ImageLoader::fgTotalBytesMapped -= fSegmentLoadCommand->vmsize;
+	munmap((void*)(this->getActualLoadAddress(image)), fSegmentLoadCommand->vmsize);
+}
+
 
 const char* SegmentMachO::getName()
 {
-	return fName;
+	return fSegmentLoadCommand->segname;
 }
 
 uintptr_t SegmentMachO::getSize()
 {
-	return fSize;
+	return fSegmentLoadCommand->vmsize;
 }
 
 uintptr_t SegmentMachO::getFileSize()
 {
-	return fFileSize;
+	return fSegmentLoadCommand->filesize;
 }
 
 uintptr_t SegmentMachO::getFileOffset()
 {
-	return fFileOffset;
+	return fSegmentLoadCommand->fileoff;
 }
 
 bool SegmentMachO::readable()
 {
-	return ( (fVMProtection & VM_PROT_READ) != 0);
+	return ( (fSegmentLoadCommand->initprot & VM_PROT_READ) != 0);
 }
 
 bool SegmentMachO::writeable()
 {
-	return ((fVMProtection & VM_PROT_WRITE) != 0);
+	return ((fSegmentLoadCommand->initprot & VM_PROT_WRITE) != 0);
 }
 
 bool SegmentMachO::executable()
 {
-	return ((fVMProtection & VM_PROT_EXECUTE) != 0);
+	return ((fSegmentLoadCommand->initprot & VM_PROT_EXECUTE) != 0);
 }
 
 bool SegmentMachO::unaccessible()
 {
-	return (fVMProtection == 0);
+	return (fSegmentLoadCommand->initprot == 0);
 }
 
+#if TEXT_RELOC_SUPPORT
 bool SegmentMachO::hasFixUps()
 {
-	return fHasFixUps;
+	// scan sections for fix-up bit
+	const struct macho_section* const sectionsStart = (struct macho_section*)((char*)fSegmentLoadCommand + sizeof(struct macho_segment_command));
+	const struct macho_section* const sectionsEnd = &sectionsStart[fSegmentLoadCommand->nsects];
+	for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+		if ( (sect->flags & (S_ATTR_EXT_RELOC | S_ATTR_LOC_RELOC)) != 0 )
+			return true;
+	}
+	return false;
 }
+#endif
 
-uintptr_t SegmentMachO::getActualLoadAddress()
+#if __i386__
+bool SegmentMachO::readOnlyImportStubs()
 {
-	return fPreferredLoadAddress + fImage->fSlide;
+	return (    (fSegmentLoadCommand->initprot & VM_PROT_EXECUTE) 
+			&& ((fSegmentLoadCommand->initprot & VM_PROT_WRITE) == 0) 
+			&& (strcmp(fSegmentLoadCommand->segname, "__IMPORT") == 0) );
+}
+#endif
+	
+uintptr_t SegmentMachO::getActualLoadAddress(const ImageLoader* inImage)
+{
+	return fSegmentLoadCommand->vmaddr + inImage->getSlide();
 }
 
 uintptr_t SegmentMachO::getPreferredLoadAddress()
 {
-	return fPreferredLoadAddress;
+	return fSegmentLoadCommand->vmaddr;
 }
 
 bool SegmentMachO::hasPreferredLoadAddress()
 {
-	return (fPreferredLoadAddress != 0);
+	return (fSegmentLoadCommand->vmaddr != 0);
 }
 
-void SegmentMachO::setUnMapWhenDestructed(bool unmap)
+
+Segment* SegmentMachO::next(Segment* location)
 {
-	fUnMapOnDestruction = unmap;
+	return &((SegmentMachO*)location)[1];
 }
 
-static uint32_t *buildCRCTable(void)
-{
-	uint32_t *table = new uint32_t[256];
-	uint32_t p = 0xedb88320UL;  // standard CRC-32 polynomial
-
-	for (unsigned int i = 0; i < 256; i++) {
-		uint32_t c = i;
-		for (unsigned int j = 0; j < 8; j++) {
-			if ( c & 1 ) c = p ^ (c >> 1);
-			else c = c >> 1;
-		}
-		table[i] = c;
-	}
-
-	return table;
-}
-
-uint32_t SegmentMachO::crc32()
-{
-	if ( !readable() ) return 0;
-
-	static uint32_t *crcTable = NULL;
-	if ( !crcTable ) crcTable = buildCRCTable();
-	
-	uint32_t crc = ~(uint32_t)0;
-	uint8_t *p = (uint8_t *)getActualLoadAddress(); 
-	uint8_t *end = p + getSize();
-	while ( p < end ) {
-		crc = crcTable[(crc & 0xff) ^ (*p++)] ^ (crc >> 8);
-	}
-	return crc ^ ~(uint32_t)0;
-}
 
 
 

@@ -15,7 +15,7 @@ extern bool dofloattest(double,double,double,double,double,double,double,double,
 #if __i386__ || __x86_64__
 	typedef float               vFloat  __attribute__ ((__vector_size__ (16)));
 #elif __ppc__ || __ppc64__
-	typedef vector float		vFloat;
+	typedef __vector float		vFloat;
 #endif
 
 extern bool dovectortest(vFloat, vFloat, vFloat, vFloat, vFloat);

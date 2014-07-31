@@ -38,7 +38,7 @@ run: all
 all: main libfoo.dylib
 
 main : main.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations -I${TESTROOT}/include -o main main.c
 
 libfoo.dylib : foo.c libbar_missing.dylib libbar.dylib
 	${CC} ${CCFLAGS} foo.c -dynamiclib -o libfoo.dylib libbar.dylib

@@ -26,7 +26,7 @@
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
 int
-main(int argc, char **argv, char **envp, char**appl)
+main(int argc, const char* argv[])
 {
   
   return EXIT_SUCCESS;

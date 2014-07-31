@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <mach-o/dyld.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #include "test.h"
 

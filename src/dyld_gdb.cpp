@@ -31,9 +31,11 @@
 #include <vector>
 
 #include "mach-o/dyld_gdb.h"
+#include "mach-o/dyld_images.h"
 
+#define OLD_GDB_DYLD_INTERFACE __ppc__ || __i386__
 
-// old gdb interface to dyld only supported on 32-bit ppc and i386 (not ppc64_
+// old gdb interface to dyld only supported on 32-bit ppc and i386
 #if OLD_GDB_DYLD_INTERFACE
 
 unsigned int gdb_dyld_version = 2;
@@ -80,8 +82,8 @@ unsigned int gdb_nlibrary_images	= NLIBRARY_IMAGES;
 unsigned int gdb_library_image_size	= sizeof(image);
 
 extern "C" {
-object_images   object_images = { {}, 0 , NULL };
-library_images library_images = { {}, 0 , NULL };
+object_images   object_images;// = { {}, 0 , NULL };
+library_images library_images;// = { {}, 0 , NULL };
 void send_event(const struct dyld_event* event);
 }
 
@@ -170,6 +172,10 @@ static std::vector<dyld_image_info> sImageInfos;
 
 void addImagesToAllImages(uint32_t infoCount, const dyld_image_info info[])
 {
+	// make initial size large enought that we probably won't need to re-alloc it
+	if ( sImageInfos.size() == 0 )
+		sImageInfos.reserve(200);
+
 	// set infoArray to NULL to denote it is in-use
 	dyld_all_image_infos.infoArray = NULL;
 	
@@ -214,14 +220,17 @@ static void gdb_image_notifier(enum dyld_image_mode mode, uint32_t infoCount, co
 {
 	// do nothing
 	// gdb sets a break point here to catch notifications
-	//fprintf(stderr, "dyld: gdb_image_notifier(%s, %d, ...)\n", mode ? "dyld_image_removing" : "dyld_image_adding", infoCount);
+	//dyld::log("dyld: gdb_image_notifier(%s, %d, ...)\n", mode ? "dyld_image_removing" : "dyld_image_adding", infoCount);
+	//for (uint32_t i=0; i < infoCount; ++i)
+	//	dyld::log("dyld: %d loading at %p %s\n", i, info[i].imageLoadAddress, info[i].imageFilePath);
 	//for (uint32_t i=0; i < dyld_all_image_infos.infoArrayCount; ++i)
-	//	fprintf(stderr, "dyld: %d loading at %p %s\n", i, dyld_all_image_infos.infoArray[i].imageLoadAddress, dyld_all_image_infos.infoArray[i].imageFilePath);
+	//	dyld::log("dyld: %d loading at %p %s\n", i, dyld_all_image_infos.infoArray[i].imageLoadAddress, dyld_all_image_infos.infoArray[i].imageFilePath);
 }
 
 
 
 struct dyld_all_image_infos  dyld_all_image_infos = { 1, 0, NULL, &gdb_image_notifier, false };
 
+struct dyld_shared_cache_ranges dyld_shared_cache_ranges;
 
  

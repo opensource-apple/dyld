@@ -113,7 +113,7 @@ L__dyld_start_picbase:
 	addl	$8,%esp		# remove the mh argument, and debugger end
 				#  frame marker
 	movl	$0,%ebp		# restore ebp back to zero
-	jmp	%eax		# jump to the entry point
+	jmp	*%eax		# jump to the entry point
 
 
 	.globl dyld_stub_binding_helper
@@ -164,6 +164,7 @@ __dyld_start:
 	addq	$16,%rsp	# remove the mh argument, and debugger end frame marker
 	movq	$0,%rbp		# restore ebp back to zero
 	jmp	*%rax		# jump to the entry point
+	
 #endif /* __x86_64__ */
 
 
@@ -232,5 +233,26 @@ dyld_stub_binding_helper:
 	trap
 L_end:
 #endif /* __ppc__ */
+
+
+/*
+ * dyld calls this function to terminate a process.
+ * It has a label so that CrashReporter can distinguish this
+ * termination from a random crash.  rdar://problem/4764143
+ */
+	.text
+	.align 2
+	.globl	_dyld_fatal_error
+_dyld_fatal_error:
+#if __ppc__ || __ppc64__
+    trap
+#elif __x86_64__ || __i386__
+    int3
+#else
+    #error unknown architecture
+#endif
+
+    
+    
 
 

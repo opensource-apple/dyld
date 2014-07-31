@@ -27,7 +27,7 @@ run: all
 	./main arg1 arg2
 
 all:
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+	${CC} ${CCFLAGS} -w -I${TESTROOT}/include -o main main.c
 
 clean:
 	${RM} ${RMFLAGS} *~ main

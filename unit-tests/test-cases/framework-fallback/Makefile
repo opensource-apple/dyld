@@ -29,7 +29,7 @@ run: all
 all : main
 
 main: main.c
-	${CC} main.c -o main  -I${TESTROOT}/include
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations  main.c -o main  -I${TESTROOT}/include
 
 clean:
 	${RM} ${RMFLAGS} main

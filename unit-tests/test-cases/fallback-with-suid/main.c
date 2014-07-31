@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -31,22 +31,12 @@
 // binaries set to run as some other user id never use $HOME part of fallback-path
 //
 
+extern void compress();
+
 int main(int argc, const char *argv[])
 {
-	const struct mach_header* mh = NSAddImage("/foo/bar/libfoo.dylib", NSADDIMAGE_OPTION_RETURN_ON_ERROR);
-
-	if ( strcmp(argv[1], "root") == 0 ) {
-		if ( mh == NULL )
-			PASS("fallback-with-suid root");
-		else
-			FAIL("fallback-with-suid root");
-	}
-	else {
-		if ( mh != NULL )
-			PASS("fallback-with-suid user");
-		else
-			FAIL("fallback-with-suid user");
-	}
+	if ( &compress != NULL )
+		FAIL("fallback-with-suid root");
 	
 	return EXIT_SUCCESS;
 }

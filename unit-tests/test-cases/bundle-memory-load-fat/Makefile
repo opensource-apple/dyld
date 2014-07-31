@@ -31,10 +31,10 @@ run: all
 all: main test.bundle
 
 main : main.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+	${CC} ${CCFLAGS}  -Wno-deprecated-declarations -I${TESTROOT}/include -o main main.c
 
 test.bundle : bundle.c
-	${CC} ${FATFLAGS} -bundle -o test.bundle bundle.c
+	gcc ${FATFLAGS} -bundle -o test.bundle bundle.c
 
 clean:
 	${RM} ${RMFLAGS} *~ main test.bundle

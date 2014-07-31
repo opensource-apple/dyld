@@ -27,7 +27,7 @@ run: all
 	${TESTROOT}/bin/exit-zero-pass.pl "_dyld_launched_prebound() was implemented" "_dyld_launched_prebound() was not implemented" ./main
 
 all:
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations  -I${TESTROOT}/include -o main main.c
 
 clean:
 	${RM} ${RMFLAGS} *~ main

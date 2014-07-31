@@ -39,6 +39,7 @@ int main()
 	 uint32_t count = _dyld_image_count();
 	 for(uint32_t i=0; i < count; ++i) {
 		const char*  name = _dyld_get_image_name(i);
+		//fprintf(stderr, "%s\n", name);
 		if (strcmp(name, "libfoo.dylib") == 0 ) {
 			FAIL("library-cant-be-bound: libfoo.dylib shows up in list of images");
 			return 0;

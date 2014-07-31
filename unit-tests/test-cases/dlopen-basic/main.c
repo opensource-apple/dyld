@@ -31,7 +31,7 @@ static void trySO(const char* path)
 {
 	void* handle = dlopen(path, RTLD_LAZY);
 	if ( handle == NULL ) {
-		FAIL("dlopen(\"%s\") failed", path);
+		FAIL("dlopen(\"%s\") failed with: %s", path, dlerror());
 		exit(0);
 	}
 	

@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -25,155 +25,65 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <notify.h>
 #include <time.h>
+#include <unistd.h>
 
-//
-// Stub functions needed for dyld to link with libc.a instead of libSystem.dylib
-//
-//
-static char* dyld_progname = "dyld";
-
-//
-// libc has calls to _dyld_lookup_and_bind to find args and environment.  Since
-// dyld links with a staic copy of libc, those calls need to find dyld's args and env
-// not the host process.  We implement a special _dyld_lookup_and_bind() that
-// just knows how to bind the few symbols needed by dyld.
-//
-void _dyld_lookup_and_bind(const char* symbolName, void** address, void* module)
+ 
+// abort called by C++ unwinding code
+void abort()
 {
-	if ( strcmp(symbolName, "_environ") == 0 ) {
-		// dummy up empty environment list
-		static char *p = NULL;
-		static char **pp = &p;
-		*address = &pp;
-		return;
-	}
-	else if ( strcmp(symbolName, "___progname") == 0 ) {
-		*address = &dyld_progname;
-		return;
-	}
-	
-	fprintf(stderr, "dyld: internal error: unknown symbol '%s'\n", symbolName);
+	_exit(1);
 }
 
-
-int NSIsSymbolNameDefined(const char* symbolName)
+// std::terminate called by C++ unwinding code
+void _ZSt9terminatev()
 {
-	if ( strcmp(symbolName, "___progname") == 0 ) {
-		return 1;
-	}
-	fprintf(stderr, "dyld: internal error: unknown symbol '%s'\n", symbolName);
-	return 0;
+	_exit(1);
 }
 
-
-/*
- * To avoid linking in libm.  These variables are defined as they are used in
- * pthread_init() to put in place a fast sqrt().
- */
-size_t hw_sqrt_len = 0;
-
-double
-sqrt(double x)
+// std::unexpected called by C++ unwinding code
+void _ZSt10unexpectedv()
 {
-	return(0.0);
-}
-double
-hw_sqrt(double x)
-{
-	return(0.0);
+	_exit(1);
 }
 
-/*
- * More stubs to avoid linking in libm.  This works as along as we don't use
- * long doubles.
- */
-long
-__fpclassifyd(double x) 
+// __cxxabiv1::__terminate(void (*)()) called to terminate process
+void _ZN10__cxxabiv111__terminateEPFvvE()
 {
-	return(0);
+	_exit(1);
 }
 
-long
-__fpclassify(long double x)
+// __cxxabiv1::__unexpected(void (*)()) called to terminate process
+void _ZN10__cxxabiv112__unexpectedEPFvvE()
 {
-	return(0);
+	_exit(1);
 }
 
+// __cxxabiv1::__terminate_handler
+void* _ZN10__cxxabiv119__terminate_handlerE  = &_ZSt9terminatev;
 
-char* __hdtoa(double d, const char *xdigs, int ndigits, int *decpt, int *sign, char **rve)
-{
-	return NULL;
-}
+// __cxxabiv1::__unexpected_handler
+void* _ZN10__cxxabiv120__unexpected_handlerE = &_ZSt10unexpectedv;
 
-char* __hldtoa(/*long*/ double e, const char *xdigs, int ndigits, int *decpt, int *sign, char **rve)
-{
-	return NULL;
-}
 
-int __fegetfltrounds(void) 
-{
-	return 1;                                       /* FE_NEAREST */
-}
 
-int fegetround(void) 
+
+// real cthread_set_errno_self() has error handling that pulls in 
+// pthread_exit() which pulls in fprintf()
+extern int* __error(void);
+void cthread_set_errno_self(int err)
 {
-	return 1;
+	int* ep = __error();
+     *ep = err;
 }
 
 /*
  * We have our own localtime() to avoid needing the notify API which is used
- * by the code in libc.a for localtime() but is in libnotify.
+ * by the code in libc.a for localtime() which is used by arc4random().
  */
 struct tm* localtime(const time_t* t)
 {
 	return (struct tm*)NULL;
 }
 
-struct tm* localtime_r(const time_t* t, struct tm *result)
-{
-	return result;
-}
 
-time_t mktime(struct tm *timeptr)
-{
-	return 0;
-}
-
-
-
-
-/*
- * On ppc64, the C++ runtime references strftime & wcsftime, but they
- * never actually get called, and they try to use all the localtime()
- * machinery, so stub them out.
- */
-
-size_t strftime(char * __restrict p1, size_t p2, const char * __restrict p3,
-				const struct tm * __restrict p4) 
-{
-	return 0;
-}
-size_t  wcsftime(wchar_t * __restrict p1, size_t p2,
-				 const wchar_t * __restrict p3,
-				 const struct tm * __restrict p4)
-{
-	return 0;
-}
-
-int __strtopdd (const char* p1, char** p2, double* p3)
-{
-	return 0;
-}
-
-char* __ldtoa(long double *ld, int mode, int ndigits, int *decpt, int *sign, char **rve)
-{
-	return "__ldtoa";
-}
-
-int __hexnan_D2A(const char **sp, void *fpi, unsigned long *x0)
-{
-	return 0;
-}

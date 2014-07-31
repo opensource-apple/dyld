@@ -29,6 +29,9 @@
 // it calls myfunc() 
 extern int foo();
 
+// add this so WEAK_DEFINES is set, so dyld searchs this image
+int __attribute__((weak)) junk = 2;
+
 int main()
 {
 	if ( foo() == 10 )

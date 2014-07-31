@@ -29,7 +29,7 @@ run: all
 all: main
 
 main: main.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+	${CC} ${CCFLAGS} -w -I${TESTROOT}/include -o main main.c
 	sudo chown root main
 	sudo chmod 4755 main
 

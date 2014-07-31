@@ -1,0 +1,4 @@
+
+# local symbols to suppress
+*PE*
+*Win*

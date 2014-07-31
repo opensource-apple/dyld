@@ -22,8 +22,11 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#define __STDC_LIMIT_MACROS
+#include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdlib.h>
 #include <mach/mach.h>
 #include <mach-o/loader.h>
 #include <mach-o/ldsyms.h>
@@ -35,6 +38,11 @@
 	#include <mach-o/x86_64/reloc.h>
 #endif
 #include "dyld.h"
+
+#ifndef MH_PIE
+	#define MH_PIE 0x200000 
+#endif
+
 
 #if __LP64__
 	#define macho_header			mach_header_64
@@ -55,6 +63,10 @@
 #else
 	#define POINTER_RELOC GENERIC_RELOC_VANILLA
 #endif
+
+// from dyld.cpp
+namespace dyld { extern bool isRosetta(); };
+
 
 //
 //  Code to bootstrap dyld into a runnable state
@@ -194,7 +206,7 @@ static void segmentProtectDyld(const struct macho_header* mh, intptr_t slide)
 					vm_size_t size = seg->vmsize;
 					const bool setCurrentPermissions = false;
 					vm_protect(mach_task_self(), addr, size, setCurrentPermissions, seg->initprot);
-					//fprintf(stderr, "dyld: segment %s, 0x%08X -> 0x%08X, set to %d\n", seg->segname, addr, addr+size-1, seg->initprot);
+					//dyld::log("dyld: segment %s, 0x%08X -> 0x%08X, set to %d\n", seg->segname, addr, addr+size-1, seg->initprot);
 				}
 				break;
 		}
@@ -203,8 +215,113 @@ static void segmentProtectDyld(const struct macho_header* mh, intptr_t slide)
 	
 }
 
+
+//
+// re-map the main executable to a new random address
+//
+static const struct mach_header* randomizeExecutableLoadAddress(const struct mach_header* orgMH, uintptr_t* appsSlide)
+{
+#if __ppc__
+	// don't slide PIE programs running under rosetta
+	if ( dyld::isRosetta() )
+		return orgMH;
+#endif
+	// count segments
+	uint32_t segCount = 0;
+	const uint32_t cmd_count = orgMH->ncmds;
+	const struct load_command* const cmds = (struct load_command*)(((char*)orgMH)+sizeof(macho_header));
+	const struct load_command* cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
+			const struct macho_segment_command* segCmd = (struct macho_segment_command*)cmd;
+			// page-zero and custom stacks don't move
+			if ( (strcmp(segCmd->segname, "__PAGEZERO") != 0) && (strcmp(segCmd->segname, "__UNIXSTACK") != 0) ) 
+				++segCount;
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+	
+	// make copy of segment info
+	macho_segment_command segs[segCount];
+	uint32_t index = 0;
+	uintptr_t highestAddressUsed = 0;
+	uintptr_t lowestAddressUsed = UINTPTR_MAX;
+	cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
+			const struct macho_segment_command* segCmd = (struct macho_segment_command*)cmd;
+			if ( (strcmp(segCmd->segname, "__PAGEZERO") != 0) && (strcmp(segCmd->segname, "__UNIXSTACK") != 0) ) {
+				segs[index++] = *segCmd;
+				if ( (segCmd->vmaddr + segCmd->vmsize) > highestAddressUsed )
+					highestAddressUsed = ((segCmd->vmaddr + segCmd->vmsize) + 4095) & -4096;
+				if ( segCmd->vmaddr < lowestAddressUsed )
+					lowestAddressUsed = segCmd->vmaddr;
+				// do nothing if kernel has already randomized load address
+				if ( (strcmp(segCmd->segname, "__TEXT") == 0) && (segCmd->vmaddr != (uintptr_t)orgMH) )
+					return orgMH;
+			}
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+	
+	// choose a random new base address
+#if __LP64__
+	uintptr_t highestAddressPossible = highestAddressUsed + 0x100000000ULL;
+#else
+	uintptr_t highestAddressPossible = 0x80000000;
+#endif
+	uintptr_t sizeNeeded = highestAddressUsed-lowestAddressUsed;
+	if ( (highestAddressPossible-sizeNeeded) < highestAddressUsed ) {
+		// new and old segments will overlap 
+		// need better algorithm for remapping
+		// punt and don't re-map
+		return orgMH;
+	}
+	uintptr_t possibleRange = (highestAddressPossible-sizeNeeded) - highestAddressUsed;
+	uintptr_t newBaseAddress = highestAddressUsed + ((arc4random() % possibleRange) & -4096);
+	
+	vm_address_t addr = newBaseAddress;
+	// reserve new address range
+	if ( vm_allocate(mach_task_self(), &addr, sizeNeeded, VM_FLAGS_FIXED) == KERN_SUCCESS ) {
+		// copy each segment to new address
+		for (uint32_t i = 0; i < segCount; ++i) {
+			uintptr_t newSegAddress = segs[i].vmaddr - lowestAddressUsed + newBaseAddress;
+			if ( (vm_copy(mach_task_self(), segs[i].vmaddr, segs[i].vmsize, newSegAddress) != KERN_SUCCESS)
+				|| (vm_protect(mach_task_self(), newSegAddress, segs[i].vmsize, true, segs[i].maxprot) != KERN_SUCCESS) 
+				|| (vm_protect(mach_task_self(), newSegAddress, segs[i].vmsize, false, segs[i].initprot) != KERN_SUCCESS) ) {
+				// can't copy so dealloc new region and run with original base address
+				vm_deallocate(mach_task_self(), newBaseAddress, sizeNeeded);
+				dyld::warn("could not relocate position independent exectable\n");
+				return orgMH;
+			}
+		}
+		// unmap original segments
+		vm_deallocate(mach_task_self(), lowestAddressUsed, highestAddressUsed-lowestAddressUsed);
+	
+		// run with newly mapped executable
+		*appsSlide = newBaseAddress - lowestAddressUsed;
+		return (const struct mach_header*)newBaseAddress;
+	}
+	
+	// can't get new range, so don't slide to random address
+	return orgMH;
+}
+
+
 extern "C" void dyld_exceptions_init(const struct macho_header*, uintptr_t slide); // in dyldExceptions.cpp
 extern "C" void mach_init();
+
+//
+// _pthread_keys is partitioned in a lower part that dyld will use; libSystem
+// will use the upper part.  We set __pthread_tsd_first to 1 as the start of
+// the lower part.  Libc will take #1 and c++ exceptions will take #2.  There
+// is one free key=3 left.
+//
+extern "C" {
+	extern int __pthread_tsd_first;
+	extern void _pthread_keys_init();
+}
+
 
 //
 //  This is code to bootstrap dyld.  This work in normally done for a program by dyld and crt.
@@ -220,6 +337,12 @@ uintptr_t start(const struct mach_header* appsMachHeader, int argc, const char* 
 	if ( slide != 0 ) {
 		rebaseDyld(dyldsMachHeader, slide);
 	}
+	
+	uintptr_t appsSlide = 0;
+	
+	// set pthread keys to dyld range
+	__pthread_tsd_first = 1;
+	_pthread_keys_init();
 	
 	// enable C++ exceptions to work inside dyld
 	dyld_exceptions_init(dyldsMachHeader, slide);
@@ -241,8 +364,12 @@ uintptr_t start(const struct mach_header* appsMachHeader, int argc, const char* 
 	// run all C++ initializers inside dyld
 	runDyldInitializers(dyldsMachHeader, slide, argc, argv, envp, apple);
 	
+	// if main executable was linked -pie, then randomize its load address
+	if ( appsMachHeader->flags & MH_PIE )
+		appsMachHeader = randomizeExecutableLoadAddress(appsMachHeader, &appsSlide);
+	
 	// now that we are done bootstrapping dyld, call dyld's main
-	return dyld::_main(appsMachHeader, argc, argv, envp, apple);
+	return dyld::_main(appsMachHeader, appsSlide, argc, argv, envp, apple);
 }
 
 

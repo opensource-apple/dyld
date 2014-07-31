@@ -1,4 +1,4 @@
-.TH DYLD 1 "January 15, 2005" "Apple Computer, Inc."
+.TH DYLD 1 "March 23, 2007" "Apple Inc."
 .SH NAME
 dyld \- the dynamic link editor
 .SH SYNOPSIS
@@ -11,6 +11,8 @@ DYLD_LIBRARY_PATH
 DYLD_FALLBACK_LIBRARY_PATH
 .br
 DYLD_ROOT_PATH
+.br
+DYLD_SHARED_REGION
 .br
 DYLD_INSERT_LIBRARIES
 .br
@@ -28,11 +30,9 @@ DYLD_PRINT_LIBRARIES_POST_LAUNCH
 .br
 DYLD_BIND_AT_LAUNCH
 .br
-DYLD_PREBIND_DEBUG
+DYLD_NO_FIX_PREBINDING
 .br
-DYLD_NEW_LOCAL_SHARED_REGIONS
-.br
-DYLD_IGNORE_PREBINDING
+DYLD_DISABLE_DOFS
 .br
 DYLD_PRINT_APIS
 .br
@@ -45,6 +45,8 @@ DYLD_PRINT_REBASINGS
 DYLD_PRINT_SEGMENTS
 .br
 DYLD_PRINT_STATISTICS
+.br
+DYLD_PRINT_DOFS
 .SH DESCRIPTION
 The dynamic linker uses the following environment variables.
 They affect any program that uses the dynamic linker.
@@ -118,6 +120,15 @@ to $(HOME)/lib:/usr/local/lib:/lib:/usr/lib.
 This is a colon separated list of directories.  The dynamic linker will prepend each of
 this directory paths to every image access until a file is found.    
 .TP
+.B DYLD_SHARED_REGION 
+This can be "use" (the default), "avoid", or "private".  Settting it to 
+"avoid" tells dyld to not use the shared cache.  All OS dylibs are loaded 
+dynamically just like every other dylib.  Setting it to "private" tells
+dyld to remove the shared region from the process address space and mmap()
+back in a private copy of the dyld shared cache in the shared region address
+range. This is only useful if the shared cache on disk has been updated 
+and is different than the shared cache in use.
+.TP
 .B DYLD_INSERT_LIBRARIES
 This is a colon separated list of dynamic libraries to load before the ones
 specified in the program.  This lets you test new modules of existing dynamic
@@ -163,74 +174,22 @@ but the printing starts after the program gets to its entry point.
 .TP
 .B DYLD_BIND_AT_LAUNCH
 When this is set, the dynamic linker binds all undefined symbols
-the program needs at launch time. This includes function symbols that can are normally lazily bound at the time of their first call.
-.TP
-.B DYLD_PREBIND_DEBUG
-When this is set, the dynamic linker prints diagnostics about 
-launching prebound programs and libraries. This lets you determine why a
-program is not being launched prebound.
-You can view the recorded library time stamps with the
-.B \-Lv
-option to
-.IR otool (1).
-.TP
-.PP
-For secure programs that are UNIX set uid or set gid, the dynamic linker will
-not use the dyld environment variables for path searching and library insertion,
-unless the program is run as the real user.  For secure programs, the dynamic
-linker clears out the value of the dyld path and insertion environment
-variables.  This is so that if a program is
-.IR exec (2)'ed
-from a secure program too will not have it's libraries searched for, as well.
-For statically linked secure programs that
-.IR exec (2) 
-other programs that might use the dynamic linker, they too should clear out the
-values of the dyld path and insertion environment variables.
-.TP
-.B DYLD_NEW_LOCAL_SHARED_REGIONS
-When set, the dynamic linker directs the system to provide a new set of shared
-regions as the repository for library load requests for dynamic libraries
-built with
-.SM MH_SPLIT_SEGS
-(split shared libraries).
-
-Split shared libraries reside in a defined contiguous region of address space
-in all dynamic linker runtime processes.  This space is backed by named regions
-or sub-maps.  These sub-maps are owned by the system and items which are to
-mapped into them must be mapped via the
-.IR load_shared_file (2)
-call.  The use of
-sub-maps promotes a high degree of system resource sharing between the
-processes which incorporate and use them.  However, some processes require
-either additional or different libraries to be loaded into the shared region.
-While there is some space available within the shared region for alternate and
-new shared libraries, it is inappropriate to use that area for temporary or
-private libraries.  Setting the
-.SM DYLD_NEW_LOCAL_SHARED_REGIONS
-flag will cause
-all children of the current process to have their own set of sub-maps.  In this
-way the libraries found in the children's submaps will not be caused to be
-present in the submaps shared by the rest of the system.
-
-.SM DYLD_NEW_LOCAL_SHARED_REGIONS
-should be set by anyone wishing to run
-non-standard or temporary split shared libraries by setting an explicit path to
-point to them.  i.e. by using the DYLD_LIBRARY_PATH environment variable
-instead of changing the root by executing a
-.IR chroot (2)
-call.
+the program needs at launch time. This includes function symbols that can are normally 
+lazily bound at the time of their first call.
 .TP
 .B DYLD_PRINT_STATISTICS
 Right before the process's main() is called, dyld prints out information about how
 dyld spent its time.  Useful for analyzing launch performance.
 .TP
-.B DYLD_IGNORE_PREBINDING { app | all }
-Valid values are "app", "all", and "" (empty).  The variable is useful for testing 
-how various mixes of prebound and unprebound libraries perform.  When set to "all", 
-all prebinding is ignored.  That is, dyld fixes up any prebound images as if the prebinding
-in it was invalid.  When set to "all", just the prebinding information in main 
-executables is ignored. When set the nothing, the prebinding in split-seg libraries 
-is used, by all other prebinding is ignored.
+.B DYLD_NO_FIX_PREBINDING
+Normally, dyld will trigger the dyld shared cache to be regenerated if it notices
+the cache is out of date while launching a process.  If this environment variable
+is set, dyld will not trigger a cache rebuild.  This is useful to set while installing
+a large set of OS dylibs, to ensure the cache is not regenerated until the install
+is complete.
+.TP
+.B DYLD_DISABLE_DOFS 
+Causes dyld not register dtrace static probes with the kernel.
 .TP
 .B DYLD_PRINT_INITIALIZERS
 Causes dyld to print out a line when running each initializers in every image.  Initializers
@@ -242,12 +201,14 @@ Causes dyld to print a line whenever a dyld API is called (e.g. NSAddImage()).
 .TP
 .B DYLD_PRINT_SEGMENTS
 Causes dyld to print out a line containing the name and address range of each mach-o segment
-that dyld maps in.
+that dyld maps.  In addition it prints information about if the image was from the dyld 
+shared cache.
 .TP
 .B DYLD_PRINT_BINDINGS 
 Causes dyld to print a line each time a symbolic name is bound.  
-
-
+.TP
+.B DYLD_PRINT_DOFS 
+Causes dyld to print out information about dtrace static probes registered with the kernel. 
 
 .SH "SEE ALSO"
 libtool(1), ld(1), otool(1)

@@ -25,10 +25,10 @@ include ${TESTROOT}/include/common.makefile
 
 DYLIB_BASES_ADDRESS = 0x10000000
 
-ifeq "-arch ppc64" "$(ARCH)"
+ifeq "ppc64" "$(ARCH)"
 	DYLIB_BASES_ADDRESS = 0x300000000
 else 
-	ifeq "-arch x86_64" "$(ARCH)"
+	ifeq "x86_64" "$(ARCH)"
 		DYLIB_BASES_ADDRESS = 0x300000000
 	endif
 endif

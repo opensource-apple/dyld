@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -24,23 +24,21 @@ TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
 run: all
-	export HOME="`pwd`/hide" && ./main user
-	export HOME="`pwd`/hide" && ./main-suid root
+	${TESTROOT}/bin/exit-non-zero-pass.pl "fallback-with-suid" "fallback-with-suid" ./main-suid
+	
+all: main-suid
 
-all: main main-suid
-
-main: main.c hide/lib/libfoo.dylib
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+main: main.c libfoo.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c libfoo.dylib
 	
 main-suid: main
 	cp main main-suid
 	sudo chown root main-suid
 	sudo chmod 4755 main-suid
 
-hide/lib/libfoo.dylib : foo.c
-	mkdir -p hide/lib
-	${CC} ${CCFLAGS} foo.c -dynamiclib -o hide/lib/libfoo.dylib
+libfoo.dylib : foo.c
+	${CC} ${CCFLAGS} foo.c -dynamiclib -o libfoo.dylib -install_name /bogus/libz.dylib
 
 clean:
-	${RM} ${RMFLAGS} *~ main main-suid hide
+	${RM} ${RMFLAGS} *~ main main-suid libfoo.dylib
 

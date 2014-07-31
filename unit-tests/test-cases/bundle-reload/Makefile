@@ -23,7 +23,7 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-ifeq "-arch ppc" "$(ARCH)"
+ifeq "ppc" "$(ARCH)"
 	CXX_VERSION = g++-3.3 
 else 
 	CXX_VERSION = ${CXX} 
@@ -35,7 +35,7 @@ run: all
 all: main test.bundle
 
 main : main.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations -I${TESTROOT}/include -o main main.c
 
 test.bundle : bundle.cxx
 	${CXX} ${CXXFLAGS} -bundle -o test.bundle bundle.cxx

@@ -21,6 +21,9 @@ sub FAIL
 my $pass_string = shift @ARGV;
 my $fail_string = shift @ARGV;
 
+
+# redirect stderr to stdout
+open(STDERR, ">/tmp/exit-non-zero.tmp") || die("$!");
 if(0 != system(@ARGV))
 {
     PASS($pass_string);
@@ -29,5 +32,12 @@ else
 {
     FAIL($fail_string);
 }
+close(STDERR) || die("$!");
+open(OUT, "</tmp/exit-non-zero.tmp") || die("$!");
+while(<OUT>)
+{
+	print $_;
+}
+close(OUT) || die("$!");
 exit 0;
 

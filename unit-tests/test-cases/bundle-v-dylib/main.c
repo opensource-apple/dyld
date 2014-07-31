@@ -24,32 +24,67 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <mach-o/dyld.h>
+#include <sys/types.h>
+#include <sys/stat.h> 
+#include <sys/mman.h> 
+#include <unistd.h>
+#include <fcntl.h>
 
 #include "test.h" // PASS(), FAIL()
 
+
+void loadAsBundleFromMemory(const char* path)
+{
+	int fd = open(path, O_RDONLY, 0);
+	if ( fd == -1 ) {
+		FAIL("bundle-v-dylib: open() failed");
+		exit(0);
+	}
+
+	struct stat stat_buf;
+	if ( fstat(fd, &stat_buf) == -1) {
+		FAIL("bundle-v-dylib: fstat() failed");
+		exit(0);
+	}
+
+	void* loadAddress = mmap(NULL, stat_buf.st_size, PROT_READ, MAP_FILE | MAP_PRIVATE, fd, 0);
+	if ( loadAddress == ((void*)(-1)) ) {
+		FAIL("bundle-v-dylib: mmap() failed");
+		exit(0);
+	}
+
+	close(fd);
+
+	NSObjectFileImage ofi;
+	if ( NSCreateObjectFileImageFromMemory(loadAddress, stat_buf.st_size, &ofi) == NSObjectFileImageSuccess ) {
+		FAIL("bundle-v-dylib: NSCreateObjectFileImageFromMemory() incorrectly allowed %s to be loaded", path);
+		exit(0);
+	}
+}
 
 void loadAsBundle(const char* path)
 {
 	NSObjectFileImage ofi;
 	if ( NSCreateObjectFileImageFromFile(path, &ofi) == NSObjectFileImageSuccess ) {
-		FAIL("NSCreateObjectFileImageFromFile() incorrectly allowed %s to be loaded", path);
-		exit(1);
+		FAIL("bundle-v-dylib: NSCreateObjectFileImageFromFile() incorrectly allowed %s to be loaded", path);
+		exit(0);
 	}
 }
 
 void loadAsDylib(const char* path)
 {
 	if ( NSAddImage(path, NSADDIMAGE_OPTION_RETURN_ON_ERROR) != NULL ) {
-		FAIL("NSAddImage() incorrectly allowed %s to be loaded", path);
-		exit(1);
+		FAIL("bundle-v-dylib: NSAddImage() incorrectly allowed %s to be loaded", path);
+		exit(0);
 	}
 }
-
 
 extern void bar();
 
 int main()
 {
+	int dummy; 
+	
 	// verify that NSAddImage fails to load MH_BUNDLE
 	loadAsDylib("foo.bundle");
 
@@ -58,9 +93,16 @@ int main()
 
 	// verify that NSCreateObjectFileImageFromFile fails to load MH_DYLIB already linked against main
 	loadAsBundle("bar.dylib");
+	
 	// verify that bar.dylib was not unloaded when above failed
 	bar();
 	
+	// try loading a dylib from memory using bundle API's
+	loadAsBundleFromMemory("foo2.dylib");
+	
+	// verify that dyld data structures are not wanked by scanning all images
+	_dyld_get_image_header_containing_address(&dummy);
+
 	PASS("bundle-v-dylib");
 	return 0;
 }

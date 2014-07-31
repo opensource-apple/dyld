@@ -22,21 +22,20 @@
  */
 #ifndef _DYLD_GDB_
 #define _DYLD_GDB_
-/*
- * This file describes the interface between gdb and dyld created for
- * MacOS X GM.  Prior to MacOS X GM gdb used the dyld_debug interfaces
- * described in <mach-o/dyld_debug.h>.
- */
 
+/*
+ * For Mac OS X 10.4 or later, use the interface in mach-o/dylib_images.h
+ */
+#include <mach-o/dyld_images.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-
-#define OLD_GDB_DYLD_INTERFACE __ppc__ || __i386__
-
-#if OLD_GDB_DYLD_INTERFACE
+/*
+ * Prior to Mac OS 10.4, this is the interface gdb used to discover the mach-o images loaded in a process
+ */
+#if __ppc__ || __i386__
 /*
  * gdb_dyld_version is the version of gdb interface that dyld is currently
  * exporting.  For the interface described in this header file gdb_dyld_version
@@ -112,51 +111,7 @@ extern unsigned int gdb_nlibrary_images;
 /* the size of each gdb_library_image structure */
 extern unsigned int gdb_library_image_size;
 
-#endif /* OLD_GDB_DYLD_INTERFACE */
-
-
-/* 
- *	Beginning in Mac OS X 10.4, there is a new mechanism for dyld to notify gdb and other about new images.
- *
- *
- */
-
-enum dyld_image_mode { dyld_image_adding=0, dyld_image_removing=1 };
-
-struct dyld_image_info {
-	const struct mach_header*	imageLoadAddress;	/* base address image is mapped into */
-	const char*					imageFilePath;		/* path dyld used to load the image */
-	uintptr_t					imageFileModDate;	/* time_t of image file */
-													/* if stat().st_mtime of imageFilePath does not match imageFileModDate, */
-													/* then file has been modified since dyld loaded it */
-};
-
-
-typedef void (*dyld_image_notifier)(enum dyld_image_mode mode, uint32_t infoCount, const struct dyld_image_info info[]);
-
-/* 
- *	gdb looks for the symbol "_dyld_all_image_infos" in dyld.  It contains the fields below.  
- *
- *	For a snap shot of what images are currently loaded, the infoArray fields contain a pointer
- *	to an array of all images. If infoArray is NULL, it means it is being modified, come back later.
- *
- *	To be notified of changes, gdb sets a break point on the notification field.  The function
- *	it points to is called by dyld with an array of information about what images have been added
- *	(dyld_image_adding) or are about to be removed (dyld_image_removing). 
- *
- * The notification is called after infoArray is updated.  This means that if gdb attaches to a process
- * and infoArray is NULL, gdb can set a break point on notification and let the proccess continue to
- * run until the break point.  Then gdb can inspect the full infoArray.
- */
- struct dyld_all_image_infos {
-	uint32_t						version;		/* == 1 in Mac OS X 10.4 */
-	uint32_t						infoArrayCount;
-	const struct dyld_image_info*	infoArray;
-	dyld_image_notifier				notification;		
-	bool							processDetachedFromSharedRegion;
-};
-extern struct dyld_all_image_infos  dyld_all_image_infos;
-
+#endif 
 
 
 

@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -30,6 +30,9 @@
 #include "mach-o/dyld_priv.h"
 
 #include "dyldLock.h"
+
+extern "C" int __cxa_atexit(void (*func)(void *), void *arg, void *dso);
+
 
 /*
  * names_match() takes an install_name from an LC_LOAD_DYLIB command and a
@@ -87,7 +90,7 @@ const char* libraryName)
 void NSInstallLinkEditErrorHandlers(
 const NSLinkEditErrorHandlers* handlers)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(
 	void     (*undefined)(const char* symbol_name),
 	NSModule (*multiple)(NSSymbol s, NSModule old, NSModule newhandler),
@@ -103,7 +106,7 @@ const char*
 NSNameOfModule(
 NSModule module)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static const char*  (*p)(NSModule module) = NULL;
 
 	if(p == NULL)
@@ -115,7 +118,7 @@ const char*
 NSLibraryNameForModule(
 NSModule module)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static const char*  (*p)(NSModule module) = NULL;
 
 	if(p == NULL)
@@ -127,7 +130,7 @@ bool
 NSIsSymbolNameDefined(
 const char* symbolName)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(const char* symbolName) = NULL;
 
 	if(p == NULL)
@@ -140,7 +143,7 @@ NSIsSymbolNameDefinedWithHint(
 const char* symbolName,
 const char* libraryNameHint)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(const char* symbolName,
 			  const char* libraryNameHint) = NULL;
 
@@ -154,7 +157,7 @@ NSIsSymbolNameDefinedInImage(
 const struct mach_header *image,
 const char* symbolName)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(const struct mach_header *image,
 			  const char* symbolName) = NULL;
 
@@ -167,7 +170,7 @@ NSSymbol
 NSLookupAndBindSymbol(
 const char* symbolName)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static NSSymbol (*p)(const char* symbolName) = NULL;
 
 	if(p == NULL)
@@ -180,7 +183,7 @@ NSLookupAndBindSymbolWithHint(
 const char* symbolName,
 const char* libraryNameHint)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static NSSymbol (*p)(const char* symbolName,
 			 const char* libraryNameHint) = NULL;
 
@@ -194,7 +197,7 @@ NSLookupSymbolInModule(
 NSModule module,
 const char* symbolName)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static NSSymbol (*p)(NSModule module, const char* symbolName) = NULL;
 
 	if(p == NULL)
@@ -208,7 +211,7 @@ const struct mach_header *image,
 const char* symbolName,
 uint32_t options)
 {
- 	DYLD_READER_LOCK_THIS_BLOCK;
+ 	DYLD_LOCK_THIS_BLOCK;
    static NSSymbol (*p)(const struct mach_header *image,
 			 const char* symbolName,
 			 uint32_t options) = NULL;
@@ -222,7 +225,7 @@ const char*
 NSNameOfSymbol(
 NSSymbol symbol)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static char * (*p)(NSSymbol symbol) = NULL;
 
 	if(p == NULL)
@@ -234,7 +237,7 @@ void *
 NSAddressOfSymbol(
 NSSymbol symbol)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void * (*p)(NSSymbol symbol) = NULL;
 
 	if(p == NULL)
@@ -246,7 +249,7 @@ NSModule
 NSModuleForSymbol(
 NSSymbol symbol)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static NSModule (*p)(NSSymbol symbol) = NULL;
 
 	if(p == NULL)
@@ -258,7 +261,7 @@ bool
 NSAddLibrary(
 const char* pathName)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(const char* pathName) = NULL;
 
 	if(p == NULL)
@@ -270,7 +273,7 @@ bool
 NSAddLibraryWithSearching(
 const char* pathName)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(const char* pathName) = NULL;
 
 	if(p == NULL)
@@ -283,7 +286,7 @@ NSAddImage(
 const char* image_name,
 uint32_t options)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static const struct mach_header * (*p)(const char* image_name,
 					   uint32_t options) = NULL;
 
@@ -311,30 +314,30 @@ const char* libraryName)
     struct load_command *load_commands, *lc;
     struct dylib_command *dl;
     char *install_name;
-#ifndef __OPENSTEP__
+#if __LP64__
+    static struct mach_header_64 *mh = NULL;
+#else
     static struct mach_header *mh = NULL;
+#endif
 	if(mh == NULL)
 	    mh = _NSGetMachExecuteHeader();
-#else /* defined(__OPENSTEP__) */
-#ifdef __DYNAMIC__
-    static struct mach_header *mh = NULL;
-	if(mh == NULL)
-	    _dyld_lookup_and_bind("__mh_execute_header", &mh, NULL);
-#else
-    struct mach_header *mh;
-	mh = (struct mach_header *)&_mh_execute_header;
-#endif
-#endif /* __OPENSTEP__ */
 	load_commands = (struct load_command *)
-			((char *)mh + sizeof(struct mach_header));
+#if __LP64__
+			    ((char *)mh + sizeof(struct mach_header_64));
+#else
+			    ((char *)mh + sizeof(struct mach_header));
+#endif
 	lc = load_commands;
 	for(i = 0; i < mh->ncmds; i++){
-	    if(lc->cmd == LC_LOAD_DYLIB){
-		dl = (struct dylib_command *)lc;
-		install_name = (char *)dl + dl->dylib.name.offset;
-		if(names_match(install_name, libraryName) == TRUE)
-		    return(dl->dylib.current_version);
-	    }
+		switch ( lc->cmd ) { 
+			case LC_LOAD_DYLIB:
+			case LC_LOAD_WEAK_DYLIB:
+				dl = (struct dylib_command *)lc;
+				install_name = (char *)dl + dl->dylib.name.offset;
+				if(names_match(install_name, libraryName) == TRUE)
+					return(dl->dylib.current_version);
+				break;
+		}
 	    lc = (struct load_command *)((char *)lc + lc->cmdsize);
 	}
 	return(-1);
@@ -363,7 +366,11 @@ const char* libraryName)
 	    if(mh->filetype != MH_DYLIB)
 		continue;
 	    load_commands = (struct load_command *)
+#if __LP64__
+			    ((char *)mh + sizeof(struct mach_header_64));
+#else
 			    ((char *)mh + sizeof(struct mach_header));
+#endif
 	    lc = load_commands;
 	    for(j = 0; j < mh->ncmds; j++){
 		if(lc->cmd == LC_ID_DYLIB){
@@ -390,7 +397,7 @@ NSCreateObjectFileImageFromFile(
 const char* pathName,
 NSObjectFileImage *objectFileImage)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static NSObjectFileImageReturnCode (*p)(const char*, NSObjectFileImage*) = NULL;
 
 	if(p == NULL)
@@ -412,7 +419,7 @@ const void* address,
 size_t size, 
 NSObjectFileImage *objectFileImage)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static NSObjectFileImageReturnCode (*p)(const void*, size_t, NSObjectFileImage*) = NULL;
 
 	if(p == NULL)
@@ -420,6 +427,7 @@ NSObjectFileImage *objectFileImage)
 	return p(address, size, objectFileImage);
 }
 
+#if OBSOLETE_DYLD_API
 /*
  * NSCreateCoreFileImageFromFile() creates an NSObjectFileImage for the 
  * specified core file name if the file is a correct Mach-O core file.
@@ -431,19 +439,20 @@ NSCreateCoreFileImageFromFile(
 const char* pathName,
 NSObjectFileImage *objectFileImage)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static NSObjectFileImageReturnCode (*p)(const char*, NSObjectFileImage*) = NULL;
 
 	if(p == NULL)
 	    _dyld_func_lookup("__dyld_NSCreateCoreFileImageFromFile", (void**)&p);
 	return p(pathName, objectFileImage);
 }
+#endif
 
 bool
 NSDestroyObjectFileImage(
 NSObjectFileImage objectFileImage)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(NSObjectFileImage) = NULL;
 
 	if(p == NULL)
@@ -458,7 +467,7 @@ NSObjectFileImage objectFileImage,
 const char* moduleName,
 uint32_t options)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static NSModule (*p)(NSObjectFileImage, const char*, unsigned long) = NULL;
 
 	if(p == NULL)
@@ -485,7 +494,7 @@ const char** segmentName, 	/* can be NULL */
 const char** sectionName, 	/* can be NULL */
 unsigned long* sectionOffset)	/* can be NULL */
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(NSObjectFileImage, unsigned long, const char**, const char**, unsigned long*) = NULL;
 
 	if(p == NULL)
@@ -503,7 +512,7 @@ uint32_t
 NSSymbolDefinitionCountInObjectFileImage(
 NSObjectFileImage objectFileImage)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static unsigned long (*p)(NSObjectFileImage) = NULL;
 
 	if(p == NULL)
@@ -523,7 +532,7 @@ NSSymbolDefinitionNameInObjectFileImage(
 NSObjectFileImage objectFileImage,
 uint32_t ordinal)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static const char*  (*p)(NSObjectFileImage, uint32_t) = NULL;
 
 	if(p == NULL)
@@ -540,7 +549,7 @@ uint32_t
 NSSymbolReferenceCountInObjectFileImage(
 NSObjectFileImage objectFileImage)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static unsigned long (*p)(NSObjectFileImage) = NULL;
 
 	if(p == NULL)
@@ -561,7 +570,7 @@ NSObjectFileImage objectFileImage,
 uint32_t ordinal,
 bool *tentative_definition) /* can be NULL */
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static const char*  (*p)(NSObjectFileImage, uint32_t, bool*) = NULL;
 
 	if(p == NULL)
@@ -579,7 +588,7 @@ NSIsSymbolDefinedInObjectFileImage(
 NSObjectFileImage objectFileImage,
 const char* symbolName)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(NSObjectFileImage, const char*) = NULL;
 
 	if(p == NULL)
@@ -602,7 +611,7 @@ const char* segmentName,
 const char* sectionName,
 unsigned long *size) /* can be NULL */
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void* (*p)(NSObjectFileImage, const char*, const char*, unsigned long*) = NULL;
 
 	if(p == NULL)
@@ -621,7 +630,7 @@ bool
 NSHasModInitObjectFileImage(
 NSObjectFileImage objectFileImage)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(NSObjectFileImage) = NULL;
 
 	if(p == NULL)
@@ -637,7 +646,7 @@ int *errorNumber,
 const char* *fileName,
 const char* *errorString)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(NSLinkEditErrors *c,
 		     int *errorNumber, 
 		     const char* *fileName,
@@ -654,7 +663,7 @@ NSUnLinkModule(
 NSModule module, 
 uint32_t options)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(NSModule module, uint32_t options) = NULL;
 
 	if(p == NULL)
@@ -663,6 +672,7 @@ uint32_t options)
 	return p(module, options);
 }
 
+#if OBSOLETE_DYLD_API
 NSModule
 NSReplaceModule(
 NSModule moduleToReplace,
@@ -671,6 +681,7 @@ uint32_t options)
 {
 	return(NULL);
 }
+#endif
 
 /*
  *_NSGetExecutablePath copies the path of the executable into the buffer and
@@ -686,7 +697,7 @@ _NSGetExecutablePath(
 char *buf,
 uint32_t *bufsize)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static int (*p)(char *buf, uint32_t *bufsize) = NULL;
 
 	if(p == NULL)
@@ -700,7 +711,7 @@ const char* symbol_name,
 void** address,
 NSModule* module)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(const char*, void** , NSModule*) = NULL;
 
 	if(p == NULL)
@@ -715,7 +726,7 @@ const char* library_name_hint,
 void** address,
 NSModule* module)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(const char*, const char*, void**, NSModule*) = NULL;
 
 	if(p == NULL)
@@ -723,19 +734,21 @@ NSModule* module)
 	p(symbol_name, library_name_hint, address, module);
 }
 
+#if OBSOLETE_DYLD_API
 void
 _dyld_lookup_and_bind_objc(
 const char* symbol_name,
 void** address,
 NSModule* module)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(const char* , void**, NSModule*) = NULL;
 
 	if(p == NULL)
 	    _dyld_func_lookup("__dyld_lookup_and_bind_objc", (void**)&p);
 	p(symbol_name, address, module);
 }
+#endif
 
 void
 _dyld_lookup_and_bind_fully(
@@ -743,7 +756,7 @@ const char* symbol_name,
 void** address,
 NSModule* module)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(const char*, void**, NSModule*) = NULL;
 
 	if(p == NULL)
@@ -755,7 +768,7 @@ bool
 _dyld_bind_fully_image_containing_address(
 const void* address)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(const void*) = NULL;
 
 	if(p == NULL)
@@ -774,7 +787,7 @@ void
 _dyld_register_func_for_add_image(
 void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide))
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide)) = NULL;
 
 	if(p == NULL)
@@ -791,7 +804,7 @@ void
 _dyld_register_func_for_remove_image(
 void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide))
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide)) = NULL;
 
 	if(p == NULL)
@@ -799,6 +812,7 @@ void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide))
 	p(func);
 }
 
+#if OBSOLETE_DYLD_API
 /*
  * _dyld_register_func_for_link_module registers the specified function to be
  * called when a module is bound into the program.  When this function is first
@@ -809,7 +823,7 @@ void
 _dyld_register_func_for_link_module(
 void (*func)(NSModule module))
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(void (*func)(NSModule module)) = NULL;
 
 	if(p == NULL)
@@ -825,7 +839,7 @@ void
 _dyld_register_func_for_unlink_module(
 void (*func)(NSModule module))
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(void (*func)(NSModule module)) = NULL;
 
 	if(p == NULL)
@@ -841,7 +855,7 @@ void
 _dyld_register_func_for_replace_module(
 void (*func)(NSModule oldmodule, NSModule newmodule))
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(void (*func)(NSModule oldmodule,
 				  NSModule newmodule)) = NULL;
 
@@ -862,7 +876,7 @@ NSModule module,
 void **objc_module,
 unsigned long *size)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(NSModule module,
 		     void **objc_module,
 		     unsigned long *size) = NULL;
@@ -878,45 +892,37 @@ unsigned long *size)
  * to be bound.
  */
 void
-_dyld_bind_objc_module(
-const void* objc_module)
+_dyld_bind_objc_module(const void* objc_module)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(const void *objc_module) = NULL;
 
 	if(p == NULL)
 	    _dyld_func_lookup("__dyld_bind_objc_module", (void**)&p);
 	p(objc_module);
 }
-
-
-#if __DYNAMIC__
-bool
-_dyld_present(
-void)
-{
-	// hmmm, this code is in libSystem.dylib, which is loaded by dyld...
-	return true;
-}
 #endif
 
+bool
+_dyld_present(void)
+{
+	// this function exists for compatiblity only
+	return true;
+}
+
 uint32_t
-_dyld_image_count(
-void)
+_dyld_image_count(void)
 {
 	DYLD_NO_LOCK_THIS_BLOCK;
     static unsigned long (*p)(void) = NULL;
 
-	if(_dyld_present() == 0)
-	    return(0);
 	if(p == NULL)
 	    _dyld_func_lookup("__dyld_image_count", (void**)&p);
 	return(p());
 }
 
 const struct mach_header *
-_dyld_get_image_header(
-uint32_t image_index)
+_dyld_get_image_header(uint32_t image_index)
 {
 	DYLD_NO_LOCK_THIS_BLOCK;
     static struct mach_header * (*p)(uint32_t image_index) = NULL;
@@ -927,8 +933,7 @@ uint32_t image_index)
 }
 
 intptr_t
-_dyld_get_image_vmaddr_slide(
-uint32_t image_index)
+_dyld_get_image_vmaddr_slide(uint32_t image_index)
 {
 	DYLD_NO_LOCK_THIS_BLOCK;
     static unsigned long (*p)(uint32_t image_index) = NULL;
@@ -939,8 +944,7 @@ uint32_t image_index)
 }
 
 const char* 
-_dyld_get_image_name(
-uint32_t image_index)
+_dyld_get_image_name(uint32_t image_index)
 {
 	DYLD_NO_LOCK_THIS_BLOCK;
     static const char*  (*p)(uint32_t image_index) = NULL;
@@ -951,10 +955,9 @@ uint32_t image_index)
 }
 
 bool
-_dyld_image_containing_address(
-const void* address)
+_dyld_image_containing_address(const void* address)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(const void*) = NULL;
 
 	if(p == NULL)
@@ -966,7 +969,7 @@ const struct mach_header *
 _dyld_get_image_header_containing_address(
 const void* address)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static const struct mach_header * (*p)(const void*) = NULL;
 
 	if(p == NULL)
@@ -977,7 +980,7 @@ const void* address)
 void _dyld_moninit(
 void (*monaddition)(char *lowpc, char *highpc))
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void (*p)(void (*monaddition)(char *lowpc, char *highpc)) = NULL;
 
 	if(p == NULL)
@@ -985,10 +988,9 @@ void (*monaddition)(char *lowpc, char *highpc))
 	p(monaddition);
 }
 
-bool _dyld_launched_prebound(
-void)
+bool _dyld_launched_prebound(void)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(void) = NULL;
 
 	if(p == NULL)
@@ -996,10 +998,9 @@ void)
 	return(p());
 }
 
-bool _dyld_all_twolevel_modules_prebound(
-void)
+bool _dyld_all_twolevel_modules_prebound(void)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static bool (*p)(void) = NULL;
 
 	if(p == NULL)
@@ -1013,11 +1014,14 @@ void)
 #include <pthread.h>
 #include <stdlib.h>
 #include <mach-o/dyld.h>
-#include "dyldLock.h"
-#include "dyldLibSystemThreadHelpers.h"
+#include <servers/bootstrap.h>
+#include "dyldLibSystemInterface.h"
+#include "dyld_shared_cache_user.h"
+
 
 // pthread key used to access per-thread dlerror message
 static pthread_key_t dlerrorPerThreadKey;
+static bool dlerrorPerThreadKeyInitialized = false;
 
 // data kept per-thread
 struct dlerrorPerThreadData
@@ -1029,6 +1033,13 @@ struct dlerrorPerThreadData
 // function called by dyld to get buffer to store dlerror message
 static char* getPerThreadBufferFor_dlerror(uint32_t sizeRequired)
 {
+	// ok to create key lazily because this function is called within dyld lock, so there is no race condition
+	if (!dlerrorPerThreadKeyInitialized ) {
+		// create key and tell pthread package to call free() on any data associated with key if thread dies
+		pthread_key_create(&dlerrorPerThreadKey, &free);
+		dlerrorPerThreadKeyInitialized = true;
+	}
+
 	const int size = (sizeRequired < 256) ? 256 : sizeRequired;
 	dlerrorPerThreadData* data = (dlerrorPerThreadData*)pthread_getspecific(dlerrorPerThreadKey);
 	if ( data == NULL ) {
@@ -1049,37 +1060,77 @@ static char* getPerThreadBufferFor_dlerror(uint32_t sizeRequired)
 	return data->message;
 }
 
+
+
+static bool get_update_dyld_shared_cache_bootstrap_port(mach_port_t& mp)
+{
+	static bool found = false;
+	static mach_port_t port;
+	if ( found ) {
+		mp = port;
+		return true;
+	}
+	if ( bootstrap_look_up(bootstrap_port, "com.apple.dyld", &port) == KERN_SUCCESS ) {
+		found = true;
+		mp = port;
+		return true;
+	}
+	return false;
+}
+
+#if __ppc__
+	#define CUR_ARCH	CPU_TYPE_POWERPC
+#elif __ppc64__
+	#define CUR_ARCH	CPU_TYPE_POWERPC64
+#elif __i386__
+	#define CUR_ARCH	CPU_TYPE_I386
+#elif __x86_64__
+	#define CUR_ARCH	CPU_TYPE_X86_64
+#endif
+
+static void shared_cache_missing()
+{
+	mach_port_t mp;
+	if ( get_update_dyld_shared_cache_bootstrap_port(mp) )
+		dyld_shared_cache_missing(mp, CUR_ARCH, 0);
+}
+
+static void shared_cache_out_of_date()
+{
+	mach_port_t mp;
+	if ( get_update_dyld_shared_cache_bootstrap_port(mp) )
+		dyld_shared_cache_out_of_date(mp, CUR_ARCH, 0);
+}
+
+
+
 // that table passed to dyld containing thread helpers
-static dyld::ThreadingHelpers sThreadHelpers = { 1, &lockForLazyBinding, &unlockForLazyBinding, &getPerThreadBufferFor_dlerror };
+static dyld::LibSystemHelpers sHelpers = { 4, &dyldGlobalLockAcquire, &dyldGlobalLockRelease,  
+									&getPerThreadBufferFor_dlerror, &malloc, &free, &__cxa_atexit,
+									&shared_cache_missing, &shared_cache_out_of_date,
+									NULL, NULL };
+
 
 //
 // during initialization of libSystem this routine will run
-// and call dyld, registering the threading helpers.
+// and call dyld, registering the helper functions.
 //
-//
-static int registerWithDyld()
+extern "C" void _dyld_initializer() __attribute__((visibility("hidden")));
+void _dyld_initializer()
 {
-    static void (*p)(dyld::ThreadingHelpers*) = NULL;
-
-	// create key and tell pthread package to call free() on any data associated with key if thread dies
-	pthread_key_create(&dlerrorPerThreadKey, &free);
+	DYLD_LOCK_INITIALIZER;
 	
-	if(p == NULL) 
-	    _dyld_func_lookup("__dyld_register_thread_helpers", (void**)&p);
+   void (*p)(dyld::LibSystemHelpers*);
+
+	_dyld_func_lookup("__dyld_register_thread_helpers", (void**)&p);
 	if(p != NULL)
-		p(&sThreadHelpers);
-	
-	return 0;
+		p(&sHelpers);
 }
-
-// should be able to use __attribute__((constructor)) on registerWithDyld, but compiler has bug (3679135)
-// instead use initialization of global to force it to run.
-static int hack = registerWithDyld();
 
 
 char* dlerror()
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static char* (*p)() = NULL;
 
 	if(p == NULL)
@@ -1089,7 +1140,7 @@ char* dlerror()
 
 int dladdr(const void* addr, Dl_info* info)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static int (*p)(const void* , Dl_info*) = NULL;
 
 	if(p == NULL)
@@ -1099,7 +1150,7 @@ int dladdr(const void* addr, Dl_info* info)
 
 int dlclose(void* handle)
 {
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static int (*p)(void* handle) = NULL;
 
 	if(p == NULL)
@@ -1108,23 +1159,52 @@ int dlclose(void* handle)
 }
 
 void* dlopen(const char* path, int mode)
-{
-	DYLD_WRITER_LOCK_THIS_BLOCK;
+{	
+	// dlopen is special. locking is done inside dyld to allow initializer to run without lock
+	DYLD_NO_LOCK_THIS_BLOCK;
+	
     static void* (*p)(const char* path, int) = NULL;
 
 	if(p == NULL)
 	    _dyld_func_lookup("__dyld_dlopen", (void**)&p);
-	return(p(path, mode));
+	void* result = p(path, mode);
+	// use asm block to prevent tail call optimization
+	// this is needed because dlopen uses __builtin_return_address() and depends on this glue being in the frame chain
+	// <rdar://problem/5313172 dlopen() looks too far up stack, can cause crash>
+	__asm__ volatile(""); 
+	
+	return result;
+}
+
+bool dlopen_preflight(const char* path)
+{
+	DYLD_LOCK_THIS_BLOCK;
+    static bool (*p)(const char* path) = NULL;
+
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_dlopen_preflight", (void**)&p);
+	return(p(path));
 }
 
 void* dlsym(void* handle, const char* symbol)
 {
-	DYLD_READER_LOCK_THIS_BLOCK;
+	DYLD_LOCK_THIS_BLOCK;
     static void* (*p)(void* handle, const char* symbol) = NULL;
 
 	if(p == NULL)
 	    _dyld_func_lookup("__dyld_dlsym", (void**)&p);
 	return(p(handle, symbol));
+}
+
+void dyld_register_image_state_change_handler(dyld_image_states state, 
+											bool batch, dyld_image_state_change_handler handler)
+{
+	DYLD_LOCK_THIS_BLOCK;
+    static void* (*p)(dyld_image_states, bool, dyld_image_state_change_handler) = NULL;
+
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_dyld_register_image_state_change_handler", (void**)&p);
+	p(state, batch, handler);
 }
 
 

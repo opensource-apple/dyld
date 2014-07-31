@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -25,9 +25,19 @@
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
-int
-main(int argc, char **argv, char **envp, char**appl)
+
+#include "base.h"
+
+int main()
 {
-  FAIL("initializer/constructor was not called");
-  return EXIT_SUCCESS;
+	baseCheck();
+	return EXIT_SUCCESS;
 }
+
+
+static __attribute__((constructor)) void main_init() 
+{
+	//fprintf(stderr, "main_init()\n");
+	setState(5);
+}
+

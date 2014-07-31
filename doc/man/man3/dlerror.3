@@ -1,4 +1,4 @@
-.Dd Sept 25, 2004
+.Dd April 17, 2006
 .Dt DLERROR 3
 .Sh NAME
 .Nm dlerror
@@ -12,6 +12,7 @@
 returns a null-terminated character string describing the last error that
 occurred on this thread during a call to
 .Fn dlopen ,
+.Fn dlopen_preflight ,
 .Fn dlsym ,
 or
 .Fn dlclose .
@@ -27,6 +28,7 @@ where the second call follows the first immediately, the second call
 will always return a null pointer.
 .Sh SEE ALSO
 .Xr dlopen 3
+.Xr dlopen_preflight 3
 .Xr dlclose 3
 .Xr dlsym 3
 .Xr dyld 3

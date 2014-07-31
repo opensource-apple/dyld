@@ -27,7 +27,7 @@ run: all
 	./main
 
 all:
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations  -I${TESTROOT}/include -o main main.c
 
 clean:
 	${RM} ${RMFLAGS} *~ main

@@ -26,9 +26,8 @@
 #ifdef __i386__
 /*
  * This is the interface for the stub_binding_helper for i386:
- * The caller has pushed the address of the a lazy pointer to be filled in with
- * the value for the defined symbol and pushed the address of the the mach
- * header this pointer comes from.
+ * The caller has pushed the address of the a lazy pointer to be filled in 
+ * and pushed the address of the the mach header this pointer comes from.
  *
  * sp+4	address of lazy pointer
  * sp+0	address of mach header
@@ -36,24 +35,22 @@
  * Some inter-image function calls pass parameters in registers EAX, ECX, EDX, or XXM0-3,
  * Therefore those registers need to be preserved during the lazy binding.
  * 
- * After the symbol has been resolved and the pointer filled in this is to pop
- * these arguments off the stack and jump to the address of the defined symbol.
+ * After the symbol has been resolved and the lazy pointer filled in, this jumps
+ * to the target address.
  */
-#define MH_PARAM_BP			4
-#define LP_PARAM_BP			8
-#define RESULT_BP			8    /* in order to trash no registers, the target is stored back on the stack then ret it done to it */
-
-#define MH_PARAM_OUT        0
-#define LP_PARAM_OUT        4
-#define EAX_SAVE			8
-#define ECX_SAVE			12
-#define EDX_SAVE			16
-#define XMMM0_SAVE			32    /* 16-byte align */
-#define XMMM1_SAVE			48
-#define XMMM2_SAVE			64
-#define XMMM3_SAVE			80
-#define STACK_SIZE			96 /*  (XMMM3_SAVE+16) must be 16 byte aligned too */
-
+#define MH_PARAM_OUT			0
+#define LP_PARAM_OUT			4
+#define XMMM0_SAVE			16	/* 16-byte align */
+#define XMMM1_SAVE			32
+#define XMMM2_SAVE			48
+#define XMMM3_SAVE			64
+#define EAX_SAVE			84
+#define ECX_SAVE			88
+#define EDX_SAVE			92
+#define LP_LOCAL			96
+#define MH_LOCAL			100
+#define STACK_SIZE			100	/* must be 4 mod 16 so that stack winds up 16-byte aliged  */
+#define LP_OLD_BP_SAVE			104
 
     .text
     .align 4,0x90
@@ -61,36 +58,42 @@
 _fast_stub_binding_helper_interface:
 	pushl		$0
     .globl _stub_binding_helper_interface
+    .globl _misaligned_stack_error
 _stub_binding_helper_interface:
-	pushl		%ebp
-	movl		%esp,%ebp
-	subl		$STACK_SIZE,%esp		# at this point stack is 16-byte aligned because two meta-parameters where pushed
-	movl		%eax,EAX_SAVE(%esp)		# save registers that might be used as parameters
+	subl		$STACK_SIZE,%esp	    # makes stack 16-byte aligned
+	movl		%eax,EAX_SAVE(%esp)	
+	movl		LP_OLD_BP_SAVE(%esp),%eax   # get lazy-pointer meta-parameter
+	movl		%eax,LP_LOCAL(%esp)	
+	movl		%ebp,LP_OLD_BP_SAVE(%esp)   # store epb back chain
+	movl		%esp,%ebp		    # set epb to be this frame
+	add		$LP_OLD_BP_SAVE,%ebp
 	movl		%ecx,ECX_SAVE(%esp)
 	movl		%edx,EDX_SAVE(%esp)
+	.align 0,0x90
+_misaligned_stack_error:
 	movdqa		%xmm0,XMMM0_SAVE(%esp)
 	movdqa		%xmm1,XMMM1_SAVE(%esp)
 	movdqa		%xmm2,XMMM2_SAVE(%esp)
 	movdqa		%xmm3,XMMM3_SAVE(%esp)
-	movl		MH_PARAM_BP(%ebp),%eax	# call dyld::bindLazySymbol(mh, lazy_ptr)
+_stub_binding_helper_interface2:
+	movl		MH_LOCAL(%esp),%eax	# call dyld::bindLazySymbol(mh, lazy_ptr)
 	movl		%eax,MH_PARAM_OUT(%esp)
-	movl		LP_PARAM_BP(%ebp),%eax
+	movl		LP_LOCAL(%esp),%eax
 	movl		%eax,LP_PARAM_OUT(%esp)
 	call		__ZN4dyld14bindLazySymbolEPK11mach_headerPm
-	movl		%eax,RESULT_BP(%ebp)	# store target for ret
 	movdqa		XMMM0_SAVE(%esp),%xmm0	# restore registers
 	movdqa		XMMM1_SAVE(%esp),%xmm1
 	movdqa		XMMM2_SAVE(%esp),%xmm2
 	movdqa		XMMM3_SAVE(%esp),%xmm3
-	movl		EAX_SAVE(%esp),%eax
 	movl		ECX_SAVE(%esp),%ecx
 	movl		EDX_SAVE(%esp),%edx
-	addl		$STACK_SIZE,%esp
-	popl		%ebp
-	addl		$4,%esp					# remove meta-parameter, other meta-parmaeter now holds target for ret
-	ret
+	movl		%eax,%ebp		# move target address to epb
+	movl		EAX_SAVE(%esp),%eax	# restore eaz
+	addl		$STACK_SIZE+4,%esp	# cut back stack
+	xchg		%ebp, (%esp)		# restore ebp and set target to top of stack
+	ret					# jump to target
+    
 #endif /* __i386__ */
-
 
 
 #if __x86_64__
@@ -100,7 +103,7 @@ _stub_binding_helper_interface:
  * the value for the defined symbol and pushed the address of the the mach
  * header this pointer comes from.
  *
- * sp+4	address of lazy pointer
+ * sp+8	address of lazy pointer
  * sp+0	address of mach header
  *
  * All parameters registers must be preserved.
@@ -175,6 +178,7 @@ _stub_binding_helper_interface:
 	jmp		*%r11			# jmp to target
 
 #endif
+
 
 #if __ppc__ || __ppc64__
 #include <architecture/ppc/mode_independent_asm.h>

@@ -51,7 +51,7 @@ int main()
 	}
 
 	void* func = NSAddressOfSymbol(sym);
-	fprintf(stderr, "1st address of foo() = %p in module %p in OFI %p\n", func, mod, ofi);
+	//fprintf(stderr, "1st address of foo() = %p in module %p in OFI %p\n", func, mod, ofi);
 
 
 	NSObjectFileImage ofi2;
@@ -77,7 +77,7 @@ int main()
 	}
 
 	void* func2 = NSAddressOfSymbol(sym2);
-	fprintf(stderr, "2nd address of foo() = %p in module %p in OFI %p\n", func2, mod2, ofi2);
+	//fprintf(stderr, "2nd address of foo() = %p in module %p in OFI %p\n", func2, mod2, ofi2);
 	if ( func == func2 ) {
 		FAIL("2nd NSAddressOfSymbol return same function address as 1st\n");
 		return 0;
@@ -109,7 +109,7 @@ int main()
 		return 0;
 	}
 	void* func3 = NSAddressOfSymbol(sym3);
-	fprintf(stderr, "3rd address of foo() = %p in module %p in OFI %p\n", func3, mod3, ofi3);
+	//fprintf(stderr, "3rd address of foo() = %p in module %p in OFI %p\n", func3, mod3, ofi3);
 	if ( func3 == func ) {
 		FAIL("3rd NSAddressOfSymbol return same function address as 1st\n");
 		return 0;

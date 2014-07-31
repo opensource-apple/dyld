@@ -28,8 +28,8 @@ run: all
 
 all: main 
 
-main : main.c bar.dylib foo.bundle foo.dylib
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c bar.dylib
+main : main.c bar.dylib foo.bundle foo.dylib foo2.dylib
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations  -I${TESTROOT}/include -o main main.c bar.dylib
 
 foo.bundle : foo.c
 	${CC} ${CCFLAGS} -bundle -o foo.bundle foo.c
@@ -37,9 +37,12 @@ foo.bundle : foo.c
 foo.dylib : foo.c
 	${CC} ${CCFLAGS} -dynamiclib -o foo.dylib foo.c
 
+foo2.dylib : foo.c
+	${CC} ${CCFLAGS} -dynamiclib -o foo2.dylib foo.c
+
 bar.dylib : bar.c
 	${CC} ${CCFLAGS} -dynamiclib -o bar.dylib bar.c
 
 clean:
-	${RM} ${RMFLAGS} *~ main foo.bundle foo.dylib bar.dylib
+	${RM} ${RMFLAGS} *~ main foo.bundle foo.dylib foo2.dylib bar.dylib
 

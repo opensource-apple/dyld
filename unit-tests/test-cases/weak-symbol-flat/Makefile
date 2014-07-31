@@ -36,7 +36,7 @@ libfoo_missing.dylib : foo.c
 	${CC} -dynamiclib -o libfoo_missing.dylib foo.c -install_name libfoo.dylib
 
 main: main.c libfoo.dylib
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} -I${TESTROOT}/include -L. -lfoo -o main  main.c -flat_namespace
+	${CC} -I${TESTROOT}/include -mmacosx-version-min=10.2 -L. -lfoo -o main  main.c -flat_namespace
 
 clean:
 	${RM} ${RMFLAGS} *~ libfoo.dylib libfoo_missing.dylib main
