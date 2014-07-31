@@ -71,7 +71,10 @@ static void* getStubAddr()
 #elif __x86_64__
 	return getsectdata("__TEXT", "__symbol_stub1", &size);
 #elif __arm__
-	return getsectdata("__TEXT", "__symbol_stub4", &size);
+	void* p = getsectdata("__TEXT", "__symbol_stub4", &size);
+	if ( p != NULL ) 
+		return p;
+	return getsectdata("__TEXT", "__symbolstub1", &size);
 #else
 	#error unknown arch
 #endif

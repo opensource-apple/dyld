@@ -37,14 +37,16 @@
 int
 main(int argc, const char* argv[])
 {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	const struct mach_header *image;
 
 	image = NSAddImage("AppKit.framework/AppKit",
 			NSADDIMAGE_OPTION_RETURN_ON_ERROR | NSADDIMAGE_OPTION_WITH_SEARCHING);
-	if ( image != NULL )
-		PASS("AppKit loaded");
-	else
+	if ( image == NULL )
 		FAIL("Could not load AppKit");
+	else
+#endif
+		PASS("AppKit loaded");
 
 	return 0;
 }

@@ -20,11 +20,17 @@
 # 
 # @APPLE_LICENSE_HEADER_END@
 ##
-TESTROOT = ../..
+PWD = $(shell pwd)
+TESTROOT = $(PWD)/../..
 include ${TESTROOT}/include/common.makefile
 
 SHELL = bash # use bash shell so we can redirect just stderr
 
+ifeq "$(OS_NAME)" "iPhoneOS"
+	RUN_AS_USER = login -f -l mobile
+else
+	RUN_AS_USER = 
+endif
 
 #
 # Use of @exectuable_path in setuid binaries is not allowed
@@ -36,11 +42,11 @@ all-check: all check
 
 check:
 	./main_exe "setuid-executable_path" || echo "FAIL setuid-executable_path @executable_path not setuid"
-	${TESTROOT}/bin/exit-non-zero-pass.pl "setuid-executable_path @executable_path" "setuid-executable_path @executable_path" ./main_exe-suid "setuid-executable_path"
 	./main_loader "setuid-executable_path" || echo "FAIL setuid-executable_path @loader_path not setuid" 
-	${TESTROOT}/bin/exit-non-zero-pass.pl "setuid-executable_path @loader_path" "setuid-executable_path @loader_path" ./main_loader-suid "setuid-executable_path"
 	./main_rel "setuid-executable_path" || echo "FAIL setuid-executable_path relative path not setuid" 
-	${TESTROOT}/bin/exit-non-zero-pass.pl "setuid-executable_path relative path" "setuid-executable_path relative path" ./main_rel-suid "setuid-executable_path"
+	${RUN_AS_USER} ${PASS_IFF_FAILURE} "setuid-executable_path @executable_path" "setuid-executable_path @executable_path" $(PWD)/main_exe-suid
+	${RUN_AS_USER} ${PASS_IFF_FAILURE} "setuid-executable_path @loader_path" "setuid-executable_path @loader_path" $(PWD)/main_loader-suid
+	${RUN_AS_USER} ${PASS_IFF_FAILURE} "setuid-executable_path relative path" "setuid-executable_path relative path" $(PWD)/main_rel-suid
 
 
 

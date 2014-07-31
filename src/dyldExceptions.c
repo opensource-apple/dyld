@@ -30,6 +30,7 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <Availability.h>
 
 #include "mach-o/dyld_priv.h"
 #include "dyldLibSystemInterface.h"
@@ -52,12 +53,57 @@ extern struct LibSystemHelpers* _ZN4dyld17gLibSystemHelpersE;
 #endif
 
 
-#if __i386__ || __x86_64 || __ppc__
+//
+//  The standard versions of __cxa_get_globals*() from libstdc++-static.a cannot be used.
+//  On Mac OS X, they use keymgr which dyld does not implement.
+//  On iPhoneOS, they use pthread_key_create which dyld cannot use.
+//
+//   Implement these ourselves to make upcalls into libSystem to malloc and create a pthread key
+//
+static pthread_key_t				sCxaKey = 0;
+static char							sPreMainCxaGlobals[2*sizeof(long)];
+
+// called by libstdc++.a 
+char* __cxa_get_globals() 
+{	
+	// if libSystem.dylib not yet initialized, or is old libSystem, use shared global
+	if ( (_ZN4dyld17gLibSystemHelpersE == NULL) || (_ZN4dyld17gLibSystemHelpersE->version < 5) )
+		return sPreMainCxaGlobals;
+
+	if ( sCxaKey == 0 ) {
+		// create key
+		// we don't need a lock because only one thread can be in dyld at a time
+		_ZN4dyld17gLibSystemHelpersE->pthread_key_create(&sCxaKey, &free);
+	}
+	char* data = (char*)pthread_getspecific(sCxaKey);
+	if ( data == NULL ) {
+		data = calloc(2,sizeof(void*));
+		_ZN4dyld17gLibSystemHelpersE->pthread_setspecific(sCxaKey, data);
+	}
+	return data; 
+}
+
+// called by libstdc++.a 
+char* __cxa_get_globals_fast() 
+{ 
+	// if libSystem.dylib not yet initialized, or is old libSystem, use shared global
+	if ( (_ZN4dyld17gLibSystemHelpersE == NULL) || (_ZN4dyld17gLibSystemHelpersE->version < 5) )
+		return sPreMainCxaGlobals;
+
+	return pthread_getspecific(sCxaKey); 
+}
+
+
+
+
+#if __x86_64__ || __i386__ || __ppc__
+//
+//  The intel/ppc versions of dyld uses zero-cost exceptions which are handled by
+//  linking with a special copy of libunwind.a
+//
 
 static struct dyld_unwind_sections	sDyldInfo;
 static void*						sDyldTextEnd;
-static pthread_key_t				sCxaKey = 0;
-static char							sPreMainCxaGlobals[2*sizeof(long)];
 
 // called by dyldStartup.s very early
 void dyld_exceptions_init(struct mach_header* mh, intptr_t slide)
@@ -102,224 +148,88 @@ bool _dyld_find_unwind_sections(void* addr, struct dyld_unwind_sections* info)
 	}
 }
 
-
-
-// called by libstdc++.a 
-char* __cxa_get_globals() 
-{	
-	// if libSystem.dylib not yet initialized, or is old libSystem, use shared global
-	if ( (_ZN4dyld17gLibSystemHelpersE == NULL) || (_ZN4dyld17gLibSystemHelpersE->version < 5) )
-		return sPreMainCxaGlobals;
-
-	if ( sCxaKey == 0 ) {
-		// create key
-		// we don't need a lock because only one thread can be in dyld at a time
-		_ZN4dyld17gLibSystemHelpersE->pthread_key_create(&sCxaKey, &free);
-	}
-	char* data = (char*)pthread_getspecific(sCxaKey);
-	if ( data == NULL ) {
-		data = calloc(2,sizeof(void*));
-		_ZN4dyld17gLibSystemHelpersE->pthread_setspecific(sCxaKey, data);
-	}
-	return data; 
-}
-
-// called by libstdc++.a 
-char* __cxa_get_globals_fast() 
-{ 
-	// if libSystem.dylib not yet initialized, or is old libSystem, use shared global
-	if ( (_ZN4dyld17gLibSystemHelpersE == NULL) || (_ZN4dyld17gLibSystemHelpersE->version < 5) )
-		return sPreMainCxaGlobals;
-
-	return pthread_getspecific(sCxaKey); 
-}
-
 #if __ppc__
 	// the ppc version of _Znwm in libstdc++.a uses keymgr
 	// need to override that
 	void* _Znwm(size_t size) { return malloc(size); }
 #endif
 
+#endif // __MAC_OS_X_VERSION_MIN_REQUIRED
 
 
+#if __arm__
 
+struct _Unwind_FunctionContext
+{
+	// next function in stack of handlers
+	struct _Unwind_FunctionContext*		prev;
 
-#else /*  __i386__ || __x86_64 || __ppc__ */
-
-
-
-
-
-
-//
-// BEGIN copy of code from libgcc.a source file unwind-dw2-fde-darwin.c
-//
-#define KEYMGR_API_MAJOR_GCC3           3       
-/* ... with these keys.  */
-#define KEYMGR_GCC3_LIVE_IMAGE_LIST	301     /* loaded images  */
-#define KEYMGR_GCC3_DW2_OBJ_LIST	302     /* Dwarf2 object list  */   
-#define KEYMGR_EH_GLOBALS_KEY           13 
-
-/* Node of KEYMGR_GCC3_LIVE_IMAGE_LIST.  Info about each resident image.  */
-struct live_images {
-  unsigned long this_size;                      /* sizeof (live_images)  */
-  struct mach_header *mh;                       /* the image info  */
-  unsigned long vm_slide;
-  void (*destructor)(struct live_images *);     /* destructor for this  */
-  struct live_images *next;
-  unsigned int examined_p;
-  void *fde;
-  void *object_info;
-  unsigned long info[2];                        /* Future use.  */
 };
-//
-// END copy of code from libgcc.a source file unwind-dw2-fde-darwin.c
-//
-
 
 //
-// dyld is built as stand alone executable with a static copy of libc, libstdc++, and libgcc.
+//  The ARM of dyld use SL-LJ based exception handling
+//  which does not require any initialization until libSystem is initialized.
 //
-// In order for C++ exceptions to work within dyld, the C++ exception handling code
-// must be able to find the exception handling frame data inside dyld.  The standard
-// exception handling code uses crt and keymgr to keep track of all images and calls
-// getsectdatafromheader("__eh_frame") to find the EH data for each image. We implement
-// our own copy of those functions below to enable exceptions within dyld.
-//
-// Note: This exception handling is completely separate from any user code exception .
-//		 handling which has its own keymgr (in libSystem).
-// 
-
-
-static struct live_images   sDyldImage;  // zero filled
-static void*				sObjectList = NULL;
-#if defined(__GNUC__) && (((__GNUC__ == 3) && (__GNUC_MINOR__ >= 5)) || (__GNUC__ >= 4))
-static void*				sEHGlobals = NULL;
-#endif
-
-
-// called by dyldStartup.s very early
 void dyld_exceptions_init(struct mach_header *mh, uintptr_t slide)
 {
-	sDyldImage.this_size = sizeof(struct live_images);
-	sDyldImage.mh = mh;
-	sDyldImage.vm_slide = slide;
 }
 
+static pthread_key_t						sThreadChainKey = 0; 
+static struct _Unwind_FunctionContext*		sStaticThreadChain = NULL; 
 
-
-//  Hack for gcc 3.5's use of keymgr includes accessing __keymgr_global
-#if defined(__GNUC__) && (((__GNUC__ == 3) && (__GNUC_MINOR__ >= 5)) || (__GNUC__ >= 4))
-typedef struct Sinfo_Node {
-  uint32_t size; 		/* Size of this node.  */
-  uint16_t major_version; /* API major version.  */
-  uint16_t minor_version;	/* API minor version.  */
-} Tinfo_Node;
-static const Tinfo_Node keymgr_info = { sizeof (Tinfo_Node), KEYMGR_API_MAJOR_GCC3, 0 };
-const Tinfo_Node* __keymgr_global[3] = { NULL, NULL, &keymgr_info };
-#endif
-
-static __attribute__((noreturn)) 
-void dyld_abort() 
+//
+// When libSystem's initializers are run, they call back into dyld's 
+// registerThreadHelpers which creates a pthread key and calls 
+//  __Unwind_SjLj_SetThreadKey().
+//
+void __Unwind_SjLj_SetThreadKey(pthread_key_t key)
 {
-	//dyld::log("internal dyld error\n");
-	_exit(1);
+	sThreadChainKey = key;
+	//_ZN4dyld3logEPKcz("__Unwind_SjLj_SetThreadKey(key=%d), sStaticThreadChain=%p\n", key, sStaticThreadChain);
+	// switch static chain to be per thread
+	_ZN4dyld17gLibSystemHelpersE->pthread_setspecific(sThreadChainKey, sStaticThreadChain);
+	sStaticThreadChain = NULL;
+	//_ZN4dyld3logEPKcz("__Unwind_SjLj_SetThreadKey(key=%d), result=%d, new top=%p\n", key, result, pthread_getspecific(sThreadChainKey));
 }
 
-void* _keymgr_get_and_lock_processwide_ptr(unsigned int key)
+
+//static void printChain()
+//{
+//	_ZN4dyld3logEPKcz("chain: ");
+//	struct _Unwind_FunctionContext* start = sStaticThreadChain;
+//	if ( sThreadChainKey != 0 ) {
+//		start = (struct _Unwind_FunctionContext*)pthread_getspecific(sThreadChainKey);
+//	}
+//	for (struct _Unwind_FunctionContext* p = start; p != NULL; p = p->prev) {
+//		_ZN4dyld3logEPKcz("%p -> ", p);
+//	}
+//	_ZN4dyld3logEPKcz("\n");
+//}
+
+
+struct _Unwind_FunctionContext* __Unwind_SjLj_GetTopOfFunctionStack()
 {
-	// The C++ exception handling code uses two keys. No other keys should be seen
-	if ( key == KEYMGR_GCC3_LIVE_IMAGE_LIST ) {
-		return &sDyldImage;
+	//_ZN4dyld3logEPKcz("__Unwind_SjLj_GetTopOfFunctionStack(),           key=%d, ", sThreadChainKey);
+	//printChain();
+	if ( sThreadChainKey != 0 ) {
+		return (struct _Unwind_FunctionContext*)pthread_getspecific(sThreadChainKey);
 	}
-	else if ( key == KEYMGR_GCC3_DW2_OBJ_LIST ) {
-		return sObjectList;
+	else {
+		return sStaticThreadChain;
 	}
-	dyld_abort();
 }
 
-void _keymgr_set_and_unlock_processwide_ptr(unsigned int key, void* value)
+void __Unwind_SjLj_SetTopOfFunctionStack(struct _Unwind_FunctionContext* fc)
 {
-	// The C++ exception handling code uses just this key. No other keys should be seen
-	if ( key == KEYMGR_GCC3_DW2_OBJ_LIST ) {
-		sObjectList = value;
-		return;
-	}
-	dyld_abort();
+	//_ZN4dyld3logEPKcz("__Unwind_SjLj_SetTopOfFunctionStack(%p), key=%d, prev=%p\n", 
+	//	fc, sThreadChainKey, (fc != NULL) ? fc->prev : NULL);
+	if ( sThreadChainKey != 0 )
+		_ZN4dyld17gLibSystemHelpersE->pthread_setspecific(sThreadChainKey, fc);
+	else
+		sStaticThreadChain = fc;
+	//_ZN4dyld3logEPKcz("__Unwind_SjLj_SetTopOfFunctionStack(%p), key=%d, ", fc, sThreadChainKey);
+	//printChain();
 }
-
-void _keymgr_unlock_processwide_ptr(unsigned int key)
-{
-	// The C++ exception handling code uses just this key. No other keys should be seen
-	if ( key == KEYMGR_GCC3_LIVE_IMAGE_LIST ) {
-		return;
-	}
-	dyld_abort();
-}
-	
-void* _keymgr_get_per_thread_data(unsigned int key)
-{
-#if defined(__GNUC__) && (((__GNUC__ == 3) && (__GNUC_MINOR__ >= 5)) || (__GNUC__ >= 4))
-	// gcc 3.5 and later use this key
-	if ( key == KEYMGR_EH_GLOBALS_KEY )
-		return sEHGlobals;
-#endif
-
-	// used by std::termination which dyld does not use
-	dyld_abort();
-}
-
-void _keymgr_set_per_thread_data(unsigned int key, void *keydata)
-{
-#if defined(__GNUC__) && (((__GNUC__ == 3) && (__GNUC_MINOR__ >= 5)) || (__GNUC__ >= 4))
-	// gcc 3.5 and later use this key
-	if ( key == KEYMGR_EH_GLOBALS_KEY ) {
-		sEHGlobals = keydata;
-		return;
-	}
-#endif
-	// used by std::termination which dyld does not use
-	dyld_abort();
-}
-
-
-// needed by C++ exception handling code to find __eh_frame section
-const void* getsectdatafromheader(struct mach_header* mh, const char* segname, const char* sectname, unsigned long* size)
-{
-	const struct load_command* cmd;
-	unsigned long i;
-        
-	cmd = (struct load_command*) ((char *)mh + sizeof(struct macho_header));
-	for(i = 0; i < mh->ncmds; i++) {
-	    if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
-			const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
-			if ( strcmp(seg->segname, segname) == 0 ) {
-				const struct macho_section* sect = (struct macho_section*)( (char*)seg + sizeof(struct macho_segment_command) );
-				unsigned long j;
-				for (j = 0; j < seg->nsects; j++) {
-					if ( strcmp(sect[j].sectname, sectname) == 0 ) {
-						*size = sect[j].size;
-						return (void*)(sect[j].addr);
-					}
-				}
-		    }
-		}
-	    cmd = (struct load_command*)( (char*)cmd + cmd->cmdsize );
-	}
-	return NULL;
-}
-
-
-// Hack for transition of rdar://problem/3933738
-// Can be removed later.
-// Allow C++ runtime to call getsectdatafromheader or getsectdatafromheader_64
-#if __LP64__
-	#undef getsectdatafromheader
-	const void* getsectdatafromheader(struct mach_header* mh, const char* segname, const char* sectname, unsigned long* size)
-	{
-		return getsectdatafromheader_64(mh, segname, sectname, size);
-	}
-#endif
 
 #endif
 

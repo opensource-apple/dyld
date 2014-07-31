@@ -74,7 +74,10 @@ static void* getStubAddr()
 #elif __x86_64__
 	return getsectdatafromheader_64(&_mh_dylib_header, "__TEXT", "__symbol_stub1", &size) + slide;
 #elif __arm__
-	return getsectdatafromheader(&_mh_dylib_header, "__TEXT", "__picsymbolstub4", &size) + slide;
+	void* p = getsectdata("__TEXT", "__picsymbolstub4", (unsigned long*)&size);
+	if ( p != NULL ) 
+		return getsectdatafromheader(&_mh_dylib_header, "__TEXT", "__picsymbolstub4", &size) + slide;
+	return getsectdatafromheader(&_mh_dylib_header, "__TEXT", "__symbolstub1", &size) + slide;
 #else
 	#error unknown arch
 #endif

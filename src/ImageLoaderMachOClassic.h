@@ -41,8 +41,9 @@ public:
 																	unsigned int segCount, unsigned int libCount, const LinkContext& context);
 	static ImageLoaderMachOClassic*		instantiateFromFile(const char* path, int fd, const uint8_t* fileData, 
 															uint64_t offsetInFat, uint64_t lenInFat, const struct stat& info, 
-															unsigned int segCount, unsigned int libCount, const LinkContext& context);
-	static ImageLoaderMachOClassic*		instantiateFromCache(const macho_header* mh, const char* path, const struct stat& info,
+															unsigned int segCount, unsigned int libCount, 
+															const struct linkedit_data_command* codeSigCmd, const LinkContext& context);
+	static ImageLoaderMachOClassic*		instantiateFromCache(const macho_header* mh, const char* path, long slide, const struct stat& info,
 																unsigned int segCount, unsigned int libCount, const LinkContext& context);
 	static ImageLoaderMachOClassic*		instantiateFromMemory(const char* moduleName, const macho_header* mh, uint64_t len, 
 															unsigned int segCount, unsigned int libCount, const LinkContext& context);
@@ -51,11 +52,12 @@ public:
 
 	virtual ImageLoader*				libImage(unsigned int) const;
 	virtual bool						libReExported(unsigned int) const;
-	virtual void						setLibImage(unsigned int, ImageLoader*, bool);
+	virtual bool						libIsUpward(unsigned int) const;
+	virtual void						setLibImage(unsigned int, ImageLoader*, bool, bool);
 	virtual void						doBind(const LinkContext& context, bool forceLazysBound);
 	virtual void						doBindJustLazies(const LinkContext& context);
 	virtual uintptr_t					doBindLazySymbol(uintptr_t* lazyPointer, const LinkContext& context);
-	virtual uintptr_t					doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context);
+	virtual uintptr_t					doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context, void (*lock)(), void (*unlock)());
 	virtual const char*					findClosestSymbol(const void* addr, const void** closestAddr) const;
 	virtual	void						initializeCoalIterator(CoalIterator&, unsigned int loadOrder);
 	virtual	bool						incrementCoalIterator(CoalIterator&);
@@ -63,6 +65,7 @@ public:
 	virtual	void						updateUsesCoalIterator(CoalIterator&, uintptr_t newAddr, ImageLoader* target, const LinkContext& context);
 
 protected:
+	virtual void						doInterpose(const LinkContext& context);
 	virtual void						setDyldInfo(const dyld_info_command*) {}
 	virtual void						setSymbolTableInfo(const macho_nlist*, const char*, const dysymtab_command*);
 	virtual	bool						isSubframeworkOf(const LinkContext& context, const ImageLoader* image) const;
@@ -71,7 +74,7 @@ protected:
 	virtual	void						rebase(const LinkContext& context);
 	virtual const ImageLoader::Symbol*	findExportedSymbol(const char* name, const ImageLoader** foundIn) const;
 	virtual bool						containsSymbol(const void* addr) const;
-	virtual uintptr_t					exportedSymbolAddress(const Symbol* symbol) const;
+	virtual uintptr_t					exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, bool runResolver) const;
 	virtual bool						exportedSymbolIsWeakDefintion(const Symbol* symbol) const;
 	virtual const char*					exportedSymbolName(const Symbol* symbol) const;
 	virtual unsigned int				exportedSymbolCount() const;
@@ -99,7 +102,7 @@ private:
 	static	bool						symbolIsWeakDefinition(const struct macho_nlist* symbol); 
 	uintptr_t							resolveUndefined(const LinkContext& context, const struct macho_nlist* symbol, bool twoLevel, 
 															bool dontCoalesce, const ImageLoader **foundIn);
-	uintptr_t							getSymbolAddress(const macho_nlist*, const LinkContext& context) const;
+	uintptr_t							getSymbolAddress(const macho_nlist*, const LinkContext& context, bool runResolver) const;
 	bool								isAddrInSection(uintptr_t addr, uint8_t sectionIndex);
 	void								doBindExternalRelocations(const LinkContext& context);
 	uintptr_t							bindIndirectSymbol(uintptr_t* ptrToBind, const struct macho_section* sect, 

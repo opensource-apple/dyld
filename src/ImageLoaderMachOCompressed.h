@@ -41,8 +41,9 @@ public:
 																	unsigned int segCount, unsigned int libCount, const LinkContext& context);
 	static ImageLoaderMachOCompressed*	instantiateFromFile(const char* path, int fd, const uint8_t* fileData, 
 															uint64_t offsetInFat, uint64_t lenInFat, const struct stat& info, 
-															unsigned int segCount, unsigned int libCount, const LinkContext& context);
-	static ImageLoaderMachOCompressed*	instantiateFromCache(const macho_header* mh, const char* path, const struct stat& info,
+															unsigned int segCount, unsigned int libCount, 
+															const struct linkedit_data_command* codeSigCmd, const LinkContext& context);
+	static ImageLoaderMachOCompressed*	instantiateFromCache(const macho_header* mh, const char* path, long slide, const struct stat& info,
 																unsigned int segCount, unsigned int libCount, const LinkContext& context);
 	static ImageLoaderMachOCompressed*	instantiateFromMemory(const char* moduleName, const macho_header* mh, uint64_t len, 
 															unsigned int segCount, unsigned int libCount, const LinkContext& context);
@@ -52,11 +53,12 @@ public:
 
 	virtual ImageLoader*				libImage(unsigned int) const;
 	virtual bool						libReExported(unsigned int) const;
-	virtual void						setLibImage(unsigned int, ImageLoader*, bool);
+	virtual bool						libIsUpward(unsigned int) const;
+	virtual void						setLibImage(unsigned int, ImageLoader*, bool, bool);
 	virtual void						doBind(const LinkContext& context, bool forceLazysBound);
 	virtual void						doBindJustLazies(const LinkContext& context);
 	virtual uintptr_t					doBindLazySymbol(uintptr_t* lazyPointer, const LinkContext& context);
-	virtual uintptr_t					doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context);
+	virtual uintptr_t					doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context, void (*lock)(), void (*unlock)());
 	virtual const char*					findClosestSymbol(const void* addr, const void** closestAddr) const;
 	virtual	void						initializeCoalIterator(CoalIterator&, unsigned int loadOrder);
 	virtual	bool						incrementCoalIterator(CoalIterator&);
@@ -65,6 +67,7 @@ public:
 
 	
 protected:
+	virtual void						doInterpose(const LinkContext& context);
 	virtual void						setDyldInfo(const dyld_info_command* dyldInfo) { fDyldInfo = dyldInfo; }
 	virtual void						setSymbolTableInfo(const macho_nlist*, const char*, const dysymtab_command*) {}
 	virtual	bool						isSubframeworkOf(const LinkContext& context, const ImageLoader* image) const { return false; }
@@ -73,7 +76,7 @@ protected:
 	virtual	void						rebase(const LinkContext& context);
 	virtual const ImageLoader::Symbol*	findExportedSymbol(const char* name, const ImageLoader** foundIn) const;
 	virtual bool						containsSymbol(const void* addr) const;
-	virtual uintptr_t					exportedSymbolAddress(const Symbol* symbol) const;
+	virtual uintptr_t					exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, bool runResolver) const;
 	virtual bool						exportedSymbolIsWeakDefintion(const Symbol* symbol) const;
 	virtual const char*					exportedSymbolName(const Symbol* symbol) const;
 	virtual unsigned int				exportedSymbolCount() const;
@@ -92,7 +95,7 @@ private:
 
 	typedef uintptr_t (ImageLoaderMachOCompressed::*bind_handler)(const LinkContext& context, uintptr_t addr, uint8_t type, 
 											const char* symbolName, uint8_t symboFlags, intptr_t addend, int libraryOrdinal, 
-											const char* msg, LastLookup* last);
+											const char* msg, LastLookup* last, bool runResolver);
 
 	void								eachLazyBind(const LinkContext& context, bind_handler);
 	void								eachBind(const LinkContext& context, bind_handler);
@@ -111,18 +114,24 @@ private:
 												const uint8_t* startOpcodes, const uint8_t* endOpcodes, const uint8_t* pos);
 	uintptr_t							bindAt(const LinkContext& context, uintptr_t addr, uint8_t type, const char* symbolName, 
 												uint8_t symboFlags, intptr_t addend, int libraryOrdinal, const char* msg,
-												LastLookup* last);
+												LastLookup* last, bool runResolver=false);
 	void								bindCompressed(const LinkContext& context);
 	void								throwBadBindingAddress(uintptr_t address, uintptr_t segmentEndAddress, int segmentIndex, 
 												const uint8_t* startOpcodes, const uint8_t* endOpcodes, const uint8_t* pos);
 	uintptr_t							resolve(const LinkContext& context, const char* symbolName, 
-												uint8_t symboFlags, int libraryOrdinal, const ImageLoader** targetImage, LastLookup* last = NULL);
-	uintptr_t							resolveFlat(const LinkContext& context, const char* symbolName, bool weak_import, 
+												uint8_t symboFlags, int libraryOrdinal, const ImageLoader** targetImage, 
+												LastLookup* last = NULL, bool runResolver=false);
+	uintptr_t							resolveFlat(const LinkContext& context, const char* symbolName, bool weak_import, bool runResolver,
 													const ImageLoader** foundIn);
 	uintptr_t							resolveCoalesced(const LinkContext& context, const char* symbolName, const ImageLoader** foundIn);
 	uintptr_t							resolveTwolevel(const LinkContext& context, const ImageLoader* targetImage, bool weak_import, 
-														const char* symbolName, const ImageLoader** foundIn);
-			
+														const char* symbolName, bool runResolver, const ImageLoader** foundIn);
+	uintptr_t							interposeAt(const LinkContext& context, uintptr_t addr, uint8_t type, const char*, 
+												uint8_t, intptr_t, int, const char*, LastLookup*, bool runResolver);
+	static const uint8_t*				trieWalk(const uint8_t* start, const uint8_t* end, const  char* s);
+    void                                updateOptimizedLazyPointers(const LinkContext& context);
+    void                                updateAlternateLazyPointer(uint8_t* stub, void** originalLazyPointerAddr);
+		
 	const struct dyld_info_command*			fDyldInfo;
 };
 

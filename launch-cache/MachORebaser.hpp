@@ -57,7 +57,7 @@ public:
 	virtual cpu_type_t							getArchitecture() const = 0;
 	virtual uint64_t							getBaseAddress() const = 0;
 	virtual uint64_t							getVMSize() const = 0;
-	virtual void								rebase() = 0;
+	virtual void								rebase(std::vector<void*>&) = 0;
 };
 
 
@@ -71,7 +71,7 @@ public:
 	virtual cpu_type_t							getArchitecture() const;
 	virtual uint64_t							getBaseAddress() const;
 	virtual uint64_t							getVMSize() const;
-	virtual void								rebase();
+	virtual void								rebase(std::vector<void*>&);
 
 protected:
 	typedef typename A::P					P;
@@ -85,11 +85,13 @@ private:
 	void										calculateRelocBase();
 	void										adjustLoadCommands();
 	void										adjustSymbolTable();
+	void										optimzeStubs();
+	void										makeNoPicStub(uint8_t* stub, pint_t logicalAddress);
 	void										adjustDATA();
 	void										adjustCode();
-	void										applyRebaseInfo();
+	void										applyRebaseInfo(std::vector<void*>& pointersInData);
 	void										adjustExportInfo();
-	void										doRebase(int segIndex, uint64_t segOffset, uint8_t type);
+	void										doRebase(int segIndex, uint64_t segOffset, uint8_t type, std::vector<void*>& pointersInData);
 	void										adjustSegmentLoadCommand(macho_segment_command<P>* seg);
 	pint_t										getSlideForVMAddress(pint_t vmaddress);
 	pint_t*										mappedAddressForVMAddress(pint_t vmaddress);
@@ -111,6 +113,8 @@ private:
 	const macho_dyld_info_command<P>*			fDyldInfo;
 	bool										fSplittingSegments;
 	bool										fOrignalVMRelocBaseAddressValid;
+	pint_t										fSkipSplitSegInfoStart;
+	pint_t										fSkipSplitSegInfoEnd;
 };
 
 
@@ -118,7 +122,8 @@ private:
 template <typename A>
 Rebaser<A>::Rebaser(const MachOLayoutAbstraction& layout)
  : 	fLayout(layout), fOrignalVMRelocBaseAddress(NULL), fLinkEditBase(NULL), 
-	fSymbolTable(NULL), fDynamicSymbolTable(NULL), fDyldInfo(NULL), fSplittingSegments(false), fOrignalVMRelocBaseAddressValid(false)
+	fSymbolTable(NULL), fDynamicSymbolTable(NULL), fDyldInfo(NULL), fSplittingSegments(false), 
+	fOrignalVMRelocBaseAddressValid(false), fSkipSplitSegInfoStart(0), fSkipSplitSegInfoEnd(0)
 {
 	fHeader = (const macho_header<P>*)fLayout.getSegments()[0].mappedAddress();
 	switch ( fHeader->filetype() ) {
@@ -205,11 +210,11 @@ uint64_t Rebaser<A>::getVMSize() const
 
 
 template <typename A>
-void Rebaser<A>::rebase()
+void Rebaser<A>::rebase(std::vector<void*>& pointersInData)
 {		
 	// update writable segments that have internal pointers
 	if ( fDyldInfo != NULL )
-		this->applyRebaseInfo();
+		this->applyRebaseInfo(pointersInData);
 	else
 		this->adjustDATA();
 
@@ -224,6 +229,9 @@ void Rebaser<A>::rebase()
 	
 	// update symbol table  
 	this->adjustSymbolTable();
+	
+	// optimize stubs 
+	this->optimzeStubs();
 	
 	// update export info
 	if ( fDyldInfo != NULL )
@@ -262,6 +270,7 @@ void Rebaser<A>::adjustLoadCommands()
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
 			case LC_REEXPORT_DYLIB:
+			case LC_LOAD_UPWARD_DYLIB:
 				if ( (fHeader->flags() & MH_PREBOUND) != 0 ) {
 					// clear expected timestamps so that this image will load with invalid prebinding 
 					macho_dylib_command<P>* dylib  = (macho_dylib_command<P>*)cmd;
@@ -359,6 +368,66 @@ typename A::P::uint_t* Rebaser<A>::mappedAddressForRelocAddress(pint_t r_address
 }
 
 
+template <>
+void Rebaser<arm>::makeNoPicStub(uint8_t* stub, pint_t logicalAddress) 
+{
+	uint32_t* instructions = (uint32_t*)stub;
+	if ( (LittleEndian::get32(instructions[0]) == 0xE59FC004) && 
+		(LittleEndian::get32(instructions[1]) == 0xE08FC00C) && 
+		(LittleEndian::get32(instructions[2]) == 0xE59CF000) ) {
+			uint32_t lazyPtrAddress = instructions[3] + logicalAddress + 12;
+			LittleEndian::set32(instructions[0], 0xE59FC000);		// 	ldr ip, [pc, #0]
+			LittleEndian::set32(instructions[1], 0xE59CF000);		// 	ldr pc, [ip]
+			LittleEndian::set32(instructions[2], lazyPtrAddress);	// 	.long   L_foo$lazy_ptr
+			LittleEndian::set32(instructions[3], 0xE1A00000);		// 	nop
+	}
+	else
+		fprintf(stderr, "unoptimized stub in %s at 0x%08X\n", fLayout.getFilePath(), logicalAddress);
+}
+
+
+#if 0 
+// disable this optimization do allow cache to slide
+template <>
+void Rebaser<arm>::optimzeStubs()
+{
+	// convert pic stubs to no-pic stubs in dyld shared cache
+	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)fHeader + sizeof(macho_header<P>));
+	const uint32_t cmd_count = fHeader->ncmds();
+	const macho_load_command<P>* cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		if ( cmd->cmd() == macho_segment_command<P>::CMD ) {
+			macho_segment_command<P>* seg = (macho_segment_command<P>*)cmd;
+			macho_section<P>* const sectionsStart = (macho_section<P>*)((char*)seg + sizeof(macho_segment_command<P>));
+			macho_section<P>* const sectionsEnd = &sectionsStart[seg->nsects()];
+			for(macho_section<P>* sect = sectionsStart; sect < sectionsEnd; ++sect) {
+				if ( (sect->flags() & SECTION_TYPE) == S_SYMBOL_STUBS ) {
+					const uint32_t stubSize = sect->reserved2();
+					// ARM PIC stubs are 4 32-bit instructions long
+					if ( stubSize == 16 ) {
+						uint32_t stubCount = sect->size() / 16;
+						pint_t stubLogicalAddress = sect->addr();
+						uint8_t* stubMappedAddress = (uint8_t*)mappedAddressForNewAddress(stubLogicalAddress);
+						for(uint32_t s=0; s < stubCount; ++s) {
+							makeNoPicStub(stubMappedAddress, stubLogicalAddress);
+							stubLogicalAddress += 16;
+							stubMappedAddress += 16;
+						}
+					}
+				}
+			}
+		}
+		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
+	}
+}
+#endif
+
+template <typename A>
+void Rebaser<A>::optimzeStubs()
+{
+	// other architectures don't need stubs changed in shared cache
+}
+
 template <typename A>
 void Rebaser<A>::adjustSymbolTable()
 {
@@ -388,7 +457,7 @@ void Rebaser<A>::adjustExportInfo()
 
 	// since export info addresses are offsets from mach_header, everything in __TEXT is fine
 	// only __DATA addresses need to be updated
-	const uint8_t* start = &fLinkEditBase[fDyldInfo->export_off()];
+	const uint8_t* start = fLayout.getDyldInfoExports(); 
 	const uint8_t* end = &start[fDyldInfo->export_size()];
 	std::vector<mach_o::trie::Entry> originalExports;
 	try {
@@ -425,29 +494,13 @@ void Rebaser<A>::adjustExportInfo()
 	while ( (newExportTrieBytes.size() % sizeof(pint_t)) != 0 )
 		newExportTrieBytes.push_back(0);
 	
-	// copy into place, zero pad
+	// allocate new buffer and set export_off to use new buffer instead
 	uint32_t newExportsSize = newExportTrieBytes.size();
-	if ( newExportsSize > fDyldInfo->export_size() ) {
-		// it is possible that the new export trie is larger than the old one
-		// for those cases will malloc a block on the side and set up
-		// export_off to point to it.
-		uint8_t* sideTrie = new uint8_t[newExportsSize];
-		memcpy(sideTrie, &newExportTrieBytes[0], newExportsSize);
-		//fprintf(stderr, "set_export_off()=%ld, fLinkEditBase=%p, sideTrie=%p\n", (long)(sideTrie - fLinkEditBase), fLinkEditBase, sideTrie);
-		// warning, export_off is only 32-bits so if the trie grows it must be allocated with 32-bits of fLinkeditBase
-		int64_t offset = sideTrie - fLinkEditBase;
-		int32_t offset32 = (int32_t)offset;
-		if ( offset != offset32 )
-			throw "internal error, new trie allocated to far from fLinkeditBase";
-		((macho_dyld_info_command<P>*)fDyldInfo)->set_export_off(offset32);
-		((macho_dyld_info_command<P>*)fDyldInfo)->set_export_size(newExportsSize);
-	}
-	else {
-		uint8_t* trie = (uint8_t*)&fLinkEditBase[fDyldInfo->export_off()];
-		memcpy(trie, &newExportTrieBytes[0], newExportsSize);
-		bzero(trie+newExportsSize, fDyldInfo->export_size() - newExportsSize);
-		((macho_dyld_info_command<P>*)fDyldInfo)->set_export_size(newExportsSize);
-	}
+	uint8_t* sideTrie = new uint8_t[newExportsSize];
+	memcpy(sideTrie, &newExportTrieBytes[0], newExportsSize);
+	fLayout.setDyldInfoExports(sideTrie);
+	((macho_dyld_info_command<P>*)fDyldInfo)->set_export_off(0); // invalidate old trie
+	((macho_dyld_info_command<P>*)fDyldInfo)->set_export_size(newExportsSize);
 }
 
 
@@ -455,7 +508,17 @@ void Rebaser<A>::adjustExportInfo()
 template <typename A>
 void Rebaser<A>::doCodeUpdate(uint8_t kind, uint64_t address, int64_t codeToDataDelta, int64_t codeToImportDelta)
 {
-	//fprintf(stderr, "doCodeUpdate(kind=%d, address=0x%0llX, dataDelta=0x%08llX, importDelta=0x%08llX)\n", kind, address, codeToDataDelta, codeToImportDelta);
+	// begin hack for <rdar://problem/8253549> split seg info wrong for x86_64 stub helpers
+	if ( (fSkipSplitSegInfoStart <= address) && (address < fSkipSplitSegInfoEnd) ) {
+		uint8_t* p = (uint8_t*)mappedAddressForVMAddress(address);
+		// only ignore split seg info for "push" instructions
+		if ( p[-1] == 0x68 )
+			return;
+	}
+	// end hack for <rdar://problem/8253549> 
+	
+	//fprintf(stderr, "doCodeUpdate(kind=%d, address=0x%0llX, dataDelta=0x%08llX, importDelta=0x%08llX, path=%s)\n", 
+	//				kind, address, codeToDataDelta, codeToImportDelta, fLayout.getFilePath());
 	uint32_t* p;
 	uint32_t instruction;
 	uint32_t value;
@@ -530,6 +593,7 @@ void Rebaser<A>::adjustCode()
 		// get uleb128 compressed runs of code addresses to update
 		const uint8_t* infoStart = NULL;
 		const uint8_t* infoEnd = NULL;
+		const macho_segment_command<P>* seg;
 		const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)fHeader + sizeof(macho_header<P>));
 		const uint32_t cmd_count = fHeader->ncmds();
 		const macho_load_command<P>* cmd = cmds;
@@ -542,6 +606,21 @@ void Rebaser<A>::adjustCode()
 						infoEnd = &infoStart[segInfo->datasize()];
 					}
 					break;
+				// begin hack for <rdar://problem/8253549> split seg info wrong for x86_64 stub helpers
+				case macho_segment_command<P>::CMD:
+					seg = (macho_segment_command<P>*)cmd;
+					if ( (getArchitecture() == CPU_TYPE_X86_64) && (strcmp(seg->segname(), "__TEXT") == 0) ) {
+						const macho_section<P>* const sectionsStart = (macho_section<P>*)((char*)seg + sizeof(macho_segment_command<P>));
+						const macho_section<P>* const sectionsEnd = &sectionsStart[seg->nsects()];
+						for(const macho_section<P>* sect = sectionsStart; sect < sectionsEnd; ++sect) {
+							if ( strcmp(sect->sectname(), "__stub_helper") == 0 ) {
+								fSkipSplitSegInfoStart = sect->addr();
+								fSkipSplitSegInfoEnd = sect->addr() + sect->size() - 16;
+							}	
+						}
+					}
+					break;
+				// end hack for <rdar://problem/8253549> split seg info wrong for x86_64 stub helpers
 			}
 			cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
 		}
@@ -559,7 +638,7 @@ void Rebaser<A>::adjustCode()
 				codeToDataDelta = (dataSeg.newAddress() - codeSeg.newAddress()) - (dataSeg.address() - codeSeg.address());
 		}
 		// decompress and call doCodeUpdate() on each address
-		for(const uint8_t* p = infoStart; *p != 0;) {
+		for(const uint8_t* p = infoStart; (*p != 0) && (p < infoEnd);) {
 			uint8_t kind = *p++;
 			p = this->doCodeUpdateForEachULEB128Address(p, kind, orgBaseAddress, codeToDataDelta, codeToImportDelta);
 		}
@@ -567,7 +646,7 @@ void Rebaser<A>::adjustCode()
 }
 
 template <typename A>
-void Rebaser<A>::doRebase(int segIndex, uint64_t segOffset, uint8_t type)
+void Rebaser<A>::doRebase(int segIndex, uint64_t segOffset, uint8_t type, std::vector<void*>& pointersInData)
 {
 	const std::vector<MachOLayoutAbstraction::Segment>& segments = fLayout.getSegments();
 	if ( segIndex > segments.size() )
@@ -603,11 +682,12 @@ void Rebaser<A>::doRebase(int segIndex, uint64_t segOffset, uint8_t type)
 		default:
 			throw "bad rebase type";
 	}
+	pointersInData.push_back(mappedAddr);
 }
 
 
 template <typename A>
-void Rebaser<A>::applyRebaseInfo()
+void Rebaser<A>::applyRebaseInfo(std::vector<void*>& pointersInData)
 {
 	const uint8_t* p = &fLinkEditBase[fDyldInfo->rebase_off()];
 	const uint8_t* end = &p[fDyldInfo->rebase_size()];
@@ -641,26 +721,26 @@ void Rebaser<A>::applyRebaseInfo()
 				break;
 			case REBASE_OPCODE_DO_REBASE_IMM_TIMES:
 				for (int i=0; i < immediate; ++i) {
-					doRebase(segIndex, segOffset, type);
+					doRebase(segIndex, segOffset, type, pointersInData);
 					segOffset += sizeof(pint_t);
 				}
 				break;
 			case REBASE_OPCODE_DO_REBASE_ULEB_TIMES:
 				count = read_uleb128(p, end);
 				for (uint32_t i=0; i < count; ++i) {
-					doRebase(segIndex, segOffset, type);
+					doRebase(segIndex, segOffset, type, pointersInData);
 					segOffset += sizeof(pint_t);
 				}
 				break;
 			case REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB:
-				doRebase(segIndex, segOffset, type);
+				doRebase(segIndex, segOffset, type, pointersInData);
 				segOffset += read_uleb128(p, end) + sizeof(pint_t);
 				break;
 			case REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_ULEB:
 				count = read_uleb128(p, end);
 				skip = read_uleb128(p, end);
 				for (uint32_t i=0; i < count; ++i) {
-					doRebase(segIndex, segOffset, type);
+					doRebase(segIndex, segOffset, type, pointersInData);
 					segOffset += skip + sizeof(pint_t);
 				}
 				break;

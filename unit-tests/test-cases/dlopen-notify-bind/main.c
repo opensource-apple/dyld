@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -24,6 +24,7 @@
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <dlfcn.h>
 #include <mach-o/dyld.h>
+#include <Availability.h>
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
@@ -33,8 +34,11 @@ typedef void* (*fooProc)();
 
 static void notify(const struct mach_header *mh, intptr_t vmaddr_slide) 
 {
+// NSLookupSymbolInImage is only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	//fprintf(stderr, "mh=%p\n", mh);
 	NSLookupSymbolInImage(mh, "_bar", NSLOOKUPSYMBOLINIMAGE_OPTION_BIND_FULLY | NSLOOKUPSYMBOLINIMAGE_OPTION_RETURN_ON_ERROR);
+#endif
 }
 
 

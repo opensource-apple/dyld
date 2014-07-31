@@ -125,6 +125,7 @@ dyld_stub_binder:
 	movq		%r8,R8_SAVE(%rsp)
 	movq		%r9,R9_SAVE(%rsp)
 	movq		%rax,RAX_SAVE(%rsp)
+misaligned_stack_error_entering_dyld_stub_binder:
 	movdqa		%xmm0,XMMM0_SAVE(%rsp)
 	movdqa		%xmm1,XMMM1_SAVE(%rsp)
 	movdqa		%xmm2,XMMM2_SAVE(%rsp)
@@ -133,6 +134,7 @@ dyld_stub_binder:
 	movdqa		%xmm5,XMMM5_SAVE(%rsp)
 	movdqa		%xmm6,XMMM6_SAVE(%rsp)
 	movdqa		%xmm7,XMMM7_SAVE(%rsp)
+dyld_stub_binder_:
 	movq		MH_PARAM_BP(%rbp),%rdi	# call fastBindLazySymbol(loadercache, lazyinfo)
 	movq		LP_PARAM_BP(%rbp),%rsi
 	call		__Z21_dyld_fast_stub_entryPvl
@@ -160,4 +162,30 @@ dyld_stub_binder:
 #endif
 
 
+#if __arm__
+ /*    
+ * sp+4	lazy binding info offset
+ * sp+0	address of ImageLoader cache
+ */
+  
+	.text
+	.align 2
+	.globl	dyld_stub_binder
+dyld_stub_binder:
+	stmfd	sp!, {r0,r1,r2,r3,r7,lr}	// save registers
+	add	r7, sp, #16			// point FP to previous FP
+
+	ldr	r0, [sp, #24]			// move address ImageLoader cache to 1st parameter
+	ldr	r1, [sp, #28]			// move lazy info offset 2nd parameter
+
+	// call dyld::fastBindLazySymbol(loadercache, lazyinfo)
+	bl	__Z21_dyld_fast_stub_entryPvl
+	mov	ip, r0				// move the symbol`s address into ip
+
+	ldmfd	sp!, {r0,r1,r2,r3,r7,lr}	// restore registers
+	add	sp, sp, #8			// remove meta-parameters
+
+	bx	ip				// jump to the symbol`s address that was bound
+
+#endif /* __arm__ */
 

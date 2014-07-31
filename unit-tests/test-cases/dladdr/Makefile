@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2005-2009 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -29,7 +29,7 @@ check:
 	./main
 
 all:
-	${CC} ${CCFLAGS} -Wno-deprecated-declarations -g -I${TESTROOT}/include -o main main.c -mmacosx-version-min=10.5
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations -g -I${TESTROOT}/include -o main main.c
 	
 
 clean:

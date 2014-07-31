@@ -1,4 +1,4 @@
-.Dd February 12, 2009
+.Dd November 29, 2010
 .Dt dyld 3
 .Sh NAME
 .Nm _dyld_image_count,
@@ -107,7 +107,10 @@ copies the path of the main executable into the buffer
 .Fa buf .
 The 
 .Fa bufsize
-parameter should initially be the size of the buffer.  This function returns 0 if the path was successfully copied.
+parameter should initially be the size of the buffer.  This function returns 0 if the path was successfully copied,
+and  *
+.Fa bufsize
+is left unchanged. 
 It returns -1 if the buffer is not large enough, and *
 .Fa bufsize
 is set to the size required. 

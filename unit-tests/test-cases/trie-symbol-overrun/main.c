@@ -25,6 +25,8 @@
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <sys/mman.h>
+#include <dlfcn.h>  
+#include <Availability.h>  
 
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
@@ -49,8 +51,11 @@ int main()
 	// call a dyld API that uses the string
 	// if dyld reads past the end of the string, it will crash
 	// <rdar://problem/6493245> trie parser can read past end of input symbol name
+#if defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && (__MAC_OS_X_VERSION_MIN_REQUIRED <= __MAC_10_5)
 	_dyld_lookup_and_bind(sym, NULL, NULL);
-  
+#else
+	dlsym(RTLD_DEFAULT, sym);
+#endif
 	PASS("trie-symbol-overrun");
 	return EXIT_SUCCESS;
 }

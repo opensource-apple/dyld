@@ -39,7 +39,7 @@ check:
 all: main 
 
 main : main.c  libfoo.dylib 
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c -mmacosx-version-min=10.4
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -Wno-deprecated-declarations  -o main main.c 
 
 
 libfoo.dylib : foo.c

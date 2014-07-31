@@ -34,9 +34,14 @@
 
 #include "dyldLock.h"
 
-extern "C" int __cxa_atexit(void (*func)(void *), void *arg, void *dso);
+extern "C" int  __cxa_atexit(void (*func)(void *), void *arg, void *dso);
+extern "C" void __cxa_finalize(const void *dso);
 
-#define DYLD_SHARED_CACHE_SUPPORT (__ppc__ || __i386__ || __ppc64__ || __x86_64__)
+#ifndef LC_LOAD_UPWARD_DYLIB
+	#define	LC_LOAD_UPWARD_DYLIB (0x23|LC_REQ_DYLD)	/* load of dylib whose initializers run later */
+#endif
+
+#define DYLD_SHARED_CACHE_SUPPORT (__ppc__ || __i386__ || __ppc64__ || __x86_64__ || __arm__)
 
 // deprecated APIs are still availble on Mac OS X, but not on iPhone OS
 #if __IPHONE_OS_VERSION_MIN_REQUIRED	
@@ -104,15 +109,16 @@ void NSInstallLinkEditErrorHandlers(
 const NSLinkEditErrorHandlers* handlers)
 {
 	DYLD_LOCK_THIS_BLOCK;
-    static void (*p)(
-	void     (*undefined)(const char* symbol_name),
-	NSModule (*multiple)(NSSymbol s, NSModule old, NSModule newhandler),
-	void     (*linkEdit)(NSLinkEditErrors c, int errorNumber,
-		     const char* fileName, const char* errorString)) = NULL;
+	typedef void (*ucallback_t)(const char* symbol_name);
+ 	typedef NSModule (*mcallback_t)(NSSymbol s, NSModule old, NSModule newhandler);
+	typedef void (*lcallback_t)(NSLinkEditErrors c, int errorNumber,
+								const char* fileName, const char* errorString);
+	static void (*p)(ucallback_t undefined, mcallback_t multiple, lcallback_t linkEdit) = NULL;
 
 	if(p == NULL)
 	    _dyld_func_lookup("__dyld_install_handlers", (void**)&p);
-	p(handlers->undefined, handlers->multiple, handlers->linkEdit);
+	mcallback_t m = handlers->multiple;
+	p(handlers->undefined, m, handlers->linkEdit);
 }
 
 const char* 
@@ -346,6 +352,7 @@ const char* libraryName)
 		switch ( lc->cmd ) { 
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
+			case LC_LOAD_UPWARD_DYLIB:
 				dl = (struct dylib_command *)lc;
 				install_name = (char *)dl + dl->dylib.name.offset;
 				if(names_match(install_name, libraryName) == TRUE)
@@ -765,7 +772,8 @@ _dyld_register_func_for_add_image(
 void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide))
 {
 	DYLD_LOCK_THIS_BLOCK;
-    static void (*p)(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide)) = NULL;
+	typedef void (*callback_t)(const struct mach_header *mh, intptr_t vmaddr_slide);
+    static void (*p)(callback_t func) = NULL;
 
 	if(p == NULL)
 	    _dyld_func_lookup("__dyld_register_func_for_add_image", (void**)&p);
@@ -782,7 +790,8 @@ _dyld_register_func_for_remove_image(
 void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide))
 {
 	DYLD_LOCK_THIS_BLOCK;
-    static void (*p)(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide)) = NULL;
+	typedef void (*callback_t)(const struct mach_header *mh, intptr_t vmaddr_slide);
+    static void (*p)(callback_t func) = NULL;
 
 	if(p == NULL)
 	    _dyld_func_lookup("__dyld_register_func_for_remove_image", (void**)&p);
@@ -972,7 +981,8 @@ void _dyld_moninit(
 void (*monaddition)(char *lowpc, char *highpc))
 {
 	DYLD_LOCK_THIS_BLOCK;
-    static void (*p)(void (*monaddition)(char *lowpc, char *highpc)) = NULL;
+	typedef void (*monproc)(char *lowpc, char *highpc);
+    static void (*p)(monproc monaddition) = NULL;
 
 	if(p == NULL)
 	    _dyld_func_lookup("__dyld_moninit", (void**)&p);
@@ -1067,7 +1077,7 @@ static void shared_cache_out_of_date()
 
 
 // the table passed to dyld containing thread helpers
-static dyld::LibSystemHelpers sHelpers = { 6, &dyldGlobalLockAcquire, &dyldGlobalLockRelease,  
+static dyld::LibSystemHelpers sHelpers = { 8, &dyldGlobalLockAcquire, &dyldGlobalLockRelease,  
 									&getPerThreadBufferFor_dlerror, &malloc, &free, &__cxa_atexit,
 						#if DYLD_SHARED_CACHE_SUPPORT
 									&shared_cache_missing, &shared_cache_out_of_date,
@@ -1076,14 +1086,17 @@ static dyld::LibSystemHelpers sHelpers = { 6, &dyldGlobalLockAcquire, &dyldGloba
 						#endif
 									NULL, NULL,
 									&pthread_key_create, &pthread_setspecific,
-									&malloc_size };
+									&malloc_size,
+									&pthread_getspecific,
+									&__cxa_finalize};
 
 
 //
 // during initialization of libSystem this routine will run
 // and call dyld, registering the helper functions.
 //
-extern "C" void _dyld_initializer() __attribute__((visibility("hidden")));
+extern "C" void tlv_initializer();
+extern "C" void _dyld_initializer();
 void _dyld_initializer()
 {
 	DYLD_LOCK_INITIALIZER;
@@ -1093,6 +1106,8 @@ void _dyld_initializer()
 	_dyld_func_lookup("__dyld_register_thread_helpers", (void**)&p);
 	if(p != NULL)
 		p(&sHelpers);
+		
+	tlv_initializer();
 }
 
 
@@ -1187,7 +1202,6 @@ const struct dyld_all_image_infos* _dyld_get_all_image_infos()
 }
 
 #if !__arm__
-__attribute__((visibility("hidden"))) 
 bool _dyld_find_unwind_sections(void* addr, dyld_unwind_sections* info)
 {
 	DYLD_NO_LOCK_THIS_BLOCK;
@@ -1200,7 +1214,7 @@ bool _dyld_find_unwind_sections(void* addr, dyld_unwind_sections* info)
 #endif
 
 
-#if __i386__ || __x86_64__
+#if __i386__ || __x86_64__ || __arm__
 __attribute__((visibility("hidden"))) 
 void* _dyld_fast_stub_entry(void* loadercache, long lazyinfo)
 {
@@ -1223,5 +1237,31 @@ const char* dyld_image_path_containing_address(const void* addr)
 	    _dyld_func_lookup("__dyld_image_path_containing_address", (void**)&p);
 	return p(addr);
 }
+
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+bool dyld_shared_cache_some_image_overridden()
+{
+	DYLD_NO_LOCK_THIS_BLOCK;
+    static bool (*p)() = NULL;
+
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_shared_cache_some_image_overridden", (void**)&p);
+	return p();
+}
+#endif
+
+
+// SPI called __fork
+void _dyld_fork_child()
+{
+	DYLD_NO_LOCK_THIS_BLOCK;
+    static void (*p)() = NULL;
+
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_fork_child", (void**)&p);
+	return p();
+}
+
+
 
 

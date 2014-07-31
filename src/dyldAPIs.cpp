@@ -57,6 +57,11 @@
 #undef _POSIX_C_SOURCE
 #include "dlfcn.h"
 
+// from dyldExceptions.c
+extern "C" void __Unwind_SjLj_SetThreadKey(pthread_key_t key);
+
+// from dyld_gdb.cpp 
+extern void addImagesToAllImages(uint32_t infoCount, const dyld_image_info info[]);
 
 // deprecated APIs are still availble on Mac OS X, but not on iPhone OS
 #if __IPHONE_OS_VERSION_MIN_REQUIRED	
@@ -80,7 +85,6 @@ static int sLastErrorNo;
 
 // The following functions have no prototype in any header.  They are special cases
 // where _dyld_func_lookup() is used directly.
-static void _dyld_fork_child();
 static void _dyld_make_delayed_module_initializer_calls();
 static void registerThreadHelpers(const dyld::LibSystemHelpers*);
 #if DEPRECATED_APIS_SUPPORTED
@@ -97,7 +101,9 @@ static void _dyld_call_module_initializers_for_dylib(const struct mach_header* m
 static void		client_dyld_lookup_and_bind(const char* symbolName, void** address, NSModule* module);
 static bool		client_NSIsSymbolNameDefined(const char* symbolName);
 #endif // DEPRECATED_APIS_SUPPORTED
+#if !__arm__
 static bool client_dyld_find_unwind_sections(void* addr, dyld_unwind_sections* info);
+#endif
 
 static void unimplemented()
 {
@@ -118,7 +124,6 @@ static struct dyld_func dyld_funcs[] = {
     {"__dyld_dlopen",									(void*)dlopen },
     {"__dyld_dlsym",									(void*)dlsym },
     {"__dyld_dlopen_preflight",							(void*)dlopen_preflight },
-    {"__dyld_get_image_header_containing_address",		(void*)_dyld_get_image_header_containing_address },
 	{"__dyld_image_count",								(void*)_dyld_image_count },
     {"__dyld_get_image_header",							(void*)_dyld_get_image_header },
     {"__dyld_get_image_vmaddr_slide",					(void*)_dyld_get_image_vmaddr_slide },
@@ -136,13 +141,17 @@ static struct dyld_func dyld_funcs[] = {
 #if !__arm__
 	{"__dyld_find_unwind_sections",						(void*)client_dyld_find_unwind_sections },
 #endif
-#if __i386__ || __x86_64__
+#if __i386__ || __x86_64__ || __arm__
 	{"__dyld_fast_stub_entry",							(void*)dyld::fastBindLazySymbol },
 #endif
 	{"__dyld_image_path_containing_address",			(void*)dyld_image_path_containing_address },
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+	{"__dyld_shared_cache_some_image_overridden",		(void*)dyld_shared_cache_some_image_overridden },
+#endif
 
 	// deprecated
 #if DEPRECATED_APIS_SUPPORTED
+    {"__dyld_get_image_header_containing_address",		(void*)_dyld_get_image_header_containing_address },
     {"__dyld_lookup_and_bind",						(void*)client_dyld_lookup_and_bind },
     {"__dyld_lookup_and_bind_with_hint",			(void*)_dyld_lookup_and_bind_with_hint },
     {"__dyld_lookup_and_bind_fully",				(void*)_dyld_lookup_and_bind_fully },
@@ -970,10 +979,17 @@ NSModule NSLinkModule(NSObjectFileImage objectFileImage, const char* moduleName,
 			// already linked, so clone a new one and link it
 			objectFileImage->image = dyld::cloneImage(objectFileImage->image);
 		}
-			
+		
 		// for memory based images, set moduleName as the name anyone calling _dyld_get_image_name() will see
-		if ( objectFileImage->image->getPath() == NULL )
+		if ( objectFileImage->image->getPath() == NULL ) {
 			objectFileImage->image->setPath(moduleName);
+			// <rdar://problem/8812589> dyld has NULL paths in image info array
+			dyld_image_info info;
+			info.imageLoadAddress = objectFileImage->image->machHeader();
+			info.imageFilePath = moduleName;
+			info.imageFileModDate = 0;
+			addImagesToAllImages(1, &info);
+		}
 
 		// support private bundles
 		if ( (options & NSLINKMODULE_OPTION_PRIVATE) != 0 )
@@ -1150,7 +1166,7 @@ static void _dyld_register_binding_handler(void * (*bindingHandler)(const char *
 
 
 // Call by fork() in libSystem after the kernel trap is done on the child side
-static void _dyld_fork_child()
+void _dyld_fork_child()
 {
 	if ( dyld::gLogAPIs )
 		dyld::log("%s()\n", __func__);
@@ -1243,12 +1259,23 @@ bool lookupDyldFunction(const char* name, uintptr_t* address)
 	return false;
 }
 
+
 static void registerThreadHelpers(const dyld::LibSystemHelpers* helpers)
 {
 	dyld::gLibSystemHelpers = helpers;
 	
 	// let gdb know it is safe to run code in inferior that might call malloc()
 	dyld_all_image_infos.libSystemInitialized = true;	
+	
+#if __arm__
+	if ( helpers->version >= 5 )  {
+		// create key use by dyld exception handling
+		pthread_key_t key;
+		int result = helpers->pthread_key_create(&key, NULL);
+		if ( result == 0 )
+			__Unwind_SjLj_SetThreadKey(key);
+	}
+#endif
 }
 
 
@@ -1287,6 +1314,8 @@ bool dlopen_preflight(const char* path)
 		return true;
 #endif
 	
+	CRSetCrashLogMessage("dyld: in dlopen_preflight()");
+	
 	bool result = false;
 	std::vector<const char*> rpathsFromCallerImage;
 	try {
@@ -1303,6 +1332,27 @@ bool dlopen_preflight(const char* path)
 		ImageLoader*	image = NULL;
 		const bool leafName = (strchr(path, '/') == NULL);
 		const bool absolutePath = (path[0] == '/');
+#if __IPHONE_OS_VERSION_MIN_REQUIRED
+		char canonicalPath[PATH_MAX]; 
+		// <rdar://problem/7017050> dlopen() not opening frameworks from shared cache with // or ./ in path
+		if ( !leafName ) {
+			// make path canonical if it contains a // or ./
+			if ( (strstr(path, "//") != NULL) || (strstr(path, "./") != NULL) ) {
+				const char* lastSlash = strrchr(path, '/');
+				char dirPath[PATH_MAX]; 
+				if ( strlcpy(dirPath, path, sizeof(dirPath)) < sizeof(dirPath) ) {
+					dirPath[lastSlash-path] = '\0';
+					if ( realpath(dirPath, canonicalPath) ) {
+						strlcat(canonicalPath, "/", sizeof(canonicalPath));
+						if ( strlcat(canonicalPath, lastSlash+1, sizeof(canonicalPath)) < sizeof(canonicalPath) ) {
+							// if all fit in buffer, use new canonical path
+							path = canonicalPath;
+						}
+					}
+				}
+			}
+		}
+#endif
 		dyld::LoadContext context;
 		context.useSearchPaths	= true;
 		context.useFallbackPaths= leafName;					// a partial path implies don't use fallback paths
@@ -1333,6 +1383,7 @@ bool dlopen_preflight(const char* path)
 		const char* str = *it;
 		free((void*)str);
 	}
+	CRSetCrashLogMessage(NULL);
 	return result;
 }
 
@@ -1357,6 +1408,7 @@ void* dlopen(const char* path, int mode)
 	bool lockHeld = false;
 	if ( (dyld::gLibSystemHelpers != NULL) && (dyld::gLibSystemHelpers->version >= 4) ) {
 		dyld::gLibSystemHelpers->acquireGlobalDyldLock();
+		CRSetCrashLogMessage("dyld: in dlopen()");
 		lockHeld = true;
 	}
 		
@@ -1376,6 +1428,27 @@ void* dlopen(const char* path, int mode)
  
 		const bool leafName = (strchr(path, '/') == NULL);
 		const bool absolutePath = (path[0] == '/');
+#if __IPHONE_OS_VERSION_MIN_REQUIRED
+		char canonicalPath[PATH_MAX]; 
+		// <rdar://problem/7017050> dlopen() not opening frameworks from shared cache with // or ./ in path
+		if ( !leafName ) {
+			// make path canonical if it contains a // or ./
+			if ( (strstr(path, "//") != NULL) || (strstr(path, "./") != NULL) ) {
+				const char* lastSlash = strrchr(path, '/');
+				char dirPath[PATH_MAX]; 
+				if ( strlcpy(dirPath, path, sizeof(dirPath)) < sizeof(dirPath) ) {
+					dirPath[lastSlash-path] = '\0';
+					if ( realpath(dirPath, canonicalPath) ) {
+						strlcat(canonicalPath, "/", sizeof(canonicalPath));
+						if ( strlcat(canonicalPath, lastSlash+1, sizeof(canonicalPath)) < sizeof(canonicalPath) ) {
+							// if all fit in buffer, use new canonical path
+							path = canonicalPath;
+						}
+					}
+				}
+			}
+		}
+#endif
 		dyld::LoadContext context;
 		context.useSearchPaths	= true;
 		context.useFallbackPaths= leafName;				// a partial path means no fallback paths
@@ -1416,6 +1489,7 @@ void* dlopen(const char* path, int mode)
 			
 			// release global dyld lock early, this enables initializers to do threaded operations
 			if ( lockHeld ) {
+				CRSetCrashLogMessage(NULL);
 				dyld::gLibSystemHelpers->releaseGlobalDyldLock();
 				lockHeld = false;
 			}
@@ -1462,8 +1536,10 @@ void* dlopen(const char* path, int mode)
 		dlerrorSet("image not already loaded");
 	}
 	
-	if ( lockHeld ) 
+	if ( lockHeld ) {
+		CRSetCrashLogMessage(NULL);
 		dyld::gLibSystemHelpers->releaseGlobalDyldLock();
+	}
 	return result;
 }
 
@@ -1505,6 +1581,7 @@ int dladdr(const void* address, Dl_info* info)
 	if ( dyld::gLogAPIs )
 		dyld::log("%s(%p, %p)\n", __func__, address, info);
 
+	CRSetCrashLogMessage("dyld: in dladdr()");
 	ImageLoader* image = dyld::findImageContainingAddress(address);
 	if ( image != NULL ) {
 		info->dli_fname = image->getPath();
@@ -1513,6 +1590,7 @@ int dladdr(const void* address, Dl_info* info)
 			// special case lookup of header
 			info->dli_sname = "__dso_handle";
 			info->dli_saddr = info->dli_fbase;
+			CRSetCrashLogMessage(NULL);
 			return 1; // success
 		}
 		// find closest symbol in the image
@@ -1521,12 +1599,15 @@ int dladdr(const void* address, Dl_info* info)
 			if ( info->dli_sname[0] == '_' )
 				info->dli_sname = info->dli_sname +1; // strip off leading underscore
 			//dyld::log("dladdr(%p) => %p %s\n", address, info->dli_saddr, info->dli_sname);
+			CRSetCrashLogMessage(NULL);
 			return 1; // success
 		}
 		info->dli_sname = NULL;
 		info->dli_saddr = NULL;
+		CRSetCrashLogMessage(NULL);
 		return 1; // success
 	}
+	CRSetCrashLogMessage(NULL);
 	return 0;  // failure
 }
 
@@ -1552,6 +1633,7 @@ void* dlsym(void* handle, const char* symbolName)
 	if ( dyld::gLogAPIs )
 		dyld::log("%s(%p, %s)\n", __func__, handle, symbolName);
 
+	CRSetCrashLogMessage("dyld: in dlsym()");
 	dlerrorClear();
 
 	const ImageLoader* image;
@@ -1566,11 +1648,13 @@ void* dlsym(void* handle, const char* symbolName)
 	// magic "search all" handle
 	if ( handle == RTLD_DEFAULT ) {
 		if ( dyld::flatFindExportedSymbol(underscoredName, &sym, &image) ) {
+			CRSetCrashLogMessage(NULL);
 			return (void*)image->getExportedSymbolAddress(sym, dyld::gLinkContext);
 		}
 		const char* str = dyld::mkstringf("dlsym(RTLD_DEFAULT, %s): symbol not found", symbolName);
 		dlerrorSet(str);
 		free((void*)str);
+		CRSetCrashLogMessage(NULL);
 		return NULL;
 	}
 	
@@ -1579,25 +1663,37 @@ void* dlsym(void* handle, const char* symbolName)
 		image = dyld::mainExecutable();
 		sym = image->findExportedSymbol(underscoredName, true, &image); // search RTLD_FIRST way
 		if ( sym != NULL ) {
+			CRSetCrashLogMessage(NULL);
 			return (void*)image->getExportedSymbolAddress(sym, dyld::gLinkContext);
 		}
 		const char* str = dyld::mkstringf("dlsym(RTLD_MAIN_ONLY, %s): symbol not found", symbolName);
 		dlerrorSet(str);
 		free((void*)str);
+		CRSetCrashLogMessage(NULL);
 		return NULL;
 	}
 	
 	// magic "search what I would see" handle
 	if ( handle == RTLD_NEXT ) {
+#if __ppc__
+		// <rdar://problem/7628929> work around for llvmgcc bug
+		void* fa = __builtin_frame_address(0);
+		fa = *(void**)fa;
+		fa = *(void**)fa;
+		void* callerAddress = *((void**)(((int)fa)+8));
+#else	
 		void* callerAddress = __builtin_return_address(1); // note layers: 1: real client, 0: libSystem glue
+#endif
 		ImageLoader* callerImage = dyld::findImageContainingAddress(callerAddress);
 		sym = callerImage->findExportedSymbolInDependentImages(underscoredName, dyld::gLinkContext, &image); // don't search image, but do search what it links against
 		if ( sym != NULL ) {
+			CRSetCrashLogMessage(NULL);
 			return (void*)image->getExportedSymbolAddress(sym, dyld::gLinkContext);
 		}
 		const char* str = dyld::mkstringf("dlsym(RTLD_NEXT, %s): symbol not found", symbolName);
 		dlerrorSet(str);
 		free((void*)str);
+		CRSetCrashLogMessage(NULL);
 		return NULL;
 	}
 	// magic "search me, then what I would see" handle
@@ -1606,11 +1702,13 @@ void* dlsym(void* handle, const char* symbolName)
 		ImageLoader* callerImage = dyld::findImageContainingAddress(callerAddress);
 		sym = callerImage->findExportedSymbolInImageOrDependentImages(underscoredName, dyld::gLinkContext, &image); // search image and what it links against
 		if ( sym != NULL ) {
+			CRSetCrashLogMessage(NULL);
 			return (void*)image->getExportedSymbolAddress(sym, dyld::gLinkContext);
 		}
 		const char* str = dyld::mkstringf("dlsym(RTLD_SELF, %s): symbol not found", symbolName);
 		dlerrorSet(str);
 		free((void*)str);
+		CRSetCrashLogMessage(NULL);
 		return NULL;
 	}
 	// real handle
@@ -1622,6 +1720,7 @@ void* dlsym(void* handle, const char* symbolName)
 			sym = image->findExportedSymbolInImageOrDependentImages(underscoredName, dyld::gLinkContext, &image); // search image and what it links against
 		
 		if ( sym != NULL ) {
+			CRSetCrashLogMessage(NULL);
 			return (void*)image->getExportedSymbolAddress(sym, dyld::gLinkContext);
 		}
 		const char* str = dyld::mkstringf("dlsym(%p, %s): symbol not found", handle, symbolName);
@@ -1631,6 +1730,7 @@ void* dlsym(void* handle, const char* symbolName)
 	else {
 		dlerrorSet("invalid handle passed to dlsym()");
 	}
+	CRSetCrashLogMessage(NULL);
 	return NULL;
 }
 
@@ -1675,7 +1775,6 @@ void dyld_register_image_state_change_handler(dyld_image_states state, bool batc
 		dyld::registerImageStateSingleChangeHandler(state, handler);
 }
 
-
 const char* dyld_image_path_containing_address(const void* address)
 {
 	if ( dyld::gLogAPIs )
@@ -1686,5 +1785,15 @@ const char* dyld_image_path_containing_address(const void* address)
 		return image->getPath();
 	return NULL;
 }
+
+
+
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+bool dyld_shared_cache_some_image_overridden()
+{
+	return dyld::gSharedCacheOverridden;
+}
+#endif
+
 
 

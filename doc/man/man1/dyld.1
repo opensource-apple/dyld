@@ -1,4 +1,4 @@
-.TH DYLD 1 "November 25, 2008" "Apple Inc."
+.TH DYLD 1 "December 14, 2009" "Apple Inc."
 .SH NAME
 dyld \- the dynamic link editor
 .SH SYNOPSIS
@@ -6,9 +6,13 @@ DYLD_FRAMEWORK_PATH
 .br
 DYLD_FALLBACK_FRAMEWORK_PATH
 .br
+DYLD_VERSIONED_FRAMEWORK_PATH
+.br
 DYLD_LIBRARY_PATH
 .br
 DYLD_FALLBACK_LIBRARY_PATH
+.br
+DYLD_VERSIONED_LIBRARY_PATH
 .br
 DYLD_ROOT_PATH
 .br
@@ -48,7 +52,7 @@ DYLD_PRINT_STATISTICS
 .br
 DYLD_PRINT_DOFS
 .br
-DYLD_NO_PIE
+DYLD_PRINT_RPATHS
 .br
 DYLD_SHARED_CACHE_DIR
 .br
@@ -93,6 +97,17 @@ path.
 By default, it is set to
 /Library/Frameworks:/Network/Library/Frameworks:/System/Library/Frameworks
 .TP
+.B DYLD_VERSIONED_FRAMEWORK_PATH
+This is a colon separated list of directories that contain potential override frameworks. 
+The dynamic linker searches these directories for frameworks.  For
+each framework found dyld looks at its LC_ID_DYLIB and gets the current_version 
+and install name.  Dyld then looks for the framework at the install name path.
+Whichever has the larger current_version value will be used in the process whenever
+a framework with that install name is required.  This is similar to DYLD_FRAMEWORK_PATH
+except instead of always overriding, it only overrides is the supplied framework is newer.
+Note: dyld does not check the framework's Info.plist to find its version.  Dyld only
+checks the -currrent_version number supplied when the framework was created.
+.TP
 .B DYLD_LIBRARY_PATH
 This is a colon separated list of directories that contain libraries. The
 dynamic linker searches these directories before it searches the default
@@ -121,6 +136,15 @@ It is used as the default location for libraries not found in their install
 path.
 By default, it is set
 to $(HOME)/lib:/usr/local/lib:/lib:/usr/lib.
+.TP
+.B DYLD_VERSIONED_LIBRARY_PATH
+This is a colon separated list of directories that contain potential override libraries. 
+The dynamic linker searches these directories for dynamic libraries.  For
+each library found dyld looks at its LC_ID_DYLIB and gets the current_version 
+and install name.  Dyld then looks for the library at the install name path.
+Whichever has the larger current_version value will be used in the process whenever
+a dylib with that install name is required.  This is similar to DYLD_LIBRARY_PATH
+except instead of always overriding, it only overrides is the supplied library is newer.
 .TP
 .B DYLD_ROOT_PATH
 This is a colon separated list of directories.  The dynamic linker will prepend each of
@@ -216,10 +240,9 @@ Causes dyld to print a line each time a symbolic name is bound.
 .B DYLD_PRINT_DOFS 
 Causes dyld to print out information about dtrace static probes registered with the kernel. 
 .TP
-.B DYLD_NO_PIE
-Causes dyld to not randomize the load addresses of images in a process where the main 
-executable was built position independent.  This can be helpful when trying to reproduce
-and debug a problem in a PIE.
+.B DYLD_PRINT_RPATHS
+Cause dyld  to print a line each time it expands an @rpath variable and whether
+that expansion was successful or not.
 .TP
 .B DYLD_SHARED_CACHE_DIR
 This is a directory containing dyld shared cache files.  This variable can be used in
@@ -230,6 +253,7 @@ to run a process with an alternate shared cache.
 Causes dyld to not check that the inode and mod-time of files in the shared cache match
 the requested dylib on disk. Thus a program can be made to run with the dylib in the
 shared cache even though the real dylib has been updated on disk.
+.TP
 .SH DYNAMIC LIBRARY LOADING
 Unlike many other operating systems, Darwin does not locate dependent dynamic libraries
 via their leaf file name.  Instead the full path to each dylib is used (e.g. /usr/lib/libSystem.B.dylib).
@@ -240,17 +264,25 @@ substitutes a dynamically generated path for the @xxx/ prefix.
 .TP
 .B @executable_path/
 This variable is replaced with the path to the directory containing the main executable for 
-the process.  This is useful for .app directories where the main executable is in a well
-known location inside the .app directory.  A typical load path for an embedded framework would 
-look like @executable_path/../Frameworks/Foo.framework/Versions/A/Foo.
+the process.  This is useful for loading dylibs/frameworks embedded in a .app directory. 
+If the main executable file is at /some/path/My.app/Contents/MacOS/My and a framework dylib 
+file is at /some/path/My.app/Contents/Frameworks/Foo.framework/Versions/A/Foo, then 
+the framework load path could be encoded as 
+@executable_path/../Frameworks/Foo.framework/Versions/A/Foo and the .app directory could be
+moved around in the file system and dyld will still be able to load the embedded framework.
 .TP
 .B @loader_path/
 This variable is replaced with the path to the directory containing the mach-o binary which
-contains the load path. This is useful for a plug-in that has an embedded framework.  @executable_path/
-is not helpful because you may not know where the plugin-in will be installed relative to the
-main executable, or there may be multiple applications that load the plug-in.  
-A typical load path for an embedded framework for reference a sibling framework would 
-look like @loader_path/../../../Frameworks/Foo.framework/Versions/A/Foo.
+contains the load command using @loader_path. Thus, in every binary, @loader_path resolves to
+a different path, whereas @executable_path always resolves to the same path. @loader_path is
+useful as the load path for a framework/dylib embedded in a plug-in, if the final file 
+system location of the plugin-in unknown (so absolute paths cannot be used) or if the plug-in 
+is used by multiple applications (so @executable_path cannot be used). If the plug-in mach-o
+file is at /some/path/Myfilter.plugin/Contents/MacOS/Myfilter and a framework dylib 
+file is at /some/path/Myfilter.plugin/Contents/Frameworks/Foo.framework/Versions/A/Foo, then 
+the framework load path could be encoded as 
+@loader_path/../Frameworks/Foo.framework/Versions/A/Foo and the Myfilter.plugin directory could 
+be moved around in the file system and dyld will still be able to load the embedded framework.
 .TP
 .B @rpath/
 Dyld maintains a current stack of paths called the run path list.  When @rpath is encountered

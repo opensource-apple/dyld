@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -23,14 +23,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <mach-o/dyld.h>
+#include <Availability.h>
+#include <dlfcn.h>
 
 #include "test.h"
 
 
 int main()
 {
+#if defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && (__MAC_OS_X_VERSION_MIN_REQUIRED < __MAC_10_5)
 	NSAddImage("@loader_path/hide/libfoo3.dylib", 0);
-
-	PASS("loader_path");
+#else
+	if ( dlopen("@loader_path/hide/libfoo3.dylib", 0) == NULL )
+		FAIL("loader_path");
+	else
+#endif
+		PASS("loader_path");
 	return EXIT_SUCCESS;
 }

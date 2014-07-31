@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <mach-o/dyld.h>
+#include <Availability.h>
 
 #include "test.h" // PASS(), FAIL()
 
@@ -36,6 +37,8 @@ typedef void (*fooProc)();
 // test.bundle
 void doit()
 {
+// NSCreateObjectFileImageFromMemory is only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	NSObjectFileImage ofi;
 	if ( NSCreateObjectFileImageFromFile("test.bundle", &ofi) != NSObjectFileImageSuccess ) {
 		FAIL("NSCreateObjectFileImageFromFile failed");
@@ -66,14 +69,17 @@ void doit()
 		FAIL("NSDestroyObjectFileImage failed");
 		exit(0);
 	}
+#endif
 }
 
 
 static void myRemoveImage(const struct mach_header *mh, intptr_t vmaddr_slide)
 {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	// calling _dyld_get_image_header_containing_address() during the remove image hook 
 	// could cause dyld to not flush the address->image cache
 	_dyld_get_image_header_containing_address(mh);
+#endif
 }
 
 

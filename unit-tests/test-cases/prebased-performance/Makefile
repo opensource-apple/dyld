@@ -43,10 +43,10 @@ check:
 all: main 
 
 main: main.c libfoo.dylib
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c libfoo.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c libfoo.dylib -Wl,-no_pie
 
 libfoo.dylib: foo.c
-	${CC} ${CCFLAGS} -dynamiclib -o libfoo.dylib foo.c -seg1addr ${DYLIB_BASES_ADDRESS} -mmacosx-version-min=10.5
+	${CC} ${CCFLAGS} -dynamiclib -o libfoo.dylib foo.c -seg1addr ${DYLIB_BASES_ADDRESS}
 
 
 clean:

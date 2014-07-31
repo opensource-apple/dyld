@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -29,9 +29,15 @@
 #include <sys/mman.h> 
 #include <unistd.h>
 #include <fcntl.h>
+#include <Availability.h>
 
 #include "test.h" // PASS(), FAIL()
 
+extern void bar();
+
+
+// NSCreateObjectFileImageFromMemory is only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 
 void loadAsBundleFromMemory(const char* path)
 {
@@ -79,10 +85,11 @@ void loadAsDylib(const char* path)
 	}
 }
 
-extern void bar();
+#endif
 
 int main()
 {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	int dummy; 
 	
 	// verify that NSAddImage fails to load MH_BUNDLE
@@ -102,7 +109,7 @@ int main()
 	
 	// verify that dyld data structures are not wanked by scanning all images
 	_dyld_get_image_header_containing_address(&dummy);
-
+#endif
 	PASS("bundle-v-dylib");
 	return 0;
 }

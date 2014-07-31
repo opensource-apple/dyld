@@ -24,9 +24,13 @@
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <dlfcn.h>
 #include <stdbool.h>
+#include <Availability.h>
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
+
+// _dyld_func_lookup is only available in 10.5 and earlier
+#if defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && (__MAC_OS_X_VERSION_MIN_REQUIRED <= __MAC_10_5)
 extern bool check_dyld_func_lookup();
 
 typedef bool (*proc)(void);
@@ -53,17 +57,20 @@ static void trySO(const char* path)
 	
 	dlclose(handle);
 }
-
+#endif
 
 
 int main()
 {
+// _dyld_func_lookup is only available in 10.5 and earlier
+#if defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && (__MAC_OS_X_VERSION_MIN_REQUIRED <= __MAC_10_5)
 	if ( ! check_dyld_func_lookup() )
 		FAIL("check_dyld_func_lookup failed for main executable");
 
 	trySO("test.bundle");
 	trySO("test.dylib");
-  
+#endif
+
 	PASS("dyld-func-lookup");
 	return EXIT_SUCCESS;
 }

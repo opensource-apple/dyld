@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -25,34 +25,11 @@
 #include <mach-o/dyld.h>
 #include <mach-o/dyld_images.h>
 #include <mach/mach.h>
+#include <Availability.h>
 
 #include "test.h"
 
 extern struct mach_header __dso_handle;
-
-#ifndef DYLD_ALL_IMAGE_INFOS_OFFSET_OFFSET
-	#define DYLD_ALL_IMAGE_INFOS_OFFSET_OFFSET 0x1010
-#endif
-
-
-#if __i386__ || __ppc__
-	#define DYLD_BASE_ADDRESS 0x8fe00000
-#elif __x86_64__ || __ppc64__
-	#define DYLD_BASE_ADDRESS 0x7fff5fc00000
-#elif __arm__
-	#define DYLD_BASE_ADDRESS 0x2fe00000
-#endif
-
-struct dyld_all_image_infos* getImageInfos()
-{
-	uint32_t offset = *((uint32_t*)(DYLD_BASE_ADDRESS+DYLD_ALL_IMAGE_INFOS_OFFSET_OFFSET));
-	if ( offset > 300000 ) {
-		FAIL("all_image_infos: offset appears to be outside dyld");
-		exit(0);
-	}
-	uintptr_t addr = DYLD_BASE_ADDRESS + offset;
-	return (struct dyld_all_image_infos*)addr;
-}
 
 
 struct dyld_all_image_infos* getImageInfosFromKernel()
@@ -71,9 +48,9 @@ struct dyld_all_image_infos* getImageInfosFromKernel()
 int
 main()
 {
-	struct dyld_all_image_infos* infos = getImageInfos();
-	if ( infos->version != 7 ) {
-		FAIL("all_image_infos: dyld_all_image_infos is not version 7");
+	struct dyld_all_image_infos* infos = getImageInfosFromKernel();
+	if ( infos->version < 9 ) {
+		FAIL("all_image_infos: dyld_all_image_infos is not version >= 9, is  %d", infos->version);
 		exit(0);
 	}
 
@@ -82,15 +59,25 @@ main()
 		exit(0);
 	}
 
+	//for( int i=0; i < infos->infoArrayCount; ++i) {
+	//	fprintf(stderr, "infos->infoArray[%d].imageLoadAddress=%p %s\n", i, infos->infoArray[i].imageLoadAddress, infos->infoArray[i].imageFilePath);
+	//}
+	
 	if ( infos->infoArray[0].imageLoadAddress != &__dso_handle ) {
-		FAIL("all_image_infos: dyld_all_image_infos.infoArray for main executable is wrong");
+		FAIL("all_image_infos: dyld_all_image_infos.infoArray for main executable is wrong, infos->infoArray[0].imageLoadAddress=0x%08lX vs 0x%08X", 
+					infos->infoArray[0].imageLoadAddress, &__dso_handle);
 		exit(0);
 	}
 
-	if ( getImageInfosFromKernel() != infos ) {
-		FAIL("all_image_infos: task_info and dyld disagree");
-		exit(0);
+#if __IPHONE_OS_VERSION_MIN_REQUIRED
+	for (const struct dyld_image_info* p = infos->infoArray; p < &infos->infoArray[infos->infoArrayCount]; ++p) {
+		//fprintf(stderr, "addr=0x%p, mTime=0x%lX, path=%s\n", p->imageLoadAddress, p->imageFileModDate, p->imageFilePath);
+		if ( (strncmp(p->imageFilePath, "/usr/lib", 8) == 0) && (p->imageFileModDate != 0) ) {
+			FAIL("all_image_infos, mTime not zero for cache image %s", p->imageFilePath);
+			exit(0);
+		}
 	}
+#endif
 
 	PASS("all_image_infos");
 	return EXIT_SUCCESS;

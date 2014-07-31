@@ -25,6 +25,7 @@
 #include <string.h> 
 #include <dlfcn.h> 
 #include <mach-o/dyld.h> 
+#include <Availability.h> 
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
@@ -66,10 +67,12 @@ static void verifybar()
 		FAIL("dladdr()->dli_saddr is not &bar");
 		exit(0);
 	}
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	if ( info.dli_fbase != _dyld_get_image_header_containing_address(&bar) ) {
 		FAIL("dladdr()->dli_fbase is not image that contains &bar");
 		exit(0);
 	}
+#endif
 }
 
 // checks local symbol 
@@ -88,10 +91,12 @@ static void verifyfoo()
 		FAIL("dladdr()->dli_saddr is not &foo");
 		exit(0);
 	}
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	if ( info.dli_fbase != _dyld_get_image_header_containing_address(&foo) ) {
 		FAIL("dladdr()->dli_fbase is not image that contains &foo");
 		exit(0);
 	}
+#endif
 }
 
 // checks hidden symbol 
@@ -110,10 +115,12 @@ static void verifyhide()
 		FAIL("dladdr()->dli_saddr is not &hide");
 		exit(0);
 	}
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	if ( info.dli_fbase != _dyld_get_image_header_containing_address(&hide) ) {
 		FAIL("dladdr()->dli_fbase is not image that contains &hide");
 		exit(0);
 	}
+#endif
 }
 
 

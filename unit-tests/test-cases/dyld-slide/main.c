@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005-2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -21,7 +21,8 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 #include <stdlib.h> // EXIT_SUCCESS
-#include <mach-o/dyld.h>
+#include <dlfcn.h>
+#include <mach-o/dyld_priv.h>
 
 #include "test.h"
 
@@ -39,9 +40,9 @@
 int
 main()
 {
-	// call a dyld function that will internally throw an exception to test dyld slide properly
-	NSAddImage("/foo/bar", NSADDIMAGE_OPTION_RETURN_ON_ERROR);
-	
+	// call a dyld function that will execute lots of code and bus error dyld was not slid
+	dlsym(RTLD_DEFAULT, "foobar");
+
 	return EXIT_SUCCESS;
 }
 

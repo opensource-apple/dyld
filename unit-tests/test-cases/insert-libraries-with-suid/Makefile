@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2005-2009 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -23,10 +23,18 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+PWD = `pwd`
+
+ifeq "$(OS_NAME)" "iPhoneOS"
+	RUN_AS_USER = login -f -l mobile
+else
+	RUN_AS_USER = 
+endif
+
 all-check: all check
 
 check:
-	export DYLD_INSERT_LIBRARIES="/usr/lib/libldap.dylib:/usr/lib/libpcap.dylib" && ./main
+	${RUN_AS_USER} $(PWD)/main-with-env
 
 all: main
 
@@ -34,7 +42,11 @@ main: main.c
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
 	sudo chown root main
 	sudo chmod 4755 main
+	echo "#!/bin/sh" > main-with-env
+	echo "export DYLD_INSERT_LIBRARIES=/usr/lib/libz.dylib" >> main-with-env
+	echo "$(PWD)/main" >> main-with-env
+	chmod +x main-with-env
 
 clean:
-	${RM} ${RMFLAGS} *~ main
+	${RM} ${RMFLAGS} *~ main main-with-env
 

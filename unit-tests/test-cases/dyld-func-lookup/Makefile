@@ -31,14 +31,14 @@ check:
 all: main test.bundle test.dylib
 
 main : main.c foo.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c foo.c -mmacosx-version-min=10.5
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c foo.c 
 
 
 test.bundle : foo.c
-	${CC} ${CCFLAGS} -bundle foo.c -o test.bundle -mmacosx-version-min=10.5
+	${CC} ${CCFLAGS} -bundle foo.c -o test.bundle 
 
 test.dylib : foo.c
-	${CC} ${CCFLAGS} -dynamiclib foo.c -o test.dylib -mmacosx-version-min=10.5
+	${CC} ${CCFLAGS} -dynamiclib foo.c -o test.dylib 
 
 
 

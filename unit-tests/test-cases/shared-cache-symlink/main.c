@@ -55,22 +55,11 @@ int main()
 		return EXIT_SUCCESS;
 	}
 
-	// walk images to get slide
-	uint32_t count = _dyld_image_count();
-	for(uint32_t i=0; i < count; ++i) {
-		if ( _dyld_get_image_header(i) == info.dli_fbase ) {
-			if ( _dyld_get_image_vmaddr_slide(i) == 0 ) {
-				// images in shared cache have a slide of zero
-				PASS("shared-cache-symlink");
-				return EXIT_SUCCESS;
-			}
-			else {
-				FAIL("shared-cache-symlink: libz.dylib not loaded from shared cache");
-				return EXIT_SUCCESS;
-			}
-		}
-	 }
+	const struct mach_header* mh = (struct mach_header*)info.dli_fbase;
+	if ( mh->flags & 0x80000000 ) 
+		PASS("shared-cache-symlink");
+	else 
+		FAIL("shared-cache-symlink: libz.dylib not loaded from shared cache");
 
-	FAIL("shared-cache-symlink libz.dylib not found");
 	return EXIT_SUCCESS;
 }

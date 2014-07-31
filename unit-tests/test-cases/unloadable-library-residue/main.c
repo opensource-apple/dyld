@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -23,19 +23,28 @@
 #include <stdio.h>
 #include <string.h>
 #include <mach-o/dyld.h>
+#include <dlfcn.h>
+#include <Availability.h>
 
 #include "test.h" // PASS(), FAIL()
 
 
 int main()
 {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	// load libfoo which depends on libbar
 	const struct mach_header* mh = NSAddImage("libfoo.dylib", NSADDIMAGE_OPTION_RETURN_ON_ERROR);
 	if ( mh != NULL ) {
 		FAIL("library-cant-be-bound: NSAddImage should have failed");
 		return 1;
 	}
-	
+#else
+	if ( dlopen("libfoo.dylib", RTLD_LAZY) != NULL ){
+		FAIL("library-cant-be-bound: dlopen should have failed");
+		return 1;
+	}
+#endif
+
 	 uint32_t count = _dyld_image_count();
 	 for(uint32_t i=0; i < count; ++i) {
 		const char*  name = _dyld_get_image_name(i);

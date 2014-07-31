@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2008 Apple Inc. All rights reserved.
+ * Copyright (c) 2004-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -27,7 +27,7 @@
 #define __eip	eip 
 #define __rip	rip 
 
-
+#define __STDC_LIMIT_MACROS
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -42,13 +42,19 @@
 #include <sys/sysctl.h>
 #include <libkern/OSAtomic.h>
 #include <libkern/OSCacheControl.h>
+#include <stdint.h>
 
 #include "ImageLoaderMachO.h"
 #include "ImageLoaderMachOCompressed.h"
 #include "ImageLoaderMachOClassic.h"
 #include "mach-o/dyld_images.h"
 
+// <rdar://problem/8718137> use stack guard random value to add padding between dylibs
+extern "C" long __stack_chk_guard;
 
+#ifndef LC_LOAD_UPWARD_DYLIB
+	#define	LC_LOAD_UPWARD_DYLIB (0x23|LC_REQ_DYLD)	/* load of dylib whose initializers run later */
+#endif
 
 // relocation_info.r_length field has value 3 for 64-bit executables and value 2 for 32-bit executables
 #if __LP64__
@@ -82,7 +88,7 @@ ImageLoaderMachO::ImageLoaderMachO(const macho_header* mh, const char* path, uns
 	fReadOnlyImportSegment(false),
 #endif
 	fHasSubLibraries(false), fHasSubUmbrella(false), fInUmbrella(false), fHasDOFSections(false), fHasDashInit(false),
-	fHasInitializers(false), fHasTerminators(false)
+	fHasInitializers(false), fHasTerminators(false), fGoodFirstSegment(false), fRegisteredAsRequiresCoalescing(false)
 {
 	fIsSplitSeg = ((mh->flags & MH_SPLIT_SEGS) != 0);        
 
@@ -108,11 +114,13 @@ ImageLoaderMachO::ImageLoaderMachO(const macho_header* mh, const char* path, uns
 
 // determine if this mach-o file has classic or compressed LINKEDIT and number of segments it has
 void ImageLoaderMachO::sniffLoadCommands(const macho_header* mh, const char* path, bool* compressed, 
-											unsigned int* segCount, unsigned int* libCount)
+											unsigned int* segCount, unsigned int* libCount,
+											const linkedit_data_command** codeSigCmd)
 {
 	*compressed = false;
 	*segCount = 0;
 	*libCount = 0;
+	*codeSigCmd = NULL;
 	const uint32_t cmd_count = mh->ncmds;
 	const struct load_command* const cmds    = (struct load_command*)(((uint8_t*)mh) + sizeof(macho_header));
 	const struct load_command* const endCmds = (struct load_command*)(((uint8_t*)mh) + sizeof(macho_header) + mh->sizeofcmds);
@@ -131,7 +139,11 @@ void ImageLoaderMachO::sniffLoadCommands(const macho_header* mh, const char* pat
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
 			case LC_REEXPORT_DYLIB:
+			case LC_LOAD_UPWARD_DYLIB:
 				*libCount += 1;
+				break;
+			case LC_CODE_SIGNATURE:
+				*codeSigCmd = (struct linkedit_data_command*)cmd; // only support one LC_CODE_SIGNATURE per image
 				break;
 		}
 		uint32_t cmdLength = cmd->cmdsize;
@@ -163,7 +175,8 @@ ImageLoader* ImageLoaderMachO::instantiateMainExecutable(const macho_header* mh,
 	bool compressed;
 	unsigned int segCount;
 	unsigned int libCount;
-	sniffLoadCommands(mh, path, &compressed, &segCount, &libCount);
+	const linkedit_data_command* codeSigCmd;
+	sniffLoadCommands(mh, path, &compressed, &segCount, &libCount, &codeSigCmd);
 	// instantiate concrete class based on content of load commands
 	if ( compressed ) 
 		return ImageLoaderMachOCompressed::instantiateMainExecutable(mh, slide, path, segCount, libCount, context);
@@ -190,27 +203,29 @@ ImageLoader* ImageLoaderMachO::instantiateFromFile(const char* path, int fd, con
 	bool compressed;
 	unsigned int segCount;
 	unsigned int libCount;
-	sniffLoadCommands((const macho_header*)fileData, path, &compressed, &segCount, &libCount);
+	const linkedit_data_command* codeSigCmd;
+	sniffLoadCommands((const macho_header*)fileData, path, &compressed, &segCount, &libCount, &codeSigCmd);
 	// instantiate concrete class based on content of load commands
 	if ( compressed ) 
-		return ImageLoaderMachOCompressed::instantiateFromFile(path, fd, fileData, offsetInFat, lenInFat, info, segCount, libCount, context);
+		return ImageLoaderMachOCompressed::instantiateFromFile(path, fd, fileData, offsetInFat, lenInFat, info, segCount, libCount, codeSigCmd, context);
 	else
-		return ImageLoaderMachOClassic::instantiateFromFile(path, fd, fileData, offsetInFat, lenInFat, info, segCount, libCount, context);
+		return ImageLoaderMachOClassic::instantiateFromFile(path, fd, fileData, offsetInFat, lenInFat, info, segCount, libCount, codeSigCmd, context);
 }
 
 // create image by using cached mach-o file
-ImageLoader* ImageLoaderMachO::instantiateFromCache(const macho_header* mh, const char* path, const struct stat& info, const LinkContext& context)
+ImageLoader* ImageLoaderMachO::instantiateFromCache(const macho_header* mh, const char* path, long slide, const struct stat& info, const LinkContext& context)
 {
 	// instantiate right concrete class
 	bool compressed;
 	unsigned int segCount;
 	unsigned int libCount;
-	sniffLoadCommands(mh, path, &compressed, &segCount, &libCount);
+	const linkedit_data_command* codeSigCmd;
+	sniffLoadCommands(mh, path, &compressed, &segCount, &libCount, &codeSigCmd);
 	// instantiate concrete class based on content of load commands
 	if ( compressed ) 
-		return ImageLoaderMachOCompressed::instantiateFromCache(mh, path, info, segCount, libCount, context);
+		return ImageLoaderMachOCompressed::instantiateFromCache(mh, path, slide, info, segCount, libCount, context);
 	else
-		return ImageLoaderMachOClassic::instantiateFromCache(mh, path, info, segCount, libCount, context);
+		return ImageLoaderMachOClassic::instantiateFromCache(mh, path, slide, info, segCount, libCount, context);
 }
 
 // create image by copying an in-memory mach-o file
@@ -219,7 +234,8 @@ ImageLoader* ImageLoaderMachO::instantiateFromMemory(const char* moduleName, con
 	bool compressed;
 	unsigned int segCount;
 	unsigned int libCount;
-	sniffLoadCommands(mh, moduleName, &compressed, &segCount, &libCount);
+	const linkedit_data_command* sigcmd;
+	sniffLoadCommands(mh, moduleName, &compressed, &segCount, &libCount, &sigcmd);
 	// instantiate concrete class based on content of load commands
 	if ( compressed ) 
 		return ImageLoaderMachOCompressed::instantiateFromMemory(moduleName, mh, len, segCount, libCount, context);
@@ -239,7 +255,7 @@ void ImageLoaderMachO::parseLoadCmds()
 #if TEXT_RELOC_SUPPORT
 		// __TEXT segment always starts at beginning of file and contains mach_header and load commands
 		if ( strcmp(segName(i),"__TEXT") == 0 ) {
-			if ( segHasRebaseFixUps(i) )
+			if ( segHasRebaseFixUps(i) && (fSlide != 0) )
 				fTextSegmentRebases = true;
 			if ( segHasBindFixUps(i) )
 				fTextSegmentBinds = true;
@@ -258,6 +274,7 @@ void ImageLoaderMachO::parseLoadCmds()
 	// keep count of prebound images with weak exports
 	if ( this->participatesInCoalescing() ) {
 		++fgImagesRequiringCoalescing;
+		fRegisteredAsRequiresCoalescing = true;
 		if ( this->hasCoalescedExports() ) 
 			++fgImagesHasWeakDefinitions;
 	}
@@ -334,6 +351,7 @@ void ImageLoaderMachO::parseLoadCmds()
 			case LC_RPATH:
 			case LC_LOAD_WEAK_DYLIB:
 		    case LC_REEXPORT_DYLIB:
+			case LC_LOAD_UPWARD_DYLIB:
 				// do nothing, just prevent LC_REQ_DYLD exception from occuring
 				break;
 			default:
@@ -354,8 +372,8 @@ void ImageLoaderMachO::parseLoadCmds()
 // for UnmapSegments() to work
 void ImageLoaderMachO::destroy()
 {
-	// keep count of images with weak exports
-	if ( this->participatesInCoalescing() ) {
+	// update count of images with weak exports
+	if ( fRegisteredAsRequiresCoalescing ) {
 		--fgImagesRequiringCoalescing;
 		if ( this->hasCoalescedExports() ) 
 			--fgImagesHasWeakDefinitions;
@@ -629,36 +647,16 @@ void ImageLoaderMachO::setSlide(intptr_t slide)
 }
 
 #if CODESIGNING_SUPPORT
-void ImageLoaderMachO::loadCodeSignature(const uint8_t* fileData, int fd,  uint64_t offsetInFatFile)
+void ImageLoaderMachO::loadCodeSignature(const struct linkedit_data_command* codeSigCmd, int fd,  uint64_t offsetInFatFile)
 {
-	// look for code signature load command
-	// do this in the read() memory buffer - not in the mapped __TEXT segment
-	const uint32_t cmd_count = ((macho_header*)fileData)->ncmds;
-	const struct load_command* const cmds = (struct load_command*)&fileData[sizeof(macho_header)];
-	const struct load_command* cmd = cmds;
-	for (uint32_t i = 0; i < cmd_count; ++i) {
-		if ( cmd->cmd == LC_CODE_SIGNATURE ) {
-			const struct linkedit_data_command *sigcmd = (struct linkedit_data_command*) cmd;
-			// fLinkEditBase is not set up yet, so compute it
-			const uint8_t* linkEditBase = NULL;
-			for(unsigned int i=0; i < fSegmentsCount; ++i) {
-				// set up pointer to __LINKEDIT segment
-				if ( strcmp(segName(i),"__LINKEDIT") == 0 ) {
-					linkEditBase = (uint8_t*)(segActualLoadAddress(i) - segFileOffset(i));
-					break;
-				}
-			}
-			fsignatures_t siginfo;
-			siginfo.fs_file_start=offsetInFatFile;				// CD coverage offset 
-			siginfo.fs_blob_start=(void*)(linkEditBase+sigcmd->dataoff);	// start of CD in file
-			siginfo.fs_blob_size=sigcmd->datasize;			// size of CD
-			int result = fcntl(fd, F_ADDSIGS, &siginfo);
-			if ( result == -1 ) 
-				dyld::log("dyld: code signature failed for %s with errno=%d\n", this->getPath(), errno);
-			break; // only support one LC_CODE_SIGNATURE
-		}
-		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
-	}
+	fsignatures_t siginfo;
+	siginfo.fs_file_start=offsetInFatFile;			// start of mach-o slice in fat file 
+	siginfo.fs_blob_start=(void*)(codeSigCmd->dataoff);	// start of CD in mach-o file
+	siginfo.fs_blob_size=codeSigCmd->datasize;			// size of CD
+	int result = fcntl(fd, F_ADDFILESIGS, &siginfo);
+	if ( result == -1 ) 
+		dyld::log("dyld: F_ADDFILESIGS failed for %s with errno=%d\n", this->getPath(), errno);
+	//dyld::log("dyld: registered code signature for %s\n", this->getPath());
 }
 #endif
 
@@ -672,6 +670,52 @@ const char* ImageLoaderMachO::getInstallPath() const
 	return NULL;
 }
 
+void ImageLoaderMachO::registerInterposing()
+{
+	// mach-o files advertise interposing by having a __DATA __interpose section
+	uintptr_t textStart = this->segActualLoadAddress(0);
+	uintptr_t textEnd = this->segActualEndAddress(0);
+	// <rdar://problem/8268602> verify that the first segment load command is for a read-only segment
+	if ( ! fGoodFirstSegment )
+		return;
+	struct InterposeData { uintptr_t replacement; uintptr_t replacee; };
+	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+	const struct load_command* cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		switch (cmd->cmd) {
+			case LC_SEGMENT_COMMAND:
+				{
+					const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+					const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
+					const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
+					for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+						if ( ((sect->flags & SECTION_TYPE) == S_INTERPOSING) || ((strcmp(sect->sectname, "__interpose") == 0) && (strcmp(seg->segname, "__DATA") == 0)) ) {
+							const InterposeData* interposeArray = (InterposeData*)(sect->addr + fSlide);
+							const unsigned int count = sect->size / sizeof(InterposeData);
+							for (uint32_t i=0; i < count; ++i) {
+								ImageLoader::InterposeTuple tuple;
+								tuple.replacement		= interposeArray[i].replacement;
+								tuple.replacementImage	= this;
+								tuple.replacee			= interposeArray[i].replacee;
+								// <rdar://problem/7937695> verify that replacement is in this image
+								if ( (tuple.replacement >= textStart) && (tuple.replacement < textEnd) ) {
+									for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
+										if ( it->replacee == tuple.replacee ) {
+											tuple.replacee = it->replacement;
+										}
+									}
+									ImageLoader::fgInterposingTuples.push_back(tuple);
+								}
+							}
+						}
+					}
+				}
+				break;
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+}
 
 
 void* ImageLoaderMachO::getMain() const
@@ -728,6 +772,7 @@ bool ImageLoaderMachO::needsAddedLibSystemDepency(unsigned int libCount, const m
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
 			case LC_REEXPORT_DYLIB:
+			case LC_LOAD_UPWARD_DYLIB:
 				return false;
 			case LC_ID_DYLIB:
 				{
@@ -756,6 +801,7 @@ void ImageLoaderMachO::doGetDependentLibraries(DependentLibraryInfo libs[])
 		lib->info.maxVersion = 0;
 		lib->required = false;
 		lib->reExported = false;
+		lib->upward = false;
 	}
 	else {
 		uint32_t index = 0;
@@ -767,6 +813,7 @@ void ImageLoaderMachO::doGetDependentLibraries(DependentLibraryInfo libs[])
 				case LC_LOAD_DYLIB:
 				case LC_LOAD_WEAK_DYLIB:
 				case LC_REEXPORT_DYLIB:
+				case LC_LOAD_UPWARD_DYLIB:
 				{
 					const struct dylib_command* dylib = (struct dylib_command*)cmd;
 					DependentLibraryInfo* lib = &libs[index++];
@@ -777,6 +824,7 @@ void ImageLoaderMachO::doGetDependentLibraries(DependentLibraryInfo libs[])
 					lib->info.maxVersion = dylib->dylib.current_version;
 					lib->required = (cmd->cmd != LC_LOAD_WEAK_DYLIB);
 					lib->reExported = (cmd->cmd == LC_REEXPORT_DYLIB);
+					lib->upward = (cmd->cmd == LC_LOAD_UPWARD_DYLIB);
 				}
 				break;
 			}
@@ -810,6 +858,7 @@ void ImageLoaderMachO::getRPaths(const LinkContext& context, std::vector<const c
 	for (uint32_t i = 0; i < cmd_count; ++i) {
 		switch (cmd->cmd) {
 			case LC_RPATH:
+				const char* pathToAdd = NULL;
 				const char* path = (char*)cmd + ((struct rpath_command*)cmd)->path.offset;
 				if ( strncmp(path, "@loader_path/", 13) == 0 ) {
 					if ( context.processIsRestricted  && (context.mainExecutable == this) ) {
@@ -825,7 +874,7 @@ void ImageLoaderMachO::getRPaths(const LinkContext& context, std::vector<const c
 							strcpy(&addPoint[1], &path[13]);
 						else
 							strcpy(newRealPath, &path[13]);
-						path = strdup(newRealPath);
+						pathToAdd = strdup(newRealPath);
 					}
 				}
 				else if ( strncmp(path, "@executable_path/", 17) == 0 ) {
@@ -842,7 +891,7 @@ void ImageLoaderMachO::getRPaths(const LinkContext& context, std::vector<const c
 							strcpy(&addPoint[1], &path[17]);
 						else
 							strcpy(newRealPath, &path[17]);
-						path = strdup(newRealPath);
+						pathToAdd = strdup(newRealPath);
 					}
 				}
 				else if ( (path[0] != '/') && context.processIsRestricted ) {
@@ -860,21 +909,22 @@ void ImageLoaderMachO::getRPaths(const LinkContext& context, std::vector<const c
 						struct stat stat_buf;
 						if ( stat(newPath, &stat_buf) != -1 ) {
 							//dyld::log("combined DYLD_ROOT_PATH and LC_RPATH: %s\n", newPath);
-							path = strdup(newPath);
+							pathToAdd = strdup(newPath);
 							found = true;
 							break;
 						}
 					}
 					if ( ! found ) {
 						// make copy so that all elements of 'paths' can be freed
-						path = strdup(path);
+						pathToAdd = strdup(path);
 					}
 				}
 				else {
 					// make copy so that all elements of 'paths' can be freed
-					path = strdup(path);
+					pathToAdd = strdup(path);
 				}
-				paths.push_back(path);
+				if ( pathToAdd != NULL )
+					paths.push_back(pathToAdd);
 				break;
 		}
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
@@ -972,8 +1022,9 @@ void ImageLoaderMachO::makeTextSegmentWritable(const LinkContext& context, bool 
 		segMakeWritable(textSegmentIndex, context);
 	}
 	else {
-		segProtect(textSegmentIndex, context);
+		// iPhoneOS requires range to be invalidated before it is made executable
 		sys_icache_invalidate((void*)segActualLoadAddress(textSegmentIndex), segSize(textSegmentIndex));
+		segProtect(textSegmentIndex, context);
 	}
 }
 #endif
@@ -1004,14 +1055,27 @@ const ImageLoader::Symbol* ImageLoaderMachO::findExportedSymbol(const char* name
 
 
 
-uintptr_t ImageLoaderMachO::getExportedSymbolAddress(const Symbol* sym, const LinkContext& context, const ImageLoader* requestor) const
+uintptr_t ImageLoaderMachO::getExportedSymbolAddress(const Symbol* sym, const LinkContext& context, 
+											const ImageLoader* requestor, bool runResolver) const
 {
-	return this->getSymbolAddress(sym, requestor, context);
+	return this->getSymbolAddress(sym, requestor, context, runResolver);
 }
 
-uintptr_t ImageLoaderMachO::getSymbolAddress(const Symbol* sym, const ImageLoader* requestor, const LinkContext& context) const
+uintptr_t ImageLoaderMachO::getSymbolAddress(const Symbol* sym, const ImageLoader* requestor, 
+												const LinkContext& context, bool runResolver) const
 {
-	uintptr_t result = exportedSymbolAddress(sym);
+	uintptr_t result = exportedSymbolAddress(context, sym, runResolver);
+	// check for interposing overrides
+	for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
+		// replace all references to 'replacee' with 'replacement'
+		if ( (result == it->replacee) && (requestor != it->replacementImage) ) {
+			if ( context.verboseInterposing ) {
+				dyld::log("dyld interposing: replace 0x%lX with 0x%lX in %s\n", 
+					it->replacee, it->replacement, this->getPath());
+			}
+			result = it->replacement;
+		}
+	}
 	return result;
 }
 
@@ -1149,8 +1213,11 @@ bool ImageLoaderMachO::findSection(const void* imageInterior, const char** segme
 }
 
 
-void __attribute__((noreturn)) ImageLoaderMachO::throwSymbolNotFound(const char* symbol, const char* referencedFrom, const char* expectedIn)
+void __attribute__((noreturn)) ImageLoaderMachO::throwSymbolNotFound(const LinkContext& context, const char* symbol, 
+																	const char* referencedFrom, const char* expectedIn)
 {
+	// record values for possible use by CrashReporter or Finder
+	(*context.setErrorStrings)(dyld_error_kind_symbol_missing, referencedFrom, expectedIn, symbol);
 	dyld::throwf("Symbol not found: %s\n  Referenced from: %s\n  Expected in: %s\n", symbol, referencedFrom, expectedIn); 
 }
 
@@ -1196,6 +1263,9 @@ uintptr_t ImageLoaderMachO::bindLocation(const LinkContext& context, uintptr_t l
 						((targetImage != NULL) ? targetImage->getShortName() : "<weak>import-missing>"),
 						 symbolName, (uintptr_t)location, value);
 	}
+#if LOG_BINDINGS
+//	dyld::logBindings("%s: %s\n", targetImage->getShortName(), symbolName);
+#endif
 	
 	// do actual update
 	uintptr_t* locationToFix = (uintptr_t*)location;
@@ -1333,22 +1403,22 @@ void ImageLoaderMachO::lookupProgramVars(const LinkContext& context) const
 	// lookup _NXArgc
 	sym = this->findExportedSymbol("_NXArgc", false, NULL);
 	if ( sym != NULL )
-		vars.NXArgcPtr = (int*)this->getExportedSymbolAddress(sym, context, this);
+		vars.NXArgcPtr = (int*)this->getExportedSymbolAddress(sym, context, this, false);
 		
 	// lookup _NXArgv
 	sym = this->findExportedSymbol("_NXArgv", false, NULL);
 	if ( sym != NULL )
-		vars.NXArgvPtr = (const char***)this->getExportedSymbolAddress(sym, context, this);
+		vars.NXArgvPtr = (const char***)this->getExportedSymbolAddress(sym, context, this, false);
 		
 	// lookup _environ
 	sym = this->findExportedSymbol("_environ", false, NULL);
 	if ( sym != NULL )
-		vars.environPtr = (const char***)this->getExportedSymbolAddress(sym, context, this);
+		vars.environPtr = (const char***)this->getExportedSymbolAddress(sym, context, this, false);
 		
 	// lookup __progname
 	sym = this->findExportedSymbol("___progname", false, NULL);
 	if ( sym != NULL )
-		vars.__prognamePtr = (const char**)this->getExportedSymbolAddress(sym, context, this);
+		vars.__prognamePtr = (const char**)this->getExportedSymbolAddress(sym, context, this, false);
 		
 	context.setNewProgramVars(vars);
 }
@@ -1357,8 +1427,7 @@ void ImageLoaderMachO::lookupProgramVars(const LinkContext& context) const
 bool ImageLoaderMachO::usablePrebinding(const LinkContext& context) const
 {
 	// if prebound and loaded at prebound address, and all libraries are same as when this was prebound, then no need to bind
-	if ( (this->isPrebindable() || fInSharedCache)
-		&& (this->getSlide() == 0) 
+	if ( ((this->isPrebindable() && (this->getSlide() == 0)) || fInSharedCache)
 		&& this->usesTwoLevelNameSpace()
 		&& this->allDependentLibrariesAsWhenPreBound() ) {
 		// allow environment variables to disable prebinding
@@ -1382,6 +1451,16 @@ bool ImageLoaderMachO::usablePrebinding(const LinkContext& context) const
 void ImageLoaderMachO::doImageInit(const LinkContext& context)
 {
 	if ( fHasDashInit ) {
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+		// <rdar://problem/8543820> verify initializers are in first segment for dylibs
+		if ( this->isDylib() && !fGoodFirstSegment ) {
+			if ( context.verboseInit )
+				dyld::log("dyld: ignoring -init in %s\n", this->getPath());
+			return;
+		}
+		uintptr_t textStart = this->segActualLoadAddress(0);
+		uintptr_t textEnd = this->segActualEndAddress(0);
+#endif
 		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
 		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
 		const struct load_command* cmd = cmds;
@@ -1389,9 +1468,20 @@ void ImageLoaderMachO::doImageInit(const LinkContext& context)
 			switch (cmd->cmd) {
 				case LC_ROUTINES_COMMAND:
 					Initializer func = (Initializer)(((struct macho_routines_command*)cmd)->init_address + fSlide);
-					if ( context.verboseInit )
-						dyld::log("dyld: calling -init function 0x%p in %s\n", func, this->getPath());
-					func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+					// <rdar://problem/8543820> verify initializers are in first segment for dylibs
+					if ( this->isDylib() && (((uintptr_t)func >= textEnd) || ((uintptr_t)func < textStart)) ) {
+						if ( context.verboseInit )
+							dyld::log("dyld: ignoring out of bounds initializer function %p in %s\n", func, this->getPath());
+					}
+					else {
+#endif
+						if ( context.verboseInit )
+							dyld::log("dyld: calling -init function 0x%p in %s\n", func, this->getPath());
+						func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+					}
+#endif
 					break;
 			}
 			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
@@ -1402,6 +1492,16 @@ void ImageLoaderMachO::doImageInit(const LinkContext& context)
 void ImageLoaderMachO::doModInitFunctions(const LinkContext& context)
 {
 	if ( fHasInitializers ) {
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+		// <rdar://problem/8543820> verify initializers are in first segment for dylibs
+		if ( this->isDylib() && !fGoodFirstSegment ) {
+			if ( context.verboseInit )
+				dyld::log("dyld: ignoring all initializers in %s\n", this->getPath());
+			return;
+		}
+		uintptr_t textStart = this->segActualLoadAddress(0);
+		uintptr_t textEnd = this->segActualEndAddress(0);
+#endif
 		const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
 		const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
 		const struct load_command* cmd = cmds;
@@ -1417,14 +1517,25 @@ void ImageLoaderMachO::doModInitFunctions(const LinkContext& context)
 						const uint32_t count = sect->size / sizeof(uintptr_t);
 						for (uint32_t i=0; i < count; ++i) {
 							Initializer func = inits[i];
-							if ( context.verboseInit )
-								dyld::log("dyld: calling initializer function %p in %s\n", func, this->getPath());
-							func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+							// <rdar://problem/8543820> verify initializers are in first segment for dylibs
+							if ( this->isDylib() && (((uintptr_t)func >= textEnd) || ((uintptr_t)func < textStart)) ) {
+								if ( context.verboseInit )
+									dyld::log("dyld: ignoring out of bounds initializer function %p in %s\n", func, this->getPath());
+							}
+							else {
+#endif						
+								if ( context.verboseInit )
+									dyld::log("dyld: calling initializer function %p in %s\n", func, this->getPath());
+								func(context.argc, context.argv, context.envp, context.apple, &context.programVars);
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+							}
+#endif
 						}
 					}
 				}
-				cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 			}
+			cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 		}
 	}
 }
@@ -1466,11 +1577,17 @@ void ImageLoaderMachO::doGetDOFSections(const LinkContext& context, std::vector<
 }	
 
 
-void ImageLoaderMachO::doInitialization(const LinkContext& context)
+bool ImageLoaderMachO::doInitialization(const LinkContext& context)
 {
+	CRSetCrashLogMessage2(this->getPath());
+
 	// mach-o has -init and static initializers
 	doImageInit(context);
 	doModInitFunctions(context);
+	
+	CRSetCrashLogMessage2(NULL);
+	
+	return (fHasDashInit || fHasInitializers);
 }
 
 bool ImageLoaderMachO::needsInitialization()
@@ -1516,12 +1633,13 @@ void ImageLoaderMachO::doTermination(const LinkContext& context)
 }
 
 
-void ImageLoaderMachO::printStatistics(unsigned int imageCount)
+void ImageLoaderMachO::printStatistics(unsigned int imageCount, const InitializerTimingList& timingInfo)
 {
-	ImageLoader::printStatistics(imageCount);
+	ImageLoader::printStatistics(imageCount, timingInfo);
 	dyld::log("total symbol trie searches:    %d\n", fgSymbolTrieSearchs);
 	dyld::log("total symbol table binary searches:    %d\n", fgSymbolTableBinarySearchs);
-	dyld::log("total images defining/using weak symbols:  %u/%u\n", fgImagesHasWeakDefinitions, fgImagesRequiringCoalescing);
+	dyld::log("total images defining weak symbols:  %u\n", fgImagesHasWeakDefinitions);
+	dyld::log("total images using weak symbols:  %u\n", fgImagesRequiringCoalescing);
 }
 
 
@@ -1557,7 +1675,7 @@ intptr_t ImageLoaderMachO::assignSegmentAddresses(const LinkContext& context)
 			if ( strcmp(segName(i), "__PAGEZERO") == 0 )
 				continue;
 			if ( !reserveAddressRange(segPreferredLoadAddress(i), segSize(i)) )
-				throw "can't map";
+				dyld::throwf("can't map unslidable segment %s to 0x%lX with size 0x%lX", segName(i), segPreferredLoadAddress(i), segSize(i));
 		}
 	}
 	else {
@@ -1573,7 +1691,9 @@ uintptr_t ImageLoaderMachO::reserveAnAddressRange(size_t length, const ImageLoad
 	vm_size_t size = length;
 	// in PIE programs, load initial dylibs after main executable so they don't have fixed addresses either
 	if ( fgNextPIEDylibAddress != 0 ) {
-		addr = fgNextPIEDylibAddress + (arc4random() & 0x3) * 4096; // add small random padding between dylibs
+		 // add small (0-3 pages) random padding between dylibs
+		addr = fgNextPIEDylibAddress + (__stack_chk_guard/fgNextPIEDylibAddress & (sizeof(long)-1))*4096;
+		//dyld::log("padding 0x%08llX, guard=0x%08llX\n", (long long)(addr - fgNextPIEDylibAddress), (long long)(__stack_chk_guard));
 		kern_return_t r = vm_allocate(mach_task_self(), &addr, size, VM_FLAGS_FIXED);
 		if ( r == KERN_SUCCESS ) {
 			fgNextPIEDylibAddress = addr + size;
@@ -1606,14 +1726,30 @@ void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInF
 	intptr_t slide = this->assignSegmentAddresses(context);
 	if ( context.verboseMapping )
 		dyld::log("dyld: Mapping %s\n", this->getPath());
+	// <rdar://problem/8268602> verify that the first segment load command is for a r-x segment
+	// that starts at begining of file and is larger than all load commands
+	uintptr_t firstSegMappedStart = segPreferredLoadAddress(0) + slide;
+	uintptr_t firstSegMappedEnd = firstSegMappedStart + this->segSize(0);
+	if ( (this->segLoadCommand(0)->initprot == (VM_PROT_EXECUTE|VM_PROT_READ)) 
+		&& (this->segFileOffset(0) == 0) 
+		&& (this->segFileSize(0) != 0) 
+		&& (this->segSize(0) > ((macho_header*)fMachOData)->sizeofcmds) ) {
+			fGoodFirstSegment = true;
+	}
 	// map in all segments
 	for(unsigned int i=0, e=segmentCount(); i < e; ++i) {
 		vm_offset_t fileOffset = segFileOffset(i) + offsetInFat;
 		vm_size_t size = segFileSize(i);
-		void* requestedLoadAddress = (void*)(segPreferredLoadAddress(i) + slide);
+		uintptr_t requestedLoadAddress = segPreferredLoadAddress(i) + slide;
+		// <rdar://problem/8268602> verify other segments map after first
+		if ( (i != 0) && (requestedLoadAddress < firstSegMappedEnd) )
+			fGoodFirstSegment = false;
 		int protection = 0;
 		if ( !segUnaccessible(i) ) {
-			if ( segExecutable(i) )
+			// If has text-relocs, don't set x-bit initially.
+			// Instead set it later after text-relocs have been done.
+			// The iPhone OS does not like it when you make executable code writable.
+			if ( segExecutable(i) && !(segHasRebaseFixUps(i) && (slide != 0)) )
 				protection   |= PROT_EXEC;
 			if ( segReadable(i) )
 				protection   |= PROT_READ;
@@ -1631,19 +1767,20 @@ void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInF
 				dyld::throwf("truncated mach-o error: segment %s extends to %llu which is past end of file %llu", 
 								segName(i), (uint64_t)(fileOffset+size), fileLen);
 			}
-			void* loadAddress = mmap(requestedLoadAddress, size, protection, MAP_FIXED | MAP_PRIVATE, fd, fileOffset);
+			void* loadAddress = mmap((void*)requestedLoadAddress, size, protection, MAP_FIXED | MAP_PRIVATE, fd, fileOffset);
 			if ( loadAddress == ((void*)(-1)) ) {
 				dyld::throwf("mmap() error %d at address=0x%08lX, size=0x%08lX segment=%s in Segment::map() mapping %s", 
-					errno, (uintptr_t)requestedLoadAddress, (uintptr_t)size, segName(i), getPath());
+					errno, requestedLoadAddress, (uintptr_t)size, segName(i), getPath());
 			}
 		}
 		// update stats
 		++ImageLoader::fgTotalSegmentsMapped;
 		ImageLoader::fgTotalBytesMapped += size;
 		if ( context.verboseMapping )
-			dyld::log("%18s at 0x%08lX->0x%08lX with permissions %c%c%c\n", segName(i), (uintptr_t)requestedLoadAddress, (uintptr_t)((char*)requestedLoadAddress+size-1),
+			dyld::log("%18s at 0x%08lX->0x%08lX with permissions %c%c%c\n", segName(i), requestedLoadAddress, requestedLoadAddress+size-1,
 				(protection & PROT_READ) ? 'r' : '.',  (protection & PROT_WRITE) ? 'w' : '.',  (protection & PROT_EXEC) ? 'x' : '.' );
 	}
+
 	// update slide to reflect load location			
 	this->setSlide(slide);
 }
@@ -1689,8 +1826,10 @@ void ImageLoaderMachO::segProtect(unsigned int segIndex, const ImageLoader::Link
 	vm_size_t size = segSize(segIndex);
 	const bool setCurrentPermissions = false;
 	kern_return_t r = vm_protect(mach_task_self(), addr, size, setCurrentPermissions, protection);
-	if ( r != KERN_SUCCESS ) 
-		throw "can't set vm permissions for mapped segment";
+	if ( r != KERN_SUCCESS ) {
+        dyld::throwf("vm_protect(0x%08llX, 0x%08llX, false, 0x%02X) failed, result=%d for segment %s in %s",
+            (long long)addr, (long long)size, protection, r, segName(segIndex), this->getPath());
+    }
 	if ( context.verboseMapping ) {
 		dyld::log("%18s at 0x%08lX->0x%08lX altered permissions to %c%c%c\n", segName(segIndex), (uintptr_t)addr, (uintptr_t)addr+size-1,
 			(protection & PROT_READ) ? 'r' : '.',  (protection & PROT_WRITE) ? 'w' : '.',  (protection & PROT_EXEC) ? 'x' : '.' );
@@ -1703,11 +1842,13 @@ void ImageLoaderMachO::segMakeWritable(unsigned int segIndex, const ImageLoader:
 	vm_size_t size = segSize(segIndex);
 	const bool setCurrentPermissions = false;
 	vm_prot_t protection = VM_PROT_WRITE | VM_PROT_READ;
-	if ( segExecutable(segIndex) )
+	if ( segExecutable(segIndex) && !segHasRebaseFixUps(segIndex) )
 		protection |= VM_PROT_EXECUTE;
 	kern_return_t r = vm_protect(mach_task_self(), addr, size, setCurrentPermissions, protection);
-	if ( r != KERN_SUCCESS ) 
-		throw "can't set vm permissions for mapped segment";
+	if ( r != KERN_SUCCESS ) {
+        dyld::throwf("vm_protect(0x%08llX, 0x%08llX, false, 0x%02X) failed, result=%d for segment %s in %s",
+            (long long)addr, (long long)size, protection, r, segName(segIndex), this->getPath());
+    }
 	if ( context.verboseMapping ) {
 		dyld::log("%18s at 0x%08lX->0x%08lX altered permissions to %c%c%c\n", segName(segIndex), (uintptr_t)addr, (uintptr_t)addr+size-1,
 			(protection & PROT_READ) ? 'r' : '.',  (protection & PROT_WRITE) ? 'w' : '.',  (protection & PROT_EXEC) ? 'x' : '.' );

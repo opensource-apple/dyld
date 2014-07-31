@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2003-2008 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2003-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -24,13 +24,32 @@
 #ifndef _MACH_O_DYLD_PRIV_H_
 #define _MACH_O_DYLD_PRIV_H_
 
-
+#include <stdbool.h>
+#include <Availability.h>
 #include <mach-o/dyld.h>
 #include <mach-o/dyld_images.h>
 
 #if __cplusplus
 extern "C" {
 #endif /* __cplusplus */
+
+
+
+//
+// private interface between libSystem.dylib and dyld
+//
+extern int _dyld_func_lookup(const char* dyld_func_name, void **address);
+
+
+//
+// _dyld_moninit() is a private interface between libSystem.dylib and dyld
+//
+extern void _dyld_moninit(void (*monaddition)(char *lowpc, char *highpc));
+
+//
+// private interface between libSystem.dylib and dyld
+//
+extern void _dyld_fork_child();
 
 
 //
@@ -66,6 +85,51 @@ typedef const char* (*dyld_image_state_change_handler)(enum dyld_image_states st
 //
 extern void
 dyld_register_image_state_change_handler(enum dyld_image_states state, bool batch, dyld_image_state_change_handler handler);
+
+
+//
+// Possible thread-local variable state changes for which you can register to be notified
+//
+enum dyld_tlv_states {
+    dyld_tlv_state_allocated = 10,   // TLV range newly allocated
+    dyld_tlv_state_deallocated = 20  // TLV range about to be deallocated
+};
+
+// 
+// Info about thread-local variable storage.
+// 
+typedef struct {
+    size_t info_size;    // sizeof(dyld_tlv_info)
+    void * tlv_addr;     // Base address of TLV storage
+    size_t tlv_size;     // Byte size of TLV storage
+} dyld_tlv_info;
+
+#if __BLOCKS__
+
+// 
+// Callback that notes changes to thread-local variable storage.
+// 
+typedef void (^dyld_tlv_state_change_handler)(enum dyld_tlv_states state, const dyld_tlv_info *info);
+
+//
+// Register a handler to be called when a thread adds or removes storage for thread-local variables.
+// The registered handler will only be called from and on behalf of the thread that owns the storage.
+// The registered handler will NOT be called for any storage that was 
+//   already allocated before dyld_register_tlv_state_change_handler() was 
+//   called. Use dyld_enumerate_tlv_storage() to get that information.
+// Exists in Mac OS X 10.7 and later 
+// 
+extern void 
+dyld_register_tlv_state_change_handler(enum dyld_tlv_states state, dyld_tlv_state_change_handler handler);
+
+// 
+// Enumerate the current thread-local variable storage allocated for the current thread. 
+// Exists in Mac OS X 10.7 and later 
+//
+extern void 
+dyld_enumerate_tlv_storage(dyld_tlv_state_change_handler handler);
+
+#endif
 
 
 //
@@ -114,7 +178,13 @@ extern const char* dyld_image_path_containing_address(const void* addr);
 
 
 
-
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+//
+// Returns if any OS dylib has overridden its copy in the shared cache
+//
+// Exists in iPhoneOS 3.1 and later 
+extern bool dyld_shared_cache_some_image_overridden();
+#endif
 
 
 

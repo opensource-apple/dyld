@@ -53,10 +53,14 @@ namespace dyld {
 		void		(*acquireDyldInitializerLock)();
 		void		(*releaseDyldInitializerLock)();
 		// added in version 5
-		int		(*pthread_key_create)(pthread_key_t*, void (*destructor)(void*));
-		int		(*pthread_setspecific)(pthread_key_t, const void*);
+		int			(*pthread_key_create)(pthread_key_t*, void (*destructor)(void*));
+		int			(*pthread_setspecific)(pthread_key_t, const void*);
 		// added in version 6
 		size_t		(*malloc_size)(const void *ptr);
+		// added in version 7
+		void*		(*pthread_getspecific)(pthread_key_t);
+		// added in version 8
+		void		(*cxa_finalize)(const void*);
 	};
 #if __cplusplus
 };

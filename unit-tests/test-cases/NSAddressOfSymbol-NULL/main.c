@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2008-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -23,6 +23,7 @@
 #include <stdio.h>  // fprintf(), NULL
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <string.h>
+#include <Availability.h>
 
 #include <mach-o/dyld.h>
 
@@ -32,7 +33,10 @@
 
 int main()
 {
+// NSAddressOfSymbol is only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	NSAddressOfSymbol(NULL);
+#endif
 	
 	PASS("NSAddressOfSymbol-NULL");
 	return 0;

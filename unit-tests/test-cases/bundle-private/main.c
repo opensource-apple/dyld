@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <mach-o/dyld.h>
+#include <Availability.h>
 
 #include "test.h" // PASS(), FAIL()
 
@@ -30,6 +31,8 @@ typedef bool (*CheckFunc)();
 
 int main()
 {
+// NSCreateObjectFileImageFromMemory is only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	NSObjectFileImage ofi;
 	if ( NSCreateObjectFileImageFromFile("test.bundle", &ofi) != NSObjectFileImageSuccess ) {
 		FAIL("NSCreateObjectFileImageFromFile failed");
@@ -89,7 +92,7 @@ int main()
 		FAIL("NSDestroyObjectFileImage failed");
 		return 1;
 	}
-
+#endif
 	PASS("bundle-private");
 	return 0;
 }

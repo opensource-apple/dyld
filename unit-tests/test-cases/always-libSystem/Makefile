@@ -27,13 +27,16 @@ all-check: all check
 
 check:
 	./main
+ifneq "$(OS_NAME)" "iPhoneOS"
+	# "avoid" does not work on iPhoneOS because the original dylibs don't exist
 	export DYLD_SHARED_REGION=avoid && ./main
+endif
 
 all: main
 
 
 main: main.c 
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c -mmacosx-version-min=10.5
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c 
 
 
 

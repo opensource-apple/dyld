@@ -33,7 +33,7 @@ ifeq "ppc" "$(ARCH)"
 endif
 
 
-ifeq "armv6" "$(ARCH)"
+ifeq "iPhoneOS" "$(OS_NAME)"
 	STACK_SIZE = 0x20000000
 endif
 

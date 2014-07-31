@@ -27,10 +27,16 @@ include ${TESTROOT}/include/common.makefile
 # Test that dtrace probes fire 
 #
 
+ifeq "$(OS_NAME)" "iPhoneOS"
+	SUDO = 
+else
+	SUDO = sudo
+endif
+
 all-check: all check
 
 check:
-	if [ `sudo dtrace -q -n 'Foo$$target:::count { printf("%u\n", arg0); } ' -c ./main | wc -w` == 5 ]; \
+	if [ `${SUDO} /usr/sbin/dtrace -q -n 'Foo$$target:::count { printf("%u\n", arg0); } ' -c ./main | wc -w` == 5 ]; \
 	then \
 		echo "PASS dtrace-static-probes"; \
 	else \

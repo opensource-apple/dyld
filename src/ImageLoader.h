@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2008 Apple Inc. All rights reserved.
+ * Copyright (c) 2004-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -35,8 +35,17 @@
 #include <mach-o/nlist.h> 
 #include <stdint.h>
 #include <vector>
-#include <set>
 #include <new>
+
+#if (__i386__ || __x86_64__)
+	#include <CrashReporterClient.h>
+#else
+	// work around until iOS has CrashReporterClient.h
+	#define CRSetCrashLogMessage(x)
+	#define CRSetCrashLogMessage2(x)
+#endif
+
+#define LOG_BINDINGS 0
 
 #include "mach-o/dyld_images.h"
 #include "mach-o/dyld_priv.h"
@@ -58,16 +67,27 @@
 	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_ARM
 #endif
 
+#ifndef EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER
+	#define EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER 0x10
+#endif
+#ifndef EXPORT_SYMBOL_FLAGS_REEXPORT
+	#define EXPORT_SYMBOL_FLAGS_REEXPORT 0x08
+#endif
 
 
 #define SPLIT_SEG_SHARED_REGION_SUPPORT __arm__
 #define SPLIT_SEG_DYLIB_SUPPORT (__ppc__ || __i386__ || __arm__)
 #define PREBOUND_IMAGE_SUPPORT (__ppc__ || __i386__ || __arm__)
-#define TEXT_RELOC_SUPPORT (__ppc__ || __i386__)
-#define DYLD_SHARED_CACHE_SUPPORT (__ppc__ || __i386__ || __ppc64__ || __x86_64__)
+#define TEXT_RELOC_SUPPORT (__ppc__ || __i386__ || __arm__)
+#define DYLD_SHARED_CACHE_SUPPORT (__ppc__ || __i386__ || __ppc64__ || __x86_64__ || __arm__)
 #define SUPPORT_OLD_CRT_INITIALIZATION (__ppc__ || __i386__)
-#define COMPRESSED_DYLD_INFO_SUPPORT (__i386__ || __x86_64__)
-#define CORESYMBOLICATION_SUPPORT   (__i386__ || __x86_64__)
+#define SUPPORT_LC_DYLD_ENVIRONMENT  (__i386__ || __x86_64__)
+#define SUPPORT_VERSIONED_PATHS  (__i386__ || __x86_64__)
+#if __IPHONE_OS_VERSION_MIN_REQUIRED
+	#define CORESYMBOLICATION_SUPPORT 1
+#else
+	#define CORESYMBOLICATION_SUPPORT   (__i386__ || __x86_64__)
+#endif
 #if __arm__
 	#define INITIAL_IMAGE_COUNT 100
 #else
@@ -82,6 +102,9 @@ namespace dyld {
 	extern void log(const char* format, ...)  __attribute__((format(printf, 1, 2)));
 	extern void warn(const char* format, ...)  __attribute__((format(printf, 1, 2)));
 	extern const char* mkstringf(const char* format, ...)  __attribute__((format(printf, 1, 2)));
+#if LOG_BINDINGS
+	extern void logBindings(const char* format, ...)  __attribute__((format(printf, 1, 2)));
+#endif
 };
 
 
@@ -167,6 +190,8 @@ public:
 		unsigned int	(*imageCount)();
 		void			(*setNewProgramVars)(const ProgramVars&);
 		bool			(*inSharedCache)(const char* path);
+		void			(*setErrorStrings)(unsigned errorCode, const char* errorClientOfDylibPath,
+										const char* errorTargetDylibPath, const char* errorSymbol);
 #if SUPPORT_OLD_CRT_INITIALIZATION
 		void			(*setRunInitialzersOldWay)();
 #endif
@@ -188,7 +213,6 @@ public:
 		bool			bindFlat;
 		bool			linkingMainExecutable;
 		bool			startedInitializingMainExecutable;
-		bool			noPIE;
 		bool			processIsRestricted;
 		bool			verboseOpts;
 		bool			verboseEnv;
@@ -199,7 +223,10 @@ public:
 		bool			verboseInit;
 		bool			verboseDOF;
 		bool			verbosePrebinding;
+		bool			verboseCoreSymbolication;
 		bool			verboseWarnings;
+		bool			verboseRPaths;
+		bool			verboseInterposing;
 	};
 	
 	struct CoalIterator
@@ -223,6 +250,14 @@ public:
 	virtual	uintptr_t		getAddressCoalIterator(CoalIterator&, const LinkContext& context) = 0;
 	virtual	void			updateUsesCoalIterator(CoalIterator&, uintptr_t newAddr, ImageLoader* target, const LinkContext& context) = 0;
 	
+	struct InitializerTimingList
+	{
+		uintptr_t	count;
+		struct {
+			ImageLoader*	image;
+			uint64_t		initTime;
+		}			images[1];
+	};
 	
 	
 										// constructor is protected, but anyone can delete an image
@@ -234,7 +269,7 @@ public:
 	
 										// runInitializers() is normally called in link() but the main executable must 
 										// run crt code before initializers
-	void								runInitializers(const LinkContext& context);
+	void								runInitializers(const LinkContext& context, InitializerTimingList& timingInfo);
 	
 										// called after link() forces all lazy pointers to be bound
 	void								bindAllLazyPointers(const LinkContext& context, bool recursive);
@@ -272,6 +307,9 @@ public:
 										// even if image is deleted, leave segments mapped in
 	bool								leaveMapped() { return fLeaveMapped; }
 
+										// image resides in dyld shared cache
+	virtual bool						inSharedCache() const = 0;
+
 										// checks if the specifed address is within one of this image's segments
 	virtual bool						containsAddress(const void* addr) const;
 
@@ -306,7 +344,8 @@ public:
 	virtual const Symbol*				findExportedSymbol(const char* name, bool searchReExports, const ImageLoader** foundIn) const = 0;
 	
 										// gets address of implementation (code) of the specified exported symbol
-	virtual uintptr_t					getExportedSymbolAddress(const Symbol* sym, const LinkContext& context, const ImageLoader* requestor=NULL) const = 0;
+	virtual uintptr_t					getExportedSymbolAddress(const Symbol* sym, const LinkContext& context, 
+													const ImageLoader* requestor=NULL, bool runResolver=false) const = 0;
 	
 										// gets attributes of the specified exported symbol
 	virtual DefinitionFlags				getExportedSymbolInfo(const Symbol* sym) const = 0;
@@ -362,7 +401,8 @@ public:
 	virtual uintptr_t					doBindLazySymbol(uintptr_t* lazyPointer, const LinkContext& context) = 0;
 	
 										// called at runtime when a fast lazily bound function is first called
-	virtual uintptr_t					doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context) = 0;
+	virtual uintptr_t					doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context,
+															void (*lock)(), void (*unlock)()) = 0;
 
 										// calls termination routines (e.g. C++ static destructors for image)
 	virtual void						doTermination(const LinkContext& context) = 0;
@@ -414,6 +454,13 @@ public:
 	virtual uintptr_t					segActualEndAddress(unsigned int) const = 0;
 
 	
+										// if the image contains interposing functions, register them
+	virtual void						registerInterposing() = 0;
+
+										// when resolving symbols look in subImage if symbol can't be found
+	void								reExport(ImageLoader* subImage);
+	
+	void								applyInterposing(const LinkContext& context);
 
 	dyld_image_states					getState() { return (dyld_image_states)fState; }
 	
@@ -433,7 +480,7 @@ public:
 	void								setNeverUnload() { fNeverUnload = true; fLeaveMapped = true; }
 
 										// triggered by DYLD_PRINT_STATISTICS to write info on work done and how fast
-	static void							printStatistics(unsigned int imageCount);
+	static void							printStatistics(unsigned int imageCount, const InitializerTimingList& timingInfo);
 				
 										// used with DYLD_IMAGE_SUFFIX
 	static void							addSuffix(const char* path, const char* suffix, char* result);
@@ -481,8 +528,15 @@ protected:
 		LibraryInfo			info;
 		bool				required;
 		bool				reExported;
+		bool				upward;
 	};
 
+
+	struct InterposeTuple { 
+		uintptr_t		replacement; 
+		ImageLoader*	replacementImage;	// don't apply replacement to this image
+		uintptr_t		replacee; 
+	};
 
 	typedef void (*Initializer)(int argc, const char* argv[], const char* envp[], const char* apple[], const ProgramVars* vars);
 	typedef void (*Terminator)(void);
@@ -492,7 +546,8 @@ protected:
 	unsigned int			libraryCount() const { return fLibraryCount; }
 	virtual ImageLoader*	libImage(unsigned int) const = 0;
 	virtual bool			libReExported(unsigned int) const = 0;
-	virtual void			setLibImage(unsigned int, ImageLoader*, bool) = 0;
+	virtual bool			libIsUpward(unsigned int) const = 0;
+	virtual void			setLibImage(unsigned int, ImageLoader*, bool, bool) = 0;
 
 
 						// To link() an image, its dependent libraries are loaded, it is rebased, bound, and initialized.
@@ -504,8 +559,9 @@ protected:
 	void				recursiveRebase(const LinkContext& context);
 	void				recursiveBind(const LinkContext& context, bool forceLazysBound);
 	void				weakBind(const LinkContext& context);
+	void				recursiveApplyInterposing(const LinkContext& context);
 	void				recursiveGetDOFSections(const LinkContext& context, std::vector<DOFInfo>& dofs);
-	void				recursiveInitialization(const LinkContext& context, mach_port_t this_thread);
+	void				recursiveInitialization(const LinkContext& context, mach_port_t this_thread, ImageLoader::InitializerTimingList&);
 
 								// fill in information about dependent libraries (array length is fLibraryCount)
 	virtual void				doGetDependentLibraries(DependentLibraryInfo libs[]) = 0;
@@ -525,8 +581,11 @@ protected:
 								// if image has any dtrace DOF sections, append them to list to be registered
 	virtual void				doGetDOFSections(const LinkContext& context, std::vector<DOFInfo>& dofs) = 0;
 	
+								// do interpose
+	virtual void				doInterpose(const LinkContext& context) = 0;
+
 								// run any initialization routines in this image
-	virtual void				doInitialization(const LinkContext& context) = 0;
+	virtual bool				doInitialization(const LinkContext& context) = 0;
 	
 								// return if this image has termination routines
 	virtual bool				needsTermination() = 0;
@@ -560,7 +619,6 @@ protected:
 	static uintptr_t			fgNextPIEDylibAddress;
 	static uint32_t				fgImagesWithUsedPrebinding;
 	static uint32_t				fgImagesUsedFromSharedCache;
-	static uint32_t				fgImagesRequiringNoFixups;
 	static uint32_t				fgImagesHasWeakDefinitions;
 	static uint32_t				fgImagesRequiringCoalescing;
 	static uint32_t				fgTotalRebaseFixups;
@@ -578,6 +636,7 @@ protected:
 	static uint64_t				fgTotalWeakBindTime;
 	static uint64_t				fgTotalDOF;
 	static uint64_t				fgTotalInitTime;
+	static std::vector<InterposeTuple>	fgInterposingTuples;
 	const char*					fPath;
 	dev_t						fDevice;
 	ino_t						fInode;
@@ -586,7 +645,7 @@ protected:
 	uint32_t					fDlopenReferenceCount;	// count of how many dlopens have been done on this image
 	uint32_t					fStaticReferenceCount;	// count of images that have a fLibraries entry pointing to this image
 	uint32_t					fDynamicReferenceCount;	// count of images that have a fDynamicReferences entry pointer to this image
-	std::set<const ImageLoader*>* fDynamicReferences;	// list of all images this image used because of a flat/coalesced lookup
+	std::vector<const ImageLoader*>* fDynamicReferences;	// list of all images this image used because of a flat/coalesced lookup
 
 private:
 	struct recursive_lock {
@@ -612,6 +671,7 @@ private:
 								fNeverUnload : 1,		// image was statically loaded by main executable
 								fHideSymbols : 1,		// ignore this image's exported symbols when linking other images
 								fMatchByInstallName : 1,// look at image's install-path not its load path
+								fInterposed : 1,
 								fRegisteredDOF : 1,
 								fAllLazyPointersBound : 1,
 								fBeingRemoved : 1,

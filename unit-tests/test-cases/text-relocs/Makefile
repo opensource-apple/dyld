@@ -24,7 +24,7 @@ TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
 ### 
-### This test case is to verify __TEXT reliocations work in dylibs
+### This test case is to verify __TEXT relocations work in dylibs
 ### 
 ### 
 
@@ -35,10 +35,6 @@ ifeq "ppc64" "$(ARCH)"
 	# ppc64 does not support text relocs
 	TEXT_RELOC_FLAGS = 
 endif 
-ifeq "armv6" "$(ARCH)"
-	# arm does not support text relocs
-	TEXT_RELOC_FLAGS = 
-endif 
 
 
 all-check: all check
@@ -46,14 +42,12 @@ all-check: all check
 check:
 	./main
 
-all: main 
-
-main: main.c libbar.dylib
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c libbar.dylib
-
-libbar.dylib: bar.c
-	${CC} ${CCFLAGS} -dynamiclib -o libbar.dylib bar.c -Os ${TEXT_RELOC_FLAGS}
+all:  
+	${CC} ${CCFLAGS} -dynamiclib bar.c space.s -Os -o libbar.dylib  ${TEXT_RELOC_FLAGS}
+	${CC} ${CCFLAGS} bind.c -static -Os -c -o bind.o
+	${CC} ${CCFLAGS} -dynamiclib bind.o libbar.dylib -o libbind.dylib ${TEXT_RELOC_FLAGS}
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c libbar.dylib libbind.dylib
 	
 clean:
-	${RM} ${RMFLAGS} *~ main libbar.dylib
+	${RM} ${RMFLAGS} *~ main libbar.dylib libbind.dylib bind.o
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <malloc/malloc.h>
 #include <stdlib.h>
+#include <Availability.h>
 
 
 #include "test.h" // PASS(), FAIL()
@@ -38,6 +39,8 @@ typedef bool (*CheckFunc)();
 
 int main()
 {
+// NSCreateObjectFileImageFromMemory is only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	int fd = open("test.bundle", O_RDONLY, 0);
 	if ( fd == -1 ) {
 		FAIL("open() failed");
@@ -111,9 +114,8 @@ int main()
 		return 1;
 	}
 	
-	
-	
 	// Should check that loadAddress is unmmaped now (by call to NSDestroyObjectFileImage)
+#endif
 
 	PASS("bundle-memory-load-malloc");
 	return 0;

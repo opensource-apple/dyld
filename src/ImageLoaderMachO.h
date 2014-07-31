@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -43,10 +43,11 @@ public:
 	static ImageLoader*					instantiateMainExecutable(const macho_header* mh, uintptr_t slide, const char* path, const LinkContext& context);
 	static ImageLoader*					instantiateFromFile(const char* path, int fd, const uint8_t firstPage[4096], uint64_t offsetInFat, 
 															uint64_t lenInFat, const struct stat& info, const LinkContext& context);
-	static ImageLoader*					instantiateFromCache(const macho_header* mh, const char* path, const struct stat& info, const LinkContext& context);
+	static ImageLoader*					instantiateFromCache(const macho_header* mh, const char* path, long slide, const struct stat& info, const LinkContext& context);
 	static ImageLoader*					instantiateFromMemory(const char* moduleName, const macho_header* mh, uint64_t len, const LinkContext& context);
 
 
+	bool								inSharedCache() const { return fInSharedCache; }
 	const char*							getInstallPath() const;
 	virtual void*						getMain() const;
 	virtual const struct mach_header*   machHeader() const;
@@ -54,7 +55,8 @@ public:
 	virtual const void*					getEnd() const;
 	virtual bool						hasCoalescedExports() const;
 	virtual const Symbol*				findExportedSymbol(const char* name, bool searchReExports, const ImageLoader** foundIn) const;
-	virtual uintptr_t					getExportedSymbolAddress(const Symbol* sym, const LinkContext& context, const ImageLoader* requestor) const;
+	virtual uintptr_t					getExportedSymbolAddress(const Symbol* sym, const LinkContext& context, 
+																const ImageLoader* requestor, bool runResolver) const;
 	virtual DefinitionFlags				getExportedSymbolInfo(const Symbol* sym) const;
 	virtual const char*					getExportedSymbolName(const Symbol* sym) const;
 	virtual uint32_t					getExportedSymbolCount() const;
@@ -75,7 +77,7 @@ public:
 	virtual	uintptr_t					getAddressCoalIterator(CoalIterator&, const LinkContext& contex) = 0;
 	virtual	void						updateUsesCoalIterator(CoalIterator&, uintptr_t newAddr, ImageLoader* target, const LinkContext& context) = 0;
 	virtual uintptr_t					doBindLazySymbol(uintptr_t* lazyPointer, const LinkContext& context) = 0;
-	virtual uintptr_t					doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context) = 0;
+	virtual uintptr_t					doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context, void (*lock)(), void (*unlock)()) = 0;
 	virtual void						doTermination(const LinkContext& context);
 	virtual bool						needsInitialization();
 	virtual bool						getSectionContent(const char* segmentName, const char* sectionName, void** start, size_t* length);
@@ -96,9 +98,10 @@ public:
 	virtual uintptr_t					segActualLoadAddress(unsigned int) const;
 	virtual uintptr_t					segPreferredLoadAddress(unsigned int) const;
 	virtual uintptr_t					segActualEndAddress(unsigned int) const;
+	virtual void						registerInterposing();
 			
 	
-	static void							printStatistics(unsigned int imageCount);
+	static void							printStatistics(unsigned int imageCount, const InitializerTimingList&);
 	
 protected:
 						ImageLoaderMachO(const ImageLoaderMachO&);
@@ -108,7 +111,7 @@ protected:
 
 	void				operator=(const ImageLoaderMachO&);
 
-	virtual void						setDyldInfo(const dyld_info_command*) = 0;
+	virtual void						setDyldInfo(const struct dyld_info_command*) = 0;
 	virtual void						setSymbolTableInfo(const macho_nlist*, const char*, const dysymtab_command*) = 0;
 	virtual	bool						isSubframeworkOf(const LinkContext& context, const ImageLoader* image) const = 0;
 	virtual	bool						hasSubLibrary(const LinkContext& context, const ImageLoader* child) const = 0;
@@ -116,7 +119,7 @@ protected:
 	virtual	void						rebase(const LinkContext& context) = 0;
 	virtual const ImageLoader::Symbol*	findExportedSymbol(const char* name, const ImageLoader** foundIn) const = 0;
 	virtual bool						containsSymbol(const void* addr) const = 0;
-	virtual uintptr_t					exportedSymbolAddress(const Symbol* symbol) const = 0;
+	virtual uintptr_t					exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, bool runResolver) const = 0;
 	virtual bool						exportedSymbolIsWeakDefintion(const Symbol* symbol) const = 0;
 	virtual const char*					exportedSymbolName(const Symbol* symbol) const = 0;
 	virtual unsigned int				exportedSymbolCount() const = 0;
@@ -136,7 +139,7 @@ protected:
 	virtual void		doRebase(const LinkContext& context);
 	virtual void		doBind(const LinkContext& context, bool forceLazysBound) = 0;
 	virtual void		doBindJustLazies(const LinkContext& context) = 0;
-	virtual void		doInitialization(const LinkContext& context);
+	virtual bool		doInitialization(const LinkContext& context);
 	virtual void		doGetDOFSections(const LinkContext& context, std::vector<ImageLoader::DOFInfo>& dofs);
 	virtual bool		needsTermination();
 	virtual bool		segmentsMustSlideTogether() const;	
@@ -150,10 +153,11 @@ protected:
 
 			void		destroy();
 	static void			sniffLoadCommands(const macho_header* mh, const char* path, bool* compressed,
-											unsigned int* segCount, unsigned int* libCount);
+											unsigned int* segCount, unsigned int* libCount,
+											const linkedit_data_command** codeSigCmd);
 	static bool			needsAddedLibSystemDepency(unsigned int libCount, const macho_header* mh);
 #if CODESIGNING_SUPPORT
-			void		loadCodeSignature(const uint8_t* fileData, int fd, uint64_t offsetInFatFile);
+			void		loadCodeSignature(const struct linkedit_data_command* codeSigCmd, int fd, uint64_t offsetInFatFile);
 #endif
 			const struct macho_segment_command* segLoadCommand(unsigned int segIndex) const;
 			void		parseLoadCmds();
@@ -170,7 +174,8 @@ protected:
 			void		mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
 			void		mapSegments(const void* memoryImage, uint64_t imageLen, const LinkContext& context);
 			void		UnmapSegments();
-			void		__attribute__((noreturn)) throwSymbolNotFound(const char* symbol, const char* referencedFrom, const char* expectedIn);
+			void		__attribute__((noreturn)) throwSymbolNotFound(const LinkContext& context, const char* symbol, 
+																	const char* referencedFrom, const char* expectedIn);
 			void		doImageInit(const LinkContext& context);
 			void		doModInitFunctions(const LinkContext& context);
 			void		setupLazyPointerHandler(const LinkContext& context);
@@ -183,8 +188,10 @@ protected:
 			void		preFetchDATA(int fd, uint64_t offsetInFat, const LinkContext& context);
 
 
+			void		doInterpose(const LinkContext& context) = 0;
 			bool		hasReferencesToWeakSymbols() const;
-			uintptr_t	getSymbolAddress(const Symbol* sym, const ImageLoader* requestor, const LinkContext& context) const;
+			uintptr_t	getSymbolAddress(const Symbol* sym, const ImageLoader* requestor, 
+										const LinkContext& context, bool runResolver) const;
 			
 	static uintptr_t			bindLazySymbol(const mach_header*, uintptr_t* lazyPointer);
 protected:			
@@ -210,7 +217,9 @@ protected:
 											fHasDOFSections : 1,
 											fHasDashInit : 1,
 											fHasInitializers : 1,
-											fHasTerminators : 1;
+											fHasTerminators : 1,
+											fGoodFirstSegment : 1,
+											fRegisteredAsRequiresCoalescing : 1; 	// <rdar://problem/7886402> Loading MH_DYLIB_STUB causing coalescable miscount
 											
 											
 	static uint32_t					fgSymbolTableBinarySearchs;

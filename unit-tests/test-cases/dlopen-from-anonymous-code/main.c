@@ -26,6 +26,7 @@
 #include <dlfcn.h>
 #include <libkern/OSCacheControl.h> // sys_icache_invalidate
 #include <sys/mman.h> // for mprotext
+#include <mach/mach.h>
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
@@ -36,18 +37,33 @@ void* calldlopen(const char* path, int mode, void* (*dlopen_proc)(const char* pa
 	return (*dlopen_proc)(path, mode);
 }
 
+#if __thumb__
+	#define START_OF_FUNC(x) ((void*)((long)x & (-2)))
+	#define ADDR_FROM_BLOCK(x) ((void*)((long)x | 1))
+#else
+	#define START_OF_FUNC(x) (x)
+	#define ADDR_FROM_BLOCK(x) (x)
+#endif
+
 //
 // try calling dlopen() from code not owned by dyld
 //
 int main()
 {
-	void* codeBlock = malloc(4096);
-	memcpy(codeBlock, &calldlopen, 4096);
+	// now try to create a page where foo() was
+	vm_address_t addr = 0;
+	kern_return_t r = vm_allocate(mach_task_self(), &addr, 4096, VM_FLAGS_ANYWHERE);
+	if ( r != KERN_SUCCESS )  {
+		FAIL("vm_allocate returned %d", r);
+		return 0;
+	}
+	void* codeBlock = (void*)(addr);
+	memcpy(codeBlock, START_OF_FUNC(calldlopen), 4096);
 	sys_icache_invalidate(codeBlock, 4096);
 	mprotect(codeBlock, 4096, PROT_READ | PROT_EXEC);
 	//fprintf(stderr, "codeBlock=%p\n", codeBlock);
 	
-	void* (*caller)(const char* path, int mode, void* (*dlopen_proc)(const char* path, int mode)) = codeBlock;
+	void* (*caller)(const char* path, int mode, void* (*dlopen_proc)(const char* path, int mode)) = ADDR_FROM_BLOCK(codeBlock);
 	
 	void* handle = (*caller)("foo.bundle", RTLD_LAZY, &dlopen);
 	if ( handle == NULL ) {

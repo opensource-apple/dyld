@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -33,7 +33,7 @@ int main(int argc, const char* argv[])
 	}
 
 	uint32_t imageCount = _dyld_image_count();
-	const struct mach_header* mh = NSAddImage(argv[1], 0);
+	dlopen(argv[1], 0);
 	if ( imageCount != _dyld_image_count() ) {
 		FAIL("image count changed");
 		return EXIT_SUCCESS;

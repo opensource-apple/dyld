@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2006-2009 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -20,13 +20,20 @@
 # 
 # @APPLE_LICENSE_HEADER_END@
 ##
-TESTROOT = ../..
+PWD = $(shell pwd)
+TESTROOT = $(PWD)/../..
 include ${TESTROOT}/include/common.makefile
+
+ifeq "$(OS_NAME)" "iPhoneOS"
+	RUN_AS_USER = login -f -l mobile
+else
+	RUN_AS_USER = 
+endif
 
 all-check: all check
 
 check:
-	${TESTROOT}/bin/exit-non-zero-pass.pl "fallback-with-suid" "fallback-with-suid" ./main-suid
+	${RUN_AS_USER} ${PASS_IFF_FAILURE} "fallback-with-suid" "fallback-with-suid" $(PWD)/main-suid
 	
 all: main-suid
 

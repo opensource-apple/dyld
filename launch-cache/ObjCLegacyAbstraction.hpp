@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2008 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -67,8 +67,8 @@ struct objc_class {
     uint32_t ivar_layout;    // const char *
     uint32_t ext;            // struct objc_class_ext *
     
-    struct objc_class<A> *getIsa(SharedCache<A> *cache) const INLINE { return (struct objc_class<A> *)cache->mappedCacheAddressForAddress(A::P::E::get32(isa)); }
-    struct objc_method_list<A> *getMethodList(SharedCache<A> *cache) const INLINE { return (struct objc_method_list<A> *)cache->mappedCacheAddressForAddress(A::P::E::get32(methodList)); }
+    struct objc_class<A> *getIsa(SharedCache<A> *cache) const INLINE { return (struct objc_class<A> *)cache->mappedAddressForVMAddress(A::P::E::get32(isa)); }
+    struct objc_method_list<A> *getMethodList(SharedCache<A> *cache) const INLINE { return (struct objc_method_list<A> *)cache->mappedAddressForVMAddress(A::P::E::get32(methodList)); }
 };
 
 template <typename A>
@@ -81,8 +81,8 @@ struct objc_category {
     uint32_t size;                 // uint32_t
     uint32_t instance_properties;  // struct objc_property_list *
     
-    struct objc_method_list<A> *getInstanceMethods(SharedCache<A> *cache) const INLINE { return (struct objc_method_list<A> *)cache->mappedCacheAddressForAddress(A::P::E::get32(instance_methods)); }
-    struct objc_method_list<A> *getClassMethods(SharedCache<A> *cache) const INLINE { return (struct objc_method_list<A> *)cache->mappedCacheAddressForAddress(A::P::E::get32(class_methods)); }
+    struct objc_method_list<A> *getInstanceMethods(SharedCache<A> *cache) const INLINE { return (struct objc_method_list<A> *)cache->mappedAddressForVMAddress(A::P::E::get32(instance_methods)); }
+    struct objc_method_list<A> *getClassMethods(SharedCache<A> *cache) const INLINE { return (struct objc_method_list<A> *)cache->mappedAddressForVMAddress(A::P::E::get32(class_methods)); }
 };
 
 template <typename A>
@@ -95,8 +95,8 @@ struct objc_symtab {
     
     uint16_t getClassCount(void) const INLINE { return A::P::E::get16(cls_def_cnt); }
     uint16_t getCategoryCount(void) const INLINE { return A::P::E::get16(cat_def_cnt); }
-    struct objc_class<A> *getClass(SharedCache<A> *cache, int index) const INLINE { return (struct objc_class<A> *)cache->mappedCacheAddressForAddress(A::P::E::get32(defs[index])); }
-    struct objc_category<A> *getCategory(SharedCache<A> *cache, int index) const INLINE { return (struct objc_category<A> *)cache->mappedCacheAddressForAddress(A::P::E::get32(defs[getClassCount() + index])); }
+    struct objc_class<A> *getClass(SharedCache<A> *cache, int index) const INLINE { return (struct objc_class<A> *)cache->mappedAddressForVMAddress(A::P::E::get32(defs[index])); }
+    struct objc_category<A> *getCategory(SharedCache<A> *cache, int index) const INLINE { return (struct objc_category<A> *)cache->mappedAddressForVMAddress(A::P::E::get32(defs[getClassCount() + index])); }
 };
 
 template <typename A>
@@ -106,7 +106,7 @@ struct objc_module {
     uint32_t name;     // char*
     uint32_t symtab;   // Symtab
     
-    struct objc_symtab<A> *getSymtab(SharedCache<A> *cache) const INLINE { return (struct objc_symtab<A> *)cache->mappedCacheAddressForAddress(A::P::E::get32(symtab)); }
+    struct objc_symtab<A> *getSymtab(SharedCache<A> *cache) const INLINE { return (struct objc_symtab<A> *)cache->mappedAddressForVMAddress(A::P::E::get32(symtab)); }
 };
 
 template <typename A>
@@ -134,8 +134,8 @@ struct objc_protocol {
     uint32_t instance_methods;  // struct objc_method_description_list *
     uint32_t class_methods;     // struct objc_method_description_list *
     
-    struct objc_method_description_list<A> *getInstanceMethodDescriptions(SharedCache<A> *cache) const INLINE { return (struct objc_method_description_list<A> *)cache->mappedCacheAddressForAddress(A::P::E::get32(instance_methods)); }
-    struct objc_method_description_list<A> *getClassMethodDescriptions(SharedCache<A> *cache) const INLINE { return (struct objc_method_description_list<A> *)cache->mappedCacheAddressForAddress(A::P::E::get32(class_methods)); }
+    struct objc_method_description_list<A> *getInstanceMethodDescriptions(SharedCache<A> *cache) const INLINE { return (struct objc_method_description_list<A> *)cache->mappedAddressForVMAddress(A::P::E::get32(instance_methods)); }
+    struct objc_method_description_list<A> *getClassMethodDescriptions(SharedCache<A> *cache) const INLINE { return (struct objc_method_description_list<A> *)cache->mappedAddressForVMAddress(A::P::E::get32(class_methods)); }
 };
 
 
@@ -227,7 +227,7 @@ public:
             header->getSection("__OBJC", "__image_info");
         if (imageInfoSection) {
             objc_image_info<A> *info = (objc_image_info<A> *)
-                cache->mappedCacheAddressForAddress(imageInfoSection->addr());
+                cache->mappedAddressForVMAddress(imageInfoSection->addr());
             info->setSelectorsPrebound();
         }
     }

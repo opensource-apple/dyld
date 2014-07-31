@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -25,6 +25,7 @@
 #include <mach-o/dyld.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <Availability.h>
 
 #include "test.h"
 
@@ -40,6 +41,7 @@
 
 extern void foo();
 
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 
 static volatile int		sBarrier = 0;
 static pthread_mutex_t	sBarrierMutex;
@@ -90,9 +92,11 @@ static void myImageHandler(const struct mach_header *mh, intptr_t vmaddr_slide)
 		pthread_mutex_unlock(&sMyLock);
 	}
 }
+#endif
 
 int main()
 {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	pthread_mutex_init(&sBarrierMutex, NULL);
 	pthread_cond_init(&sBarrierFree, NULL);
 	pthread_mutex_init(&sMyLock, NULL);
@@ -111,6 +115,8 @@ int main()
 	// thread 1
 	_dyld_register_func_for_add_image(&myImageHandler);
 	NSAddImage("bar.dylib", 0);
+#endif
 	
 	PASS("deadlock");
+	return 0;
 }

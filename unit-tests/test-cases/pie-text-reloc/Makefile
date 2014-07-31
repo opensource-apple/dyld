@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2007-2008 Apple Inc. All rights reserved.
+# Copyright (c) 2007-2009 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -41,15 +41,15 @@ check:
 	./main >> main.out
 	if [ `sort main.out -u | wc -l` == 4 ]; \
 	then \
-		echo "PASS pie-basic"; \
+		echo "PASS pie-text-reloc"; \
 	else \
-		echo "FAIL pie-basic"; \
+		echo "FAIL pie-text-reloc"; \
 	fi; \
 	 
 all: main
 
 main : main.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -Wl,-pie  $(EXTRA_OPTIONS) -o main main.c -mmacosx-version-min=10.5
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -Wl,-pie  $(EXTRA_OPTIONS) -o main main.c 
 
 
 clean:

@@ -57,4 +57,5 @@ int main()
 	}
 	
 	PASS("addend");
+	return 0;
 }

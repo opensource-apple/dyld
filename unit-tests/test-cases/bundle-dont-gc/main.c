@@ -34,6 +34,8 @@
 
 int main(int argc, const char* argv[])
 {
+// NSObjectFile* APIs are only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	// load foo.bundle with old API
 	NSObjectFileImage ofi;
 	if ( NSCreateObjectFileImageFromFile("foo.bundle", &ofi) != NSObjectFileImageSuccess ) {
@@ -84,8 +86,8 @@ int main(int argc, const char* argv[])
 		FAIL("NSUnLinkModule failed");
 		return 1;
 	}
-		
-	
+#endif	
+
 	PASS("bundle-dont-gc");
 	return EXIT_SUCCESS;
 }

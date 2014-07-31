@@ -23,16 +23,29 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+ifeq "$(OS_NAME)" "iPhoneOS"
+	RUN_AS_USER = login -f -l mobile
+else
+	RUN_AS_USER = 
+endif
+
+PWD = `pwd`
+
 all-check: all check
 
 check:
-	export DYLD_LIBRARY_PATH=/ && export DYLD_PRINT_LIBRARIES=/ &&  export DYLD_PREBIND_DEBUG=/ && ./main
+	${RUN_AS_USER} $(PWD)/main-with-env
 
 all: main
 
 main: main.c
 	${CC} ${CCFLAGS} -w -I${TESTROOT}/include -o main main.c -sectcreate __RESTRICT __restrict /dev/null
+	echo "#!/bin/sh" > main-with-env
+	echo "export DYLD_INSERT_LIBRARIES=/" >> main-with-env
+	echo "export DYLD_PRINT_LIBRARIES=/" >> main-with-env
+	echo "$(PWD)/main" >> main-with-env
+	chmod +x main-with-env
 
 clean:
-	${RM} ${RMFLAGS} *~ main
+	${RM} ${RMFLAGS} *~ main main-with-env
 

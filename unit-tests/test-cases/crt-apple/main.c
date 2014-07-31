@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2007-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -28,12 +28,48 @@
 
 
 ///
+/// verify parameters passed to initializer are same as passed to main()
 /// verify that apple[0] parameter is correct by comparing to argv[1]
 ///
+
+static int			initializer_argc = 0;
+static const char**	initializer_argv = NULL;
+static const char**	initializer_env = NULL;
+static const char**	initializer_apple = NULL;
+
+
+__attribute__((constructor))
+void init(int argc, const char* argv[], const char* env[], const char* apple[])
+{
+	initializer_argc = argc;
+	initializer_argv = argv;
+	initializer_env = env;
+	initializer_apple = apple;
+}
 
 int
 main(int argc, const char* argv[], const char* env[], const char* apple[])
 {
+	if ( argc != initializer_argc ) {
+		FAIL("crt-apple argc changed");
+		exit(EXIT_SUCCESS);
+	}
+	
+	if ( argv != initializer_argv ) {
+		FAIL("crt-apple argv changed");
+		exit(EXIT_SUCCESS);
+	}
+		
+	if ( env != initializer_env ) {
+		FAIL("crt-apple envp changed");
+		exit(EXIT_SUCCESS);
+	}
+		
+	if ( apple != initializer_apple ) {
+		FAIL("crt-apple apple changed");
+		exit(EXIT_SUCCESS);
+	}
+		
 	if ( strcmp(apple[0], argv[1]) == 0 )
 		PASS("crt-apple %s", argv[0]);
 	else

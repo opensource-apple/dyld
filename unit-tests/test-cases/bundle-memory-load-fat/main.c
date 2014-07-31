@@ -28,6 +28,7 @@
 #include <sys/mman.h> 
 #include <unistd.h>
 #include <fcntl.h>
+#include <Availability.h>
 
 #include "test.h" // PASS(), FAIL()
 
@@ -35,6 +36,8 @@ typedef bool (*CheckFunc)();
 
 int main()
 {
+// NSObjectFileImage APIs only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	int fd = open("test.bundle", O_RDONLY, 0);
 	if ( fd == -1 ) {
 		FAIL("open() failed");
@@ -90,6 +93,7 @@ int main()
 	}
 	
 	// Should check that loadAddress is unmmaped now (by call to NSDestroyObjectFileImage)
+#endif
 
 	PASS("bundle-memory-load-fat");
 	return 0;

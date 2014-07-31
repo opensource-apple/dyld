@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -23,19 +23,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <mach-o/dyld.h>
-
+#include <Availability.h>
+ 
 #include "test.h"
 
 /// rdar://problem/4058724
 
 int main()
 {
+// NSAddImage is only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	// test that image can be found via install path
 	const struct mach_header * mh1 = NSAddImage("libbar.dylib", NSADDIMAGE_OPTION_RETURN_ON_ERROR | NSADDIMAGE_OPTION_MATCH_FILENAME_BY_INSTALLNAME);
 	const struct mach_header * mh2 = NSAddImage("libfoo.dylib", NSADDIMAGE_OPTION_RETURN_ON_ERROR | NSADDIMAGE_OPTION_MATCH_FILENAME_BY_INSTALLNAME);
-	if ( mh2 != NULL )
-		PASS("NSAddImage-MATCH_BY_INSTALLNAME");
-	else
+	if ( mh2 == NULL )
 		FAIL("NSAddImage-MATCH_BY_INSTALLNAME");
+	else
+#endif
+		PASS("NSAddImage-MATCH_BY_INSTALLNAME");
 	return EXIT_SUCCESS;
 }

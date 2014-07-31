@@ -21,12 +21,13 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#include <stdlib.h>
 
 class A
 {
 public:
 	A() { f = 10; }
-	~A() { f = 0; }
+	~A() { if ( f == 0 ) abort(); f = 0; }
 	int get() { return f; }
 private:
 	int f;	

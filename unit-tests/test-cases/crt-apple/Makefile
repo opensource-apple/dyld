@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2007 Apple Inc. All rights reserved.
+# Copyright (c) 2007-2010 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -30,30 +30,27 @@ include ${TESTROOT}/include/common.makefile
 all-check: all check
 
 check:
-	./main-10.4 ./main-10.4
-	./main-10.5 ./main-10.5
-	./main-10.4.stripped ./main-10.4.stripped
-	./main-10.5.stripped ./main-10.5.stripped
-	`pwd`/main-10.4 `pwd`/main-10.4
-	`pwd`/main-10.5 `pwd`/main-10.5
-	`pwd`/main-10.4.stripped `pwd`/main-10.4.stripped
-	`pwd`/main-10.5.stripped `pwd`/main-10.5.stripped
+	./main ./main
+	./main.stripped ./main.stripped
+	`pwd`/main `pwd`/main
+	`pwd`/main.stripped `pwd`/main.stripped
+	export DYLD_LIBRARY_PATH=. && export DYLD_FRAMEWORK_PATH=. && ./main-setuid ./main-setuid
 
-all: main-10.4 main-10.5 main-10.4.stripped main-10.5.stripped
+all: main  main.stripped main-setuid
 
-main-10.4: main.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main-10.4 main.c -mmacosx-version-min=10.4 -w
+main: main.c
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c -w
 
-main-10.4.stripped: main-10.4
-	strip main-10.4 -o main-10.4.stripped
-	
-main-10.5: main.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main-10.5 main.c -mmacosx-version-min=10.5 -w
+main.stripped: main
+	strip main -o main.stripped
 
-main-10.5.stripped: main-10.5
-	strip main-10.5 -o main-10.5.stripped
+main-setuid: main
+	cp main main-setuid
+	sudo chown root main-setuid
+	sudo chmod 4755 main-setuid
+
 
 clean:
-	${RM} ${RMFLAGS} *~ main-10.4 main-10.5 main-10.4.stripped main-10.5.stripped
+	${RM} ${RMFLAGS} *~ main main.stripped main-setuid
  
 

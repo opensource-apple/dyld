@@ -15,6 +15,8 @@
 .Op Fl universal_boot 
 .Op Fl verify
 .Op Fl dylib_list Ar file
+.Op Fl iPhone
+.Op Fl cache_dir Ar dir
 .Sh DESCRIPTION
 .Nm update_dyld_shared_cache
 ensures that dyld's shared cache is up-to-date.  This tool is normally
@@ -93,6 +95,11 @@ a list of the dylibs to use when building the shared cache file.
 Will regenerate a shared cache in-memory that matches the randomization of the existing shared 
 cache file.  Then instead of writing the cache file, it compares the in-memory cache file to
 the on disk version and reports any differences.  
+.It Fl iPhone
+indicates that cache is not for the current Mac OS X, but for rather for an iPhone
+.It Fl cache_dir Ar directory
+This option specifies the directory in which to create the cache file(s).  If not specified,
+the cache file(s) are created in the standard location (e.g. var/db/dyld/) of the root partition.
 .El
 .Sh FILES
 .Tp

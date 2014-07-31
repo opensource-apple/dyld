@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2007 Apple Inc. All rights reserved.
+# Copyright (c) 2007-2009 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -27,42 +27,30 @@ PWD = `pwd`
 
 
 #
-# Test that the 10.4 and 10.5 ways to re-export a sub framework work
+# Test that the ways to re-export a sub framework work
 #
 
 all-check: all check
 
 check:
-	./main4
-	./main5
+	./main
 
-all: main4 main5
-
-Bar4.framework/Bar4 : bar.c
-	mkdir -p Bar4.framework
-	${CC} bar.c -dynamiclib -install_name $(PWD)/Bar4.framework/Bar4 -o Bar4.framework/Bar4 -umbrella Foo4 -mmacosx-version-min=10.4
-
-Foo4.framework/Foo4 : foo.c Bar4.framework/Bar4
-	mkdir -p Foo4.framework
-	${CC} foo.c -dynamiclib Bar4.framework/Bar4 -install_name $(PWD)/Foo4.framework/Foo4 -o Foo4.framework/Foo4 -mmacosx-version-min=10.4
-
-main4 : main.c Foo4.framework/Foo4
-	${CC} main.c -I${TESTROOT}/include -o main4 -framework Foo4 -F. -mmacosx-version-min=10.4
+all:  main
 
 
-Bar5.framework/Bar5 : bar.c
-	mkdir -p Bar5.framework
-	${CC} bar.c -dynamiclib -install_name $(PWD)/Bar5.framework/Bar5  -o Bar5.framework/Bar5 -umbrella Foo5 -mmacosx-version-min=10.5
+Bar.framework/Bar : bar.c
+	mkdir -p Bar.framework
+	${CC} bar.c -dynamiclib -install_name $(PWD)/Bar.framework/Bar  -o Bar.framework/Bar -umbrella Foo 
 
-Foo5.framework/Foo5 : foo.c Bar5.framework/Bar5
-	mkdir -p Foo5.framework
-	${CC} foo.c -dynamiclib Bar5.framework/Bar5 -install_name $(PWD)/Foo5.framework/Foo5 -o Foo5.framework/Foo5 -mmacosx-version-min=10.5
+Foo.framework/Foo : foo.c Bar.framework/Bar
+	mkdir -p Foo.framework
+	${CC} foo.c -dynamiclib Bar.framework/Bar -install_name $(PWD)/Foo.framework/Foo -o Foo.framework/Foo 
 
-main5 : main.c Foo5.framework/Foo5
-	${CC} main.c -I${TESTROOT}/include -o main5 -framework Foo5 -F. -mmacosx-version-min=10.5
+main : main.c Foo.framework/Foo
+	${CC} main.c -I${TESTROOT}/include -o main -framework Foo -F. 
 
 
 	
 clean:
-	rm -rf main4 Foo4.framework Bar4.framework main5 Foo5.framework Bar5.framework 
+	rm -rf  main Foo.framework Bar.framework 
 	

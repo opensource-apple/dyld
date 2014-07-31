@@ -39,6 +39,7 @@ int dummy_dyld_symbol = 1;
 
 #include "mach-o/dyld_debug.h"
 #include "mach-o/dyld_gdb.h"
+#include "mach-o/dyld_priv.h"
 
 // global state set up by _dyld_debug_subscribe_to_events() and accessed by _dyld_debug_module_name()
 static const struct dyld_image_info*	sImages = NULL;

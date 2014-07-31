@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2006-2008 Apple Inc. All rights reserved.
+ * Copyright (c) 2006-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -29,14 +29,26 @@
 #include <mach/shared_region.h>
 
 
- struct dyld_cache_header
+struct dyld_cache_header
 {
 	char		magic[16];				// e.g. "dyld_v0     ppc"
-	uint32_t	mappingOffset;			// file offset to first shared_file_mapping_np
-	uint32_t	mappingCount;			// number of shared_file_mapping_np entries
+	uint32_t	mappingOffset;			// file offset to first dyld_cache_mapping_info
+	uint32_t	mappingCount;			// number of dyld_cache_mapping_info entries
 	uint32_t	imagesOffset;			// file offset to first dyld_cache_image_info
 	uint32_t	imagesCount;			// number of dyld_cache_image_info entries
 	uint64_t	dyldBaseAddress;		// base address of dyld when cache was built
+	uint64_t	codeSignatureOffset;	// file offset of code signature blob
+	uint64_t	codeSignatureSize;		// size of code signature blob (zero means to end of file)
+	uint64_t	slideInfoOffset;		// file offset of kernel slid info
+	uint64_t	slideInfoSize;			// size of kernel slid info
+};
+
+struct dyld_cache_mapping_info {
+	uint64_t	address;
+	uint64_t	size;
+	uint64_t	fileOffset;
+	uint32_t	maxProt;
+	uint32_t	initProt;
 };
 
 struct dyld_cache_image_info
@@ -48,7 +60,22 @@ struct dyld_cache_image_info
 	uint32_t	pad;
 };
 
-#define DYLD_SHARED_CACHE_DIR			"/var/db/dyld/"
+struct dyld_cache_slide_info
+{
+	uint32_t	version;		// currently 1
+	uint32_t	toc_offset;
+	uint32_t	toc_count;
+	uint32_t	entries_offset;
+	uint32_t	entries_count;
+	uint32_t	entries_size;  // currently 128 
+	// uint16_t toc[toc_count];
+	// entrybitmap entries[entries_count];
+};
+
+
+
+#define MACOSX_DYLD_SHARED_CACHE_DIR	"/var/db/dyld/"
+#define IPHONE_DYLD_SHARED_CACHE_DIR	"/System/Library/Caches/com.apple.dyld/"
 #define DYLD_SHARED_CACHE_BASE_NAME		"dyld_shared_cache_"
 
 

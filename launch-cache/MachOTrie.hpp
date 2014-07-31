@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2008 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -24,8 +24,10 @@
 #ifndef __MACH_O_TRIE__
 #define __MACH_O_TRIE__
 
+#include <algorithm>
 
 #include "MachOFileAbstraction.hpp"
+
 
 namespace mach_o {
 namespace trie {
@@ -41,25 +43,28 @@ struct Edge
 
 struct Node
 {
-						Node(const char* s) : fCummulativeString(s), fAddress(0), fFlags(0), fOrdered(false), 
+						Node(const char* s) : fCummulativeString(s), fAddress(0), fFlags(0), 
+											fOther(0), fImportedName(NULL), fOrdered(false), 
 											fHaveExportInfo(false), fTrieOffset(0) {}
 						~Node() { }
 	const char*			fCummulativeString;
 	std::vector<Edge>	fChildren;
 	uint64_t			fAddress;
-	uint32_t			fFlags;
+	uint64_t			fFlags;
+	uint64_t			fOther;
+	const char*			fImportedName;
 	bool				fOrdered;
 	bool				fHaveExportInfo;
 	uint32_t			fTrieOffset;
 	
-	void addSymbol(const char* fullStr, uint64_t address, uint32_t flags) {
+	void addSymbol(const char* fullStr, uint64_t address, uint64_t flags, uint64_t other, const char* importName) {
 		const char* partialStr = &fullStr[strlen(fCummulativeString)];
 		for (std::vector<Edge>::iterator it = fChildren.begin(); it != fChildren.end(); ++it) {
 			Edge& e = *it;
 			int subStringLen = strlen(e.fSubString);
 			if ( strncmp(e.fSubString, partialStr, subStringLen) == 0 ) {
 				// already have matching edge, go down that path
-				e.fChild->addSymbol(fullStr, address, flags);
+				e.fChild->addSymbol(fullStr, address, flags, other, importName);
 				return;
 			}
 			else {
@@ -80,18 +85,24 @@ struct Node
 						abEdge.fChild = bNode;
 						Edge bcEdge(bcEdgeStr, cNode);
 						bNode->fChildren.push_back(bcEdge);
-						bNode->addSymbol(fullStr, address, flags);
+						bNode->addSymbol(fullStr, address, flags, other, importName);
 						return;
 					}
 				}
 			}
 		}
+
 		// no commonality with any existing child, make a new edge that is this whole string
 		Node* newNode = new Node(strdup(fullStr));
 		Edge newEdge(strdup(partialStr), newNode);
 		fChildren.push_back(newEdge);
 		newNode->fAddress = address;
 		newNode->fFlags = flags;
+		newNode->fOther = other;
+		if ( (flags & EXPORT_SYMBOL_FLAGS_REEXPORT) && (importName != NULL) && (strcmp(fullStr,importName) != 0) )
+			newNode->fImportedName = importName;
+		else
+			newNode->fImportedName = NULL;
 		newNode->fHaveExportInfo = true;
 	}
 	
@@ -114,14 +125,26 @@ struct Node
 	}
 
 	// byte for terminal node size in bytes, or 0x00 if not terminal node
-	// teminal node (uleb128 flags, uleb128 addr)
+	// teminal node (uleb128 flags, uleb128 addr [uleb128 other])
 	// byte for child node count
 	//  each child: zero terminated substring, uleb128 node offset
 	bool updateOffset(uint32_t& offset) {
-		uint32_t nodeSize = 1; // byte for length of export info
-		if ( fHaveExportInfo ) 
-			nodeSize += uleb128_size(fFlags) + uleb128_size(fAddress);
-
+		uint32_t nodeSize = 1; // length of export info when no export info
+		if ( fHaveExportInfo ) {
+			if ( fFlags & EXPORT_SYMBOL_FLAGS_REEXPORT ) {
+				nodeSize = uleb128_size(fFlags) + uleb128_size(fOther); // ordinal
+				if ( fImportedName != NULL )
+					nodeSize += strlen(fImportedName);
+				++nodeSize; // trailing zero in imported name
+			}
+			else {
+				nodeSize = uleb128_size(fFlags) + uleb128_size(fAddress);
+				if ( fFlags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER )
+					nodeSize += uleb128_size(fOther);
+			}
+			// do have export info, overall node size so far is uleb128 of export info + export info
+			nodeSize += uleb128_size(nodeSize); 
+		}
 		// add children
 		++nodeSize; // byte for count of chidren
 		for (std::vector<Edge>::iterator it = fChildren.begin(); it != fChildren.end(); ++it) {
@@ -138,13 +161,42 @@ struct Node
 
 	void appendToStream(std::vector<uint8_t>& out) {
 		if ( fHaveExportInfo ) {
-			// nodes with export info: size, flags, address
-			out.push_back(uleb128_size(fFlags) + uleb128_size(fAddress));
-			append_uleb128(fFlags, out);
-			append_uleb128(fAddress, out);
+			if ( fFlags & EXPORT_SYMBOL_FLAGS_REEXPORT ) {
+				if ( fImportedName != NULL ) {
+					// nodes with re-export info: size, flags, ordinal, string
+					uint32_t nodeSize = uleb128_size(fFlags) + uleb128_size(fOther) + strlen(fImportedName) + 1;
+					out.push_back(nodeSize);
+					append_uleb128(fFlags, out);
+					append_uleb128(fOther, out);
+					append_string(fImportedName, out);
+				}
+				else {
+					// nodes with re-export info: size, flags, ordinal, empty-string
+					uint32_t nodeSize = uleb128_size(fFlags) + uleb128_size(fOther) + 1;
+					out.push_back(nodeSize);
+					append_uleb128(fFlags, out);
+					append_uleb128(fOther, out);
+					out.push_back(0);
+				}
+			}
+			else if ( fFlags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER ) {
+				// nodes with export info: size, flags, address, other
+				uint32_t nodeSize = uleb128_size(fFlags) + uleb128_size(fAddress) + uleb128_size(fOther);
+				out.push_back(nodeSize);
+				append_uleb128(fFlags, out);
+				append_uleb128(fAddress, out);
+				append_uleb128(fOther, out);
+			}
+			else {
+				// nodes with export info: size, flags, address
+				uint32_t nodeSize = uleb128_size(fFlags) + uleb128_size(fAddress);
+				out.push_back(nodeSize);
+				append_uleb128(fFlags, out);
+				append_uleb128(fAddress, out);
+			}
 		}
 		else {
-			// no export info
+			// no export info uleb128 of zero is one byte of zero
 			out.push_back(0);
 		}
 		// write number of children
@@ -215,22 +267,25 @@ struct Entry
 	const char*		name;
 	uint64_t		address;
 	uint64_t		flags;
+	uint64_t		other;
+	const char*		importName;
 };
 
 
-inline void makeTrie(const std::vector<Entry>& input, std::vector<uint8_t>& output)
+
+inline void makeTrie(const std::vector<Entry>& entries, std::vector<uint8_t>& output)
 {
 	Node start(strdup(""));
 	
 	// make nodes for all exported symbols
-	for (std::vector<Entry>::const_iterator it = input.begin(); it != input.end(); ++it) {
-		start.addSymbol(it->name, it->address, it->flags);
+	for (std::vector<Entry>::const_iterator it = entries.begin(); it != entries.end(); ++it) {
+		start.addSymbol(it->name, it->address, it->flags, it->other, it->importName);
 	}
 
 	// create vector of nodes
 	std::vector<Node*> orderedNodes;
-	orderedNodes.reserve(input.size()*2);
-	for (std::vector<Entry>::const_iterator it = input.begin(); it != input.end(); ++it) {
+	orderedNodes.reserve(entries.size()*2);
+	for (std::vector<Entry>::const_iterator it = entries.begin(); it != entries.end(); ++it) {
 		start.addOrderedNodes(it->name, orderedNodes);
 	}
 	
@@ -262,18 +317,31 @@ struct EntryWithOffset
 
 
 static inline void processExportNode(const uint8_t* const start, const uint8_t* p, const uint8_t* const end, 
-											char* cummulativeString, int curStrOffset, std::vector<EntryWithOffset>& output) 
+									char* cummulativeString, int curStrOffset, 
+									std::vector<EntryWithOffset>& output) 
 {
 	if ( p >= end )
-		throwf("malformed trie, node %p outside trie (%p -> %p)", p, start, end);
-	const uint8_t terminalSize = *p++;
+		throw "malformed trie, node past end";
+	const uint8_t terminalSize = read_uleb128(p, end);
 	const uint8_t* children = p + terminalSize;
 	if ( terminalSize != 0 ) {
 		EntryWithOffset e;
 		e.nodeOffset = p-start;
 		e.entry.name = strdup(cummulativeString);
 		e.entry.flags = read_uleb128(p, end);
-		e.entry.address = read_uleb128(p, end); 
+		if ( e.entry.flags & EXPORT_SYMBOL_FLAGS_REEXPORT ) {
+			e.entry.address = 0;
+			e.entry.other = read_uleb128(p, end); // dylib ordinal
+			e.entry.importName = (char*)p;
+		}
+		else {
+			e.entry.address = read_uleb128(p, end); 
+			if ( e.entry.flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER )
+				e.entry.other = read_uleb128(p, end); 
+			else
+				e.entry.other = 0;
+			e.entry.importName = NULL;
+		}
 		output.push_back(e);
 	}
 	const uint8_t childrenCount = *children++;
@@ -296,7 +364,6 @@ inline void parseTrie(const uint8_t* start, const uint8_t* end, std::vector<Entr
 	// empty trie has no entries
 	if ( start == end )
 		return;
-	
 	char cummulativeString[4000];
 	std::vector<EntryWithOffset> entries;
 	processExportNode(start, start, end, cummulativeString, 0, entries);

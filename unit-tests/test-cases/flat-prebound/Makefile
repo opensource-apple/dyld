@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2005-2009 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -35,11 +35,11 @@ main : main.c libfoo.dylib
 
 
 libfoo.dylib : foo.c libbar.dylib
-	${CC} ${CCFLAGS} -mmacosx-version-min=10.2 -dynamiclib foo.c -o libfoo.dylib libbar.dylib -flat_namespace -prebind -seg1addr 20000
+	${CC} ${CCFLAGS} -dynamiclib foo.c -o libfoo.dylib libbar.dylib -flat_namespace -prebind -seg1addr 20000
 
 
 libbar.dylib : bar.c
-	${CC} ${CCFLAGS} -mmacosx-version-min=10.2 -dynamiclib bar.c -o libbar.dylib -prebind -seg1addr 30000
+	${CC} ${CCFLAGS} -dynamiclib bar.c -o libbar.dylib -prebind -seg1addr 30000
 
 
 

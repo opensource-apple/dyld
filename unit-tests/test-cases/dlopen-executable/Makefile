@@ -35,7 +35,7 @@ main : main.c
 
 
 foo.exe : foo.c
-	${CC} ${CCFLAGS} foo.c -o foo.exe
+	${CC} ${CCFLAGS} foo.c -o foo.exe -Wl,-no_pie
 
 foo.pie : foo.c
 	${CC} ${CCFLAGS} foo.c -o foo.pie -Wl,-pie

@@ -24,8 +24,14 @@
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <stdbool.h>
 
+int y = 0;
+
 static int x = 0;
 
 int getx() { return x; }
 void setx(int a) { x = a; }
 
+void bar()
+{
+	printf("hello\n");
+}

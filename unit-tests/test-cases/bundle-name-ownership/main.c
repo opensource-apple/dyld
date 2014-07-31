@@ -31,6 +31,8 @@ typedef bool (*CheckFunc)();
 
 int main()
 {
+// NSCreateObjectFileImageFromMemory is only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	const char* path = "test.bundle";
 
 	NSObjectFileImage ofi;
@@ -77,7 +79,7 @@ int main()
 		FAIL("NSDestroyObjectFileImage failed");
 		return 0;
 	}
-
+#endif
 	PASS("bundle-name-ownership");
 	return 0;
 }

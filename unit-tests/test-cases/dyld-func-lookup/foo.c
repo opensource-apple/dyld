@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -22,6 +22,11 @@
  */
 
 #include <stdbool.h>
+#include <Availability.h>
+
+
+// _dyld_func_lookup is only available in 10.5 and earlier
+#if defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && (__MAC_OS_X_VERSION_MIN_REQUIRED <= __MAC_10_5)
 
 extern bool _dyld_func_lookup(const char* dyld_func_name, void** address);
 
@@ -42,3 +47,5 @@ bool check_dyld_func_lookup()
 	// looks good
 	return true;
 }
+
+#endif

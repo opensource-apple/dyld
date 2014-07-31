@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2007 Apple Inc. All rights reserved.
+# Copyright (c) 2007-2009 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -27,38 +27,28 @@ PWD = `pwd`
 
 
 #
-# Test that the 10.4 and 10.5 ways to re-export a dylib work
+# Test that dylib re-exports work
 #
 
 all-check: all check
 
 check:
-	./main4
-	./main5
+	./main
 
-all: main4 main5
-
-libbar4.dylib : bar.c
-	${CC} bar.c -dynamiclib -o $(PWD)/libbar4.dylib -mmacosx-version-min=10.4
-
-libfoo4.dylib : foo.c libbar4.dylib
-	${CC} foo.c -dynamiclib libbar4.dylib -sub_library libbar4 -install_name $(PWD)/libfoo4.dylib -o libfoo4.dylib -mmacosx-version-min=10.4
-
-main4 : main.c libfoo4.dylib
-	${CC} main.c -I${TESTROOT}/include -o main4 libfoo4.dylib -mmacosx-version-min=10.4
+all: main
 
 
 
-libbar5.dylib : bar.c
-	${CC} bar.c -dynamiclib -o $(PWD)/libbar5.dylib -mmacosx-version-min=10.5
+libbar.dylib : bar.c
+	${CC} bar.c -dynamiclib -o $(PWD)/libbar.dylib 
 
-libfoo5.dylib : foo.c libbar5.dylib
-	${CC} foo.c -dynamiclib libbar5.dylib -sub_library libbar5 -install_name $(PWD)/libfoo5.dylib -o libfoo5.dylib -mmacosx-version-min=10.5
+libfoo.dylib : foo.c libbar.dylib
+	${CC} foo.c -dynamiclib libbar.dylib -sub_library libbar -install_name $(PWD)/libfoo.dylib -o libfoo.dylib 
 
-main5 : main.c libfoo5.dylib
-	${CC} main.c -I${TESTROOT}/include -o main5 libfoo5.dylib -mmacosx-version-min=10.5
+main : main.c libfoo.dylib
+	${CC} main.c -I${TESTROOT}/include -o main libfoo.dylib 
 
 	
 clean:
-	rm -rf main4 main5 libfoo4.dylib libfoo5.dylib libbar4.dylib libbar5.dylib
+	rm -rf main libfoo.dylib libbar.dylib
 	

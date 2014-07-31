@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2009 Apple Inc. All rights reserved.
+ * Copyright (c) 2006-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -24,6 +24,7 @@
 #define _DYLD_IMAGES_
 
 #include <stdbool.h>
+#include <unistd.h>
 #include <mach/mach.h>
 
 #ifdef __cplusplus
@@ -55,6 +56,11 @@ extern "C" {
  * be set to point to a C string message buffer containing the reason dyld terminate the process.
  * The low bit of the terminationFlags will be set if dyld terminated the process before any user
  * code ran, in which case there is no need for the crash log to contain the backtrace.
+ *
+ * When dyld terminates a process because some required dylib or symbol cannot be bound, in 
+ * addition to the errorMessage field, it now sets the errorKind field and the corresponding
+ * fields: errorClientOfDylibPath, errorTargetDylibPath, errorSymbol.
+ *
  */
 
 enum dyld_image_mode { dyld_image_adding=0, dyld_image_removing=1 };
@@ -67,7 +73,21 @@ struct dyld_image_info {
 													/* then file has been modified since dyld loaded it */
 };
 
+struct dyld_uuid_info {
+	const struct mach_header*	imageLoadAddress;	/* base address image is mapped into */
+	uuid_t						imageUUID;			/* UUID of image */
+};
+
 typedef void (*dyld_image_notifier)(enum dyld_image_mode mode, uint32_t infoCount, const struct dyld_image_info info[]);
+
+/* for use in dyld_all_image_infos.errorKind field */
+enum {	dyld_error_kind_none=0, 
+		dyld_error_kind_dylib_missing=1, 
+		dyld_error_kind_dylib_wrong_arch=2,
+		dyld_error_kind_dylib_version=3,
+		dyld_error_kind_symbol_missing=4
+	};
+
 
 struct dyld_all_image_infos {
 	uint32_t						version;		/* 1 in Mac OS X 10.4 and 10.5 */
@@ -78,19 +98,32 @@ struct dyld_all_image_infos {
 	/* the following fields are only in version 2 (Mac OS X 10.6, iPhoneOS 2.0) and later */
 	bool							libSystemInitialized;
 	const struct mach_header*		dyldImageLoadAddress;
-	/* the following field is only in version 3 (Mac OS X 10.6) and later */
+	/* the following field is only in version 3 (Mac OS X 10.6, iPhoneOS 3.0) and later */
 	void*							jitInfo;
-	/* the following fields are only in version 5 (Mac OS X 10.6) and later */
+	/* the following fields are only in version 5 (Mac OS X 10.6, iPhoneOS 3.0) and later */
 	const char*						dyldVersion;
 	const char*						errorMessage;
 	uintptr_t						terminationFlags;
-	/* the following field is only in version 6 (Mac OS X 10.6) and later */
+	/* the following field is only in version 6 (Mac OS X 10.6, iPhoneOS 3.1) and later */
 	void*							coreSymbolicationShmPage;
-	/* the following field is only in version 7 (Mac OS X 10.6) and later */
+	/* the following field is only in version 7 (Mac OS X 10.6, iPhoneOS 3.1) and later */
 	uintptr_t						systemOrderFlag;
+	/* the following field is only in version 8 (Mac OS X 10.7, iPhoneOS 3.1) and later */
+	uintptr_t						uuidArrayCount;
+	const struct dyld_uuid_info*	uuidArray;		/* only images not in dyld shared cache */
+	/* the following field is only in version 9 (Mac OS X 10.7, iOS 4.0) and later */
+	struct dyld_all_image_infos*	dyldAllImageInfosAddress;
+	/* the following field is only in version 10 (Mac OS X 10.7, iOS 4.2) and later */
+	uintptr_t						initialImageCount;
+	/* the following field is only in version 11 (Mac OS X 10.7, iOS 4.2) and later */
+	uintptr_t						errorKind;
+	const char*						errorClientOfDylibPath;
+	const char*						errorTargetDylibPath;
+	const char*						errorSymbol;
+	/* the following field is only in version 12 (Mac OS X 10.7, iOS 4.3) and later */
+	uintptr_t						sharedCacheSlide;
 };
 extern struct dyld_all_image_infos  dyld_all_image_infos;
-
 
 /*
  * Beginning in Mac OS X 10.6, rather than looking up the symbol "_dyld_all_image_infos"

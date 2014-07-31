@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2008 Apple Inc. All rights reserved.
+ * Copyright (c) 2004-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -106,11 +106,12 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateMainExecutable(cons
 	image->setSlide(slide);
 
 	// for PIE record end of program, to know where to start loading dylibs
-	if ( (mh->flags & MH_PIE) && !context.noPIE )
+	if ( slide != 0 )
 		fgNextPIEDylibAddress = (uintptr_t)image->getEnd();
 	
 	image->instantiateFinish(context);
-	
+	image->setMapped(context);
+
 #if __i386__
 	// kernel may have mapped in __IMPORT segment read-only, we need it read/write to do binding
 	if ( image->fReadOnlyImportSegment ) {
@@ -138,21 +139,26 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateMainExecutable(cons
 // create image by mapping in a mach-o file
 ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromFile(const char* path, int fd, const uint8_t* fileData, 
 															uint64_t offsetInFat, uint64_t lenInFat, const struct stat& info, 
-															unsigned int segCount, unsigned int libCount, const LinkContext& context)
+															unsigned int segCount, unsigned int libCount, 
+															const struct linkedit_data_command* codeSigCmd, const LinkContext& context)
 {
 	ImageLoaderMachOClassic* image = ImageLoaderMachOClassic::instantiateStart((macho_header*)fileData, path, segCount, libCount);
 	try {
 		// record info about file  
 		image->setFileInfo(info.st_dev, info.st_ino, info.st_mtime);
 
+	#if CODESIGNING_SUPPORT
+		// if this image is code signed, let kernel validate signature before mapping any pages from image
+		if ( codeSigCmd != NULL )
+			image->loadCodeSignature(codeSigCmd, fd, offsetInFat);
+	#endif
+		
 		// mmap segments
 		image->mapSegmentsClassic(fd, offsetInFat, lenInFat, info.st_size, context);
 
-	#if CODESIGNING_SUPPORT
-		// if this code is signed, validate the signature before accessing any mapped pages
-		image->loadCodeSignature(fileData, fd, offsetInFat);
-	#endif
-		
+		// finish up
+		image->instantiateFinish(context);
+
 		// if path happens to be same as in LC_DYLIB_ID load command use that, otherwise malloc a copy of the path
 		const char* installName = image->getInstallPath();
 		if ( (installName != NULL) && (strcmp(installName, path) == 0) && (path[0] == '/') )
@@ -168,13 +174,14 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromFile(const char
 		else 
 			image->setPath(path);
 
+		// make sure path is stable before recording in dyld_all_image_infos
+		image->setMapped(context);
+
 		// pre-fetch content of __DATA segment for faster launches
 		// don't do this on prebound images or if prefetching is disabled
         if ( !context.preFetchDisabled && !image->isPrebindable())
 			image->preFetchDATA(fd, offsetInFat, context);
 
-		// finish up
-		image->instantiateFinish(context);
 	}
 	catch (...) {
 		// ImageLoader::setMapped() can throw an exception to block loading of image
@@ -187,7 +194,7 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromFile(const char
 }
 
 // create image by using cached mach-o file
-ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromCache(const macho_header* mh, const char* path, const struct stat& info,
+ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromCache(const macho_header* mh, const char* path, long slide, const struct stat& info,
 																unsigned int segCount, unsigned int libCount, const LinkContext& context)
 {
 	ImageLoaderMachOClassic* image = ImageLoaderMachOClassic::instantiateStart(mh, path, segCount, libCount);
@@ -208,6 +215,7 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromCache(const mac
 		}
 
 		image->instantiateFinish(context);
+		image->setMapped(context);
 	}
 	catch (...) {
 		// ImageLoader::setMapped() can throw an exception to block loading of image
@@ -240,6 +248,7 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromMemory(const ch
 			image->setPath(moduleName);
 
 		image->instantiateFinish(context);
+		image->setMapped(context);
 	}
 	catch (...) {
 		// ImageLoader::setMapped() can throw an exception to block loading of image
@@ -278,9 +287,6 @@ void ImageLoaderMachOClassic::instantiateFinish(const LinkContext& context)
 {
 	// now that segments are mapped in, get real fMachOData, fLinkEditBase, and fSlide
 	this->parseLoadCmds();
-	
-	// notify state change
-	this->setMapped(context);
 }
 
 ImageLoaderMachOClassic::~ImageLoaderMachOClassic()
@@ -298,8 +304,8 @@ uint32_t* ImageLoaderMachOClassic::segmentCommandOffsets() const
 ImageLoader* ImageLoaderMachOClassic::libImage(unsigned int libIndex) const
 {
 	const uintptr_t* images = ((uintptr_t*)(((uint8_t*)this) + sizeof(ImageLoaderMachOClassic) + fSegmentsCount*sizeof(uint32_t)));
-	// mask off low bit
-	return (ImageLoader*)(images[libIndex] & (-2));
+	// mask off low bits
+	return (ImageLoader*)(images[libIndex] & (-4));
 }
 
 bool ImageLoaderMachOClassic::libReExported(unsigned int libIndex) const
@@ -309,13 +315,22 @@ bool ImageLoaderMachOClassic::libReExported(unsigned int libIndex) const
 	return ((images[libIndex] & 1) != 0);
 }	
 
+bool ImageLoaderMachOClassic::libIsUpward(unsigned int libIndex) const
+{
+	const uintptr_t* images = ((uintptr_t*)(((uint8_t*)this) + sizeof(ImageLoaderMachOClassic) + fSegmentsCount*sizeof(uint32_t)));
+	// upward flag is second bit
+	return ((images[libIndex] & 2) != 0);
+}	
 
-void ImageLoaderMachOClassic::setLibImage(unsigned int libIndex, ImageLoader* image, bool reExported)
+
+void ImageLoaderMachOClassic::setLibImage(unsigned int libIndex, ImageLoader* image, bool reExported, bool upward)
 {
 	uintptr_t* images = ((uintptr_t*)(((uint8_t*)this) + sizeof(ImageLoaderMachOClassic) + fSegmentsCount*sizeof(uint32_t)));
 	uintptr_t value = (uintptr_t)image;
 	if ( reExported ) 
 		value |= 1;
+	if ( upward ) 
+		value |= 2;
 	images[libIndex] = value;
 }
 
@@ -506,9 +521,12 @@ void ImageLoaderMachOClassic::mapSegmentsClassic(int fd, uint64_t offsetInFat, u
 		return ImageLoaderMachO::mapSegments(fd, offsetInFat, lenInFat, fileLen, context);
 
 #if SPLIT_SEG_SHARED_REGION_SUPPORT	
-	// try to map into shared region at preferred address
-	if ( mapSplitSegDylibInfoSharedRegion(fd, offsetInFat, lenInFat, fileLen, context) == 0) 
-		return;
+	// don't map split-seg dylibs into shared region if shared cache is in use
+	if ( ! context.dyldLoadedAtSameAddressNeededBySharedCache ) {
+		// try to map into shared region at preferred address
+		if ( mapSplitSegDylibInfoSharedRegion(fd, offsetInFat, lenInFat, fileLen, context) == 0) 
+			return;
+	}
 	// if there is a problem, fall into case where we map file somewhere outside the shared region
 #endif
 
@@ -779,6 +797,7 @@ void ImageLoaderMachOClassic::resetPreboundLazyPointers(const LinkContext& conte
 
 void ImageLoaderMachOClassic::rebase(const LinkContext& context)
 {
+	CRSetCrashLogMessage2(this->getPath());
 	register const uintptr_t slide = this->fSlide;
 	const uintptr_t relocBase = this->getRelocBase();
 	
@@ -885,6 +904,7 @@ void ImageLoaderMachOClassic::rebase(const LinkContext& context)
 	
 	// update stats
 	fgTotalRebaseFixups += fDynamicInfo->nlocrel;
+	CRSetCrashLogMessage2(NULL);
 }
 
 
@@ -986,7 +1006,7 @@ bool ImageLoaderMachOClassic::containsSymbol(const void* addr) const
 }
 
 
-uintptr_t ImageLoaderMachOClassic::exportedSymbolAddress(const Symbol* symbol) const
+uintptr_t ImageLoaderMachOClassic::exportedSymbolAddress(const LinkContext& context, const Symbol* symbol, bool runResolver) const
 {
 	const struct macho_nlist* sym = (macho_nlist*)symbol;
 	uintptr_t result = sym->n_value + fSlide;
@@ -1066,9 +1086,9 @@ bool ImageLoaderMachOClassic::symbolIsWeakReference(const struct macho_nlist* sy
 	return false;
 }
 
-uintptr_t ImageLoaderMachOClassic::getSymbolAddress(const macho_nlist* sym, const LinkContext& context) const
+uintptr_t ImageLoaderMachOClassic::getSymbolAddress(const macho_nlist* sym, const LinkContext& context, bool runResolver) const
 {
-	return ImageLoaderMachO::getSymbolAddress((Symbol*)sym, this, context);
+	return ImageLoaderMachO::getSymbolAddress((Symbol*)sym, this, context, runResolver);
 }
 
 uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, const struct macho_nlist* undefinedSymbol, 
@@ -1085,7 +1105,7 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 		// flat lookup
 		if ( ((undefinedSymbol->n_type & N_PEXT) != 0) && ((undefinedSymbol->n_type & N_TYPE) == N_SECT) ) {
 			// is a multi-module private_extern internal reference that the linker did not optimize away
-			uintptr_t addr = this->getSymbolAddress(undefinedSymbol, context);
+			uintptr_t addr = this->getSymbolAddress(undefinedSymbol, context, false);
 			*foundIn = this;
 			return addr;
 		}
@@ -1107,7 +1127,7 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 			// if reference is weak_import, then it is ok, just return 0
 			return 0;
 		}
-		throwSymbolNotFound(symbolName, this->getPath(), "flat namespace");
+		throwSymbolNotFound(context, symbolName, this->getPath(), "flat namespace");
 	}
 	else {
 		// symbol requires searching images with coalesced symbols (not done during prebinding)
@@ -1118,14 +1138,14 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 					this->addDynamicReference(*foundIn);
 				return (*foundIn)->getExportedSymbolAddress(sym, context, this);
 			}
-			//throwSymbolNotFound(symbolName, this->getPath(), "coalesced namespace");
+			//throwSymbolNotFound(context, symbolName, this->getPath(), "coalesced namespace");
 			//dyld::log("dyld: coalesced symbol %s not found in any coalesced image, falling back to two-level lookup", symbolName);
 		}
 		
 		// if this is a real definition (not an undefined symbol) there is no ordinal
 		if ( (undefinedSymbol->n_type & N_TYPE) == N_SECT ) {
 			// static linker should never generate this case, but if it does, do something sane
-			uintptr_t addr = this->getSymbolAddress(undefinedSymbol, context);
+			uintptr_t addr = this->getSymbolAddress(undefinedSymbol, context, false);
 			*foundIn = this;
 			return addr;
 		}
@@ -1152,7 +1172,7 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 			if ( context.flatExportFinder(symbolName, &sym, foundIn) )
 				return (*foundIn)->getExportedSymbolAddress(sym, context, this);
 			
-			throwSymbolNotFound(symbolName, this->getPath(), "dynamic lookup");
+			throwSymbolNotFound(context, symbolName, this->getPath(), "dynamic lookup");
 		}
 		else if ( ord <= libraryCount() ) {
 			target = libImage(ord-1);
@@ -1178,7 +1198,7 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 		else if ( (undefinedSymbol->n_type & N_PEXT) != 0 ) {
 			// don't know why the static linker did not eliminate the internal reference to a private extern definition
 			*foundIn = this;
-			return this->getSymbolAddress(undefinedSymbol, context);
+			return this->getSymbolAddress(undefinedSymbol, context, false);
 		}
 		else if ( (undefinedSymbol->n_desc & N_WEAK_REF) != 0 ) {
 			// if definition not found and reference is weak return 0
@@ -1186,7 +1206,7 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 		}
 		
 		// nowhere to be found
-		throwSymbolNotFound(symbolName, this->getPath(), target->getPath());
+		throwSymbolNotFound(context, symbolName, this->getPath(), target->getPath());
 	}
 }
 
@@ -1412,7 +1432,7 @@ uintptr_t ImageLoaderMachOClassic::bindIndirectSymbol(uintptr_t* ptrToBind, cons
 	return targetAddr;
 }
 
-uintptr_t ImageLoaderMachOClassic::doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context)
+uintptr_t ImageLoaderMachOClassic::doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context, void (*lock)(), void (*unlock)())
 {
 	throw "compressed LINKEDIT lazy binder called with classic LINKEDIT";
 }
@@ -1557,7 +1577,15 @@ uintptr_t ImageLoaderMachOClassic::getAddressCoalIterator(CoalIterator& it, cons
 	}	
 	const struct macho_nlist* sym = &fSymbolTable[symbol_index];
 	//dyld::log("getAddressCoalIterator() => 0x%llX, %s symbol_index=%d, in %s\n", (uint64_t)(sym->n_value + fSlide), &fStrings[sym->n_un.n_strx], symbol_index, this->getPath());
+#if __arm__
+		// processor assumes code address with low bit set is thumb
+		if (sym->n_desc & N_ARM_THUMB_DEF)
+			return (sym->n_value | 1) + fSlide ;
+		else
+			return sym->n_value + fSlide;
+#else
 	return sym->n_value + fSlide;
+#endif
 }
 
 
@@ -1622,7 +1650,7 @@ void ImageLoaderMachOClassic::updateUsesCoalIterator(CoalIterator& it, uintptr_t
 			#if __arm__
 						// if weak and thumb subtract off extra thumb bit
 						if ( (undefinedSymbol->n_desc & N_ARM_THUMB_DEF) != 0 )
-							addend += 1;
+							addend &= -2;
 			#endif
 					}
 				} 
@@ -1645,6 +1673,11 @@ void ImageLoaderMachOClassic::updateUsesCoalIterator(CoalIterator& it, uintptr_t
 					// to be definition address plus addend
 					//dyld::log("weak def, initialValue=0x%lX, undefAddr=0x%lX\n", initialValue, undefinedSymbol->n_value+fSlide);
 					addend = initialValue - (undefinedSymbol->n_value + fSlide);
+		#if __arm__
+					// if weak and thumb subtract off extra thumb bit
+					if ( (undefinedSymbol->n_desc & N_ARM_THUMB_DEF) != 0 )
+						addend &= -2;
+		#endif
 				}
 				else {
 					// nothing fixed up yet, addend is just initial value
@@ -1905,6 +1938,7 @@ void ImageLoaderMachOClassic::initializeLazyStubs(const LinkContext& context)
 
 void ImageLoaderMachOClassic::doBind(const LinkContext& context, bool forceLazysBound)
 {
+	CRSetCrashLogMessage2(this->getPath());
 #if __i386__
 	this->initializeLazyStubs(context);
 #endif
@@ -1918,6 +1952,12 @@ void ImageLoaderMachOClassic::doBind(const LinkContext& context, bool forceLazys
 		// no valid prebinding, so bind symbols.
 		// values bound by name are stored two different ways in classic mach-o:
 		
+	#if TEXT_RELOC_SUPPORT
+		// if there are __TEXT fixups, temporarily make __TEXT writable
+		if ( fTextSegmentBinds ) 
+			this->makeTextSegmentWritable(context, true);
+	#endif
+
 		// 1) external relocations are used for data initialized to external symbols
 		this->doBindExternalRelocations(context);
 		
@@ -1925,10 +1965,17 @@ void ImageLoaderMachOClassic::doBind(const LinkContext& context, bool forceLazys
 		// if this image is in the shared cache, there is no way to reset the lazy pointers, so bind them now
 		this->bindIndirectSymbolPointers(context, true, forceLazysBound || fInSharedCache);
 
+	#if TEXT_RELOC_SUPPORT
+		// if there were __TEXT fixups, restore write protection
+		if ( fTextSegmentBinds ) 
+			this->makeTextSegmentWritable(context, false);
+	#endif	
 	}
 	
 	// set up dyld entry points in image
 	this->setupLazyPointerHandler(context);
+	
+	CRSetCrashLogMessage2(NULL);
 }
 
 void ImageLoaderMachOClassic::doBindJustLazies(const LinkContext& context)
@@ -1936,6 +1983,100 @@ void ImageLoaderMachOClassic::doBindJustLazies(const LinkContext& context)
 	// some API called requested that all lazy pointers in this image be force bound
 	this->bindIndirectSymbolPointers(context, false, true);
 }
+
+void ImageLoaderMachOClassic::doInterpose(const LinkContext& context)
+{
+	if ( context.verboseInterposing )
+		dyld::log("dyld: interposing %lu tuples onto: %s\n", fgInterposingTuples.size(), this->getPath());
+
+	// scan indirect symbols
+	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+	const struct load_command* cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		switch (cmd->cmd) {
+			case LC_SEGMENT_COMMAND:
+				{
+					const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+					const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
+					const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
+					for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+						const uint8_t type = sect->flags & SECTION_TYPE;
+						if ( (type == S_NON_LAZY_SYMBOL_POINTERS) || (type == S_LAZY_SYMBOL_POINTERS) ) {
+							const uint32_t pointerCount = sect->size / sizeof(uintptr_t);
+							uintptr_t* const symbolPointers = (uintptr_t*)(sect->addr + fSlide);
+							for (uint32_t pointerIndex=0; pointerIndex < pointerCount; ++pointerIndex) {
+								for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
+									// replace all references to 'replacee' with 'replacement'
+									if ( (symbolPointers[pointerIndex] == it->replacee) && (this != it->replacementImage) ) {
+										if ( context.verboseInterposing ) {
+											dyld::log("dyld: interposing: at %p replace 0x%lX with 0x%lX in %s\n", 
+												&symbolPointers[pointerIndex], it->replacee, it->replacement, this->getPath());
+										}
+										symbolPointers[pointerIndex] = it->replacement;
+									}
+								}
+							}
+						}
+				#if __i386__
+						// i386 has special self-modifying stubs that might be prebound to "JMP rel32" that need checking
+						else if ( (type == S_SYMBOL_STUBS) && ((sect->flags & S_ATTR_SELF_MODIFYING_CODE) != 0) && (sect->reserved2 == 5) ) {
+							// check each jmp entry in this section
+							uint8_t* start = (uint8_t*)(sect->addr + this->fSlide);
+							uint8_t* end = start + sect->size;
+							for (uint8_t* entry = start; entry < end; entry += 5) {
+								if ( entry[0] == 0xE9 ) { // 0xE9 == JMP 
+									uint32_t rel32 = *((uint32_t*)&entry[1]); // assume unaligned load of uint32_t is ok
+									uint32_t target = (uint32_t)&entry[5] + rel32;
+									for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
+										// replace all references to 'replacee' with 'replacement'
+										if ( (it->replacee == target) && (this != it->replacementImage) ) {
+											if ( context.verboseInterposing ) {
+												dyld::log("dyld: interposing: at %p replace JMP 0x%lX with JMP 0x%lX in %s\n", 
+													&entry[1], it->replacee, it->replacement, this->getPath());
+											}
+											uint32_t newRel32 = it->replacement - (uint32_t)&entry[5];
+											*((uint32_t*)&entry[1]) = newRel32; // assume unaligned store of uint32_t is ok
+										}
+									}
+								}
+							}
+						}
+				#endif
+					}
+				}
+				break;
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+	
+	// scan external relocations 
+	const uintptr_t relocBase = this->getRelocBase();
+	const relocation_info* const relocsStart = (struct relocation_info*)(&fLinkEditBase[fDynamicInfo->extreloff]);
+	const relocation_info* const relocsEnd = &relocsStart[fDynamicInfo->nextrel];
+	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
+		if (reloc->r_length == RELOC_SIZE) {
+			switch(reloc->r_type) {
+				case POINTER_RELOC:
+					{
+						uintptr_t* location = ((uintptr_t*)(reloc->r_address + relocBase));
+						for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
+							// replace all references to 'replacee' with 'replacement'
+							if ( (*location == it->replacee) && (this != it->replacementImage) ) {
+								if ( context.verboseInterposing ) {
+									dyld::log("dyld: interposing: at %p replace 0x%lX with 0x%lX in %s\n", 
+										location, it->replacee, it->replacement, this->getPath());
+								}
+								*location = it->replacement;
+							}
+						}
+					}
+					break;
+			}
+		}
+	}
+}
+
 
 const char* ImageLoaderMachOClassic::findClosestSymbol(const void* addr, const void** closestAddr) const
 {
@@ -1970,7 +2111,14 @@ const char* ImageLoaderMachOClassic::findClosestSymbol(const void* addr, const v
 		}
 	}
 	if ( bestSymbol != NULL ) {
+#if __arm__
+		if (bestSymbol->n_desc & N_ARM_THUMB_DEF)
+			*closestAddr = (void*)((bestSymbol->n_value | 1) + fSlide);
+		else
+			*closestAddr = (void*)(bestSymbol->n_value + fSlide);
+#else
 		*closestAddr = (void*)(bestSymbol->n_value + fSlide);
+#endif
 		return &fStrings[bestSymbol->n_un.n_strx];
 	}
 	return NULL;

@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2008 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2008-2009 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -23,15 +23,21 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+ifeq "$(OS_NAME)" "iPhoneOS"
+	RUN_AS_USER = login -f -l mobile
+else
+	RUN_AS_USER = 
+endif
+
 all-check: all check
 
 check:
-	./main
+	chmod -r libnoread.dylib
+	${RUN_AS_USER} ./main
 
 all:  
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
 	${CC} ${CCFLAGS} foo.c -dynamiclib -o libnoread.dylib
-	chmod -r libnoread.dylib
 
 clean:
 	${RM} ${RMFLAGS} *~ main libnoread.dylib

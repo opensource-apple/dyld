@@ -43,6 +43,27 @@ struct uuid_command {
 	#define S_16BYTE_LITERALS 0xE
 #endif
 
+#ifndef CPU_SUBTYPE_ARM_V5TEJ
+	#define CPU_SUBTYPE_ARM_V5TEJ		((cpu_subtype_t) 7)
+#endif
+#ifndef CPU_SUBTYPE_ARM_XSCALE
+	#define CPU_SUBTYPE_ARM_XSCALE		((cpu_subtype_t) 8)
+#endif
+#ifndef CPU_SUBTYPE_ARM_V7
+	#define CPU_SUBTYPE_ARM_V7			((cpu_subtype_t) 9)
+#endif
+
+#ifndef LC_LOAD_UPWARD_DYLIB
+	#define	LC_LOAD_UPWARD_DYLIB (0x23|LC_REQ_DYLD)	/* load of dylib whose initializers run later */
+#endif
+
+#ifndef EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER
+	#define EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER 0x10
+#endif
+#ifndef EXPORT_SYMBOL_FLAGS_REEXPORT
+	#define EXPORT_SYMBOL_FLAGS_REEXPORT 0x08
+#endif
+
 
 #include "FileAbstraction.hpp"
 #include "Architectures.hpp"
@@ -738,29 +759,28 @@ public:
 
     const macho_segment_command<P>* getSegment(const char *segname) const
     {
-        const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)this + sizeof(macho_header<P>));
-        const uint32_t cmd_count = this->ncmds();
+        const macho_load_command<P>* cmds = (macho_load_command<P>*)((uint8_t*)this + sizeof(macho_header<P>));
+        uint32_t cmd_count = this->ncmds();
         const macho_load_command<P>* cmd = cmds;
         for (uint32_t i = 0; i < cmd_count; ++i) {
             if ( cmd->cmd() == macho_segment_command<P>::CMD ) {
-                const macho_segment_command<P>* segcmd = 
-                    (macho_segment_command<P>*)cmd;
+                const macho_segment_command<P>* segcmd = (macho_segment_command<P>*)cmd;
                 if (0 == strncmp(segname, segcmd->segname(), 16)) {
                     return segcmd;
                 }
             }
-            cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
+            cmd = (macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
         }
         return NULL;
     }
 
     const macho_section<P>* getSection(const char *segname, const char *sectname) const
     {
-        const macho_segment_command<P>* const segcmd = getSegment(segname);
+       const  macho_segment_command<P>* segcmd = getSegment(segname);
         if (!segcmd) return NULL;
 
         const macho_section<P>* sectcmd = (macho_section<P>*)(segcmd+1);
-        const uint32_t section_count = segcmd->nsects();
+        uint32_t section_count = segcmd->nsects();
         for (uint32_t j = 0; j < section_count; ++j) {
             if (0 == ::strncmp(sectcmd[j].sectname(), sectname, 16)) {
                 return sectcmd+j;

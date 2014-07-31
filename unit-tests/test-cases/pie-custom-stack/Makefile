@@ -42,7 +42,7 @@ check:
 all: main
 
 main : main.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -Wl,-pie -o main main.c -mmacosx-version-min=10.5 -Wl,-stack_size,0x10000000
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -Wl,-pie -o main main.c -Wl,-stack_size,0x10000000
 
 
 clean:

@@ -34,15 +34,22 @@
 #include "mach-o/dyld_images.h"
 #include "ImageLoader.h"
 
+#if __IPHONE_OS_VERSION_MIN_REQUIRED
+	#define INITIAL_UUID_IMAGE_COUNT 4
+#else
+	#define INITIAL_UUID_IMAGE_COUNT 32
+#endif
 
 static std::vector<dyld_image_info> sImageInfos;
+static std::vector<dyld_uuid_info>  sImageUUIDs;
 
 void addImagesToAllImages(uint32_t infoCount, const dyld_image_info info[])
 {
-	// make initial size large enought that we probably won't need to re-alloc it
+	// make initial size large enough that we probably won't need to re-alloc it
 	if ( sImageInfos.size() == 0 )
 		sImageInfos.reserve(INITIAL_IMAGE_COUNT);
-
+	if ( sImageUUIDs.capacity() == 0 )
+		sImageUUIDs.reserve(4);
 	// set infoArray to NULL to denote it is in-use
 	dyld_all_image_infos.infoArray = NULL;
 	
@@ -51,11 +58,35 @@ void addImagesToAllImages(uint32_t infoCount, const dyld_image_info info[])
 		sImageInfos.push_back(info[i]);
 	dyld_all_image_infos.infoArrayCount = sImageInfos.size();
 	
-	// set infoArray back to base address of vector
+	// set infoArray back to base address of vector (other process can now read)
 	dyld_all_image_infos.infoArray = &sImageInfos[0];
+}
 
+
+const char* notifyGDB(enum dyld_image_states state, uint32_t infoCount, const dyld_image_info info[])
+{
 	// tell gdb that about the new images
 	dyld_all_image_infos.notification(dyld_image_adding, infoCount, info);
+	// <rdar://problem/7739489> record initial count of images  
+	// so CrashReporter can note which images were dynamically loaded
+	if ( dyld_all_image_infos.initialImageCount == 0 )
+		dyld_all_image_infos.initialImageCount = infoCount;
+	return NULL;
+}
+
+
+
+void addNonSharedCacheImageUUID(const dyld_uuid_info& info)
+{
+	// set uuidArray to NULL to denote it is in-use
+	dyld_all_image_infos.uuidArray = NULL;
+	
+	// append all new images
+	sImageUUIDs.push_back(info);
+	dyld_all_image_infos.uuidArrayCount = sImageUUIDs.size();
+	
+	// set uuidArray back to base address of vector (other process can now read)
+	dyld_all_image_infos.uuidArray = &sImageUUIDs[0];
 }
 
 void removeImageFromAllImages(const struct mach_header* loadAddress)
@@ -78,11 +109,30 @@ void removeImageFromAllImages(const struct mach_header* loadAddress)
 	// set infoArray back to base address of vector
 	dyld_all_image_infos.infoArray = &sImageInfos[0];
 
+
+	// set uuidArrayCount to NULL to denote it is in-use
+	dyld_all_image_infos.uuidArray = NULL;
+	
+	// remove image from infoArray
+	for (std::vector<dyld_uuid_info>::iterator it=sImageUUIDs.begin(); it != sImageUUIDs.end(); it++) {
+		if ( it->imageLoadAddress == loadAddress ) {
+			sImageUUIDs.erase(it);
+			break;
+		}
+	}
+	dyld_all_image_infos.uuidArrayCount = sImageUUIDs.size();
+	
+	// set infoArray back to base address of vector
+	dyld_all_image_infos.uuidArray = &sImageUUIDs[0];
+
 	// tell gdb that about the new images
 	dyld_all_image_infos.notification(dyld_image_removing, 1, &goingAway);
 }
 
-
+#if __arm__
+// work around for:  <rdar://problem/6530727> gdb-1109: notifier in dyld does not work if it is in thumb
+extern "C" void gdb_image_notifier(enum dyld_image_mode mode, uint32_t infoCount, const dyld_image_info info[]);
+#else
 static void gdb_image_notifier(enum dyld_image_mode mode, uint32_t infoCount, const dyld_image_info info[])
 {
 	// do nothing
@@ -93,6 +143,7 @@ static void gdb_image_notifier(enum dyld_image_mode mode, uint32_t infoCount, co
 	//for (uint32_t i=0; i < dyld_all_image_infos.infoArrayCount; ++i)
 	//	dyld::log("dyld: %d loading at %p %s\n", i, dyld_all_image_infos.infoArray[i].imageLoadAddress, dyld_all_image_infos.infoArray[i].imageFilePath);
 }
+#endif
 
 void setAlImageInfosHalt(const char* message, uintptr_t flags)
 {
@@ -106,8 +157,11 @@ extern void* __dso_handle;
 #define XSTR(s) STR(s)
 
 struct dyld_all_image_infos  dyld_all_image_infos __attribute__ ((section ("__DATA,__all_image_info"))) 
-							= { 7, 0, NULL, &gdb_image_notifier, false, false, (const mach_header*)&__dso_handle, NULL, 
-								XSTR(DYLD_VERSION) , NULL, 0, 0 };
+							= { 
+								12, 0, NULL, &gdb_image_notifier, false, false, (const mach_header*)&__dso_handle, NULL, 
+								XSTR(DYLD_VERSION), NULL, 0, NULL, 0, 0, NULL, &dyld_all_image_infos, 
+								0, dyld_error_kind_none, NULL, NULL, NULL, 0
+								};
 
 struct dyld_shared_cache_ranges dyld_shared_cache_ranges;
 

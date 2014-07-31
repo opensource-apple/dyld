@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <mach-o/dyld.h>
+#include <Availability.h>
 
 #include "test.h"
 
@@ -30,11 +31,14 @@
 
 int main()
 {
+// NSAddImage is only available on Mac OS X - not iPhone OS
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
 	// test that NSAddImage() uses fallback path when given a leaf name
 	const struct mach_header * mh = NSAddImage("libzzz.dylib", NSADDIMAGE_OPTION_WITH_SEARCHING);
-	if ( mh != NULL )
-		PASS("NSAddImage-leafname");
-	else
+	if ( mh == NULL )
 		FAIL("NSAddImage-leafname");
+	else
+#endif
+		PASS("NSAddImage-leafname");
 	return EXIT_SUCCESS;
 }

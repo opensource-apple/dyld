@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -59,6 +59,7 @@ namespace dyld {
 
 	extern ImageLoader::LinkContext			gLinkContext;
 	extern bool								gLogAPIs;
+	extern bool								gSharedCacheOverridden;
 	extern const struct LibSystemHelpers*	gLibSystemHelpers;
 #if SUPPORT_OLD_CRT_INITIALIZATION
 	extern bool								gRunInitializersOldWay;
@@ -94,7 +95,7 @@ namespace dyld {
 	extern void					clearErrorMessage();
 	extern bool					mainExecutablePrebound();
 	extern ImageLoader*			mainExecutable();
-	extern void					processDyldEnvironmentVarible(const char* key, const char* value);
+	extern void					processDyldEnvironmentVariable(const char* key, const char* value, const char* mainDir);
 	extern void					registerImageStateSingleChangeHandler(dyld_image_states state, dyld_image_state_change_handler handler);
 	extern void					registerImageStateBatchChangeHandler(dyld_image_states state, dyld_image_state_change_handler handler);
 	extern void					garbageCollectImages();
@@ -102,6 +103,8 @@ namespace dyld {
 	extern const void*			imMemorySharedCacheHeader();
 	extern uintptr_t			fastBindLazySymbol(ImageLoader** imageLoaderCache, uintptr_t lazyBindingInfoOffset);
 	extern bool					inSharedCache(const char* path);
-
+#if LOG_BINDINGS
+	extern void					logBindings(const char* format, ...);
+#endif
 };
 

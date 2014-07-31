@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -23,12 +23,15 @@
 #include <stdio.h>  // fprintf(), NULL
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <mach-o/dyld.h>
+#include <Availability.h>
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
 int
 main(int argc, const char* argv[])
 {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED
   _dyld_launched_prebound();
+#endif
   return EXIT_SUCCESS;
 }

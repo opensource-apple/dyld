@@ -128,6 +128,12 @@ public:
 	
 	static uint64_t	getP(const uint_t& from)				INLINE { return _E::get32(from); }
 	static void		setP(uint_t& into, uint64_t value)		INLINE { _E::set32(into, value); }
+
+    // Round to a P-size boundary
+    template <typename T>
+    static T round_up(T value) { return (value+3) & ~(T)3; }
+    template <typename T>
+    static T round_down(T value) { return value & ~(T)3; }
 };
 
 
@@ -140,6 +146,12 @@ public:
 	
 	static uint64_t	getP(const uint_t& from)				INLINE { return _E::get64(from); }
 	static void		setP(uint_t& into, uint64_t value)		INLINE { _E::set64(into, value); }
+
+    // Round to a P-size boundary
+    template <typename T>
+    static T round_up(T value) { return (value+7) & ~(T)7; }
+    template <typename T>
+    static T round_down(T value) { return value & ~(T)7; }
 };
 
 

@@ -20,11 +20,17 @@
 # 
 # @APPLE_LICENSE_HEADER_END@
 ##
-TESTROOT = ../..
+PWD = $(shell pwd)
+TESTROOT = $(PWD)/../..
 include ${TESTROOT}/include/common.makefile
 
 SHELL = bash # use bash shell so we can redirect just stderr
 
+ifeq "$(OS_NAME)" "iPhoneOS"
+	RUN_AS_USER = login -f -l mobile
+else
+	RUN_AS_USER = 
+endif
 
 #
 # Use of @exectuable_path in restricted binaries is not allowed
@@ -35,10 +41,9 @@ SHELL = bash # use bash shell so we can redirect just stderr
 all-check: all check
 
 check:
-	${TESTROOT}/bin/exit-non-zero-pass.pl "restrict-executable_path @executable_path" "restrict-executable_path @executable_path" ./main_exe "restrict-executable_path"
-	${TESTROOT}/bin/exit-non-zero-pass.pl "restrict-executable_path @loader_path" "restrict-executable_path @loader_path" ./main_loader "restrict-executable_path"
-	${TESTROOT}/bin/exit-non-zero-pass.pl "restrict-executable_path relative path" "restrict-executable_path relative path" ./main_rel "restrict-executable_path"
-
+	${RUN_AS_USER} ${PASS_IFF_FAILURE} "setuid-executable_path @executable_path" "setuid-executable_path @executable_path" $(PWD)/main_exe
+	${RUN_AS_USER} ${PASS_IFF_FAILURE} "setuid-executable_path @loader_path" "setuid-executable_path @loader_path" $(PWD)/main_loader
+	${RUN_AS_USER} ${PASS_IFF_FAILURE} "setuid-executable_path relative path" "setuid-executable_path relative path" $(PWD)/main_rel
 
 
 all: main_exe  main_loader main_rel 

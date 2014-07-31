@@ -22,9 +22,17 @@
  */
 #include <stdio.h>
 #include <stdbool.h>
+#include <Availability.h>
 
-char bigarray[1500000000];
-
+#if __IPHONE_OS_VERSION_MIN_REQUIRED
+char bigarray[0x10000000];	// 0.25GB
+#else
+	#if __LP64__
+		char bigarray[0xF0000000];	// 4GB
+	#else
+		char bigarray[0x30000000];	// 0.75GB
+	#endif
+#endif
 
 int main()
 {

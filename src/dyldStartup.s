@@ -82,7 +82,7 @@ _dyld_all_image_infos:	.long 0
 	.data
 __dyld_start_static_picbase: 
 	.long   L__dyld_start_picbase
-
+Lmh:	.long	___dso_handle
 
 	.text
 	.align 2
@@ -115,12 +115,16 @@ __dyld_start:
 	movl	%esp,%ebp	# pointer to base of kernel frame
 	andl    $-16,%esp       # force SSE alignment
 	
-	# call dyldbootstrap::start(app_mh, argc, argv, slide)
+	# call dyldbootstrap::start(app_mh, argc, argv, slide, dyld_mh)
+	subl	$12,%esp
 	call    L__dyld_start_picbase
 L__dyld_start_picbase:	
 	popl	%ebx		# set %ebx to runtime value of picbase
-    	movl	__dyld_start_static_picbase-L__dyld_start_picbase(%ebx), %eax
-	subl    %eax, %ebx      # slide = L__dyld_start_picbase - [__dyld_start_static_picbase]
+   	movl	Lmh-L__dyld_start_picbase(%ebx), %ecx # ecx = prefered load address
+   	movl	__dyld_start_static_picbase-L__dyld_start_picbase(%ebx), %eax
+	subl    %eax, %ebx      # ebx = slide = L__dyld_start_picbase - [__dyld_start_static_picbase]
+	addl	%ebx, %ecx	# ecx = actual load address
+	pushl   %ecx		# param5 = actual load address
 	pushl   %ebx		# param4 = slide
 	lea     12(%ebp),%ebx	
 	pushl   %ebx		# param3 = argv
@@ -128,7 +132,7 @@ L__dyld_start_picbase:
 	pushl   %ebx		# param2 = argc
 	movl	4(%ebp),%ebx	
 	pushl   %ebx		# param1 = mh
-	call	__ZN13dyldbootstrap5startEPK12macho_headeriPPKcl	
+	call	__ZN13dyldbootstrap5startEPK12macho_headeriPPKclS2_	
 
     	# clean up stack and jump to result
 	movl	%ebp,%esp	# restore the unaligned stack pointer
@@ -182,14 +186,15 @@ __dyld_start:
 	movq	%rsp,%rbp	# pointer to base of kernel frame
 	andq    $-16,%rsp       # force SSE alignment
 	
-	# call dyldbootstrap::start(app_mh, argc, argv, slide)
+	# call dyldbootstrap::start(app_mh, argc, argv, slide, dyld_mh)
 	movq	8(%rbp),%rdi	# param1 = mh into %rdi
 	movl	16(%rbp),%esi	# param2 = argc into %esi
 	leaq	24(%rbp),%rdx	# param3 = &argv[0] into %rdx
 	movq	__dyld_start_static(%rip), %r8
 	leaq	__dyld_start(%rip), %rcx
 	subq	 %r8, %rcx	# param4 = slide into %rcx
-	call	__ZN13dyldbootstrap5startEPK12macho_headeriPPKcl	
+	leaq	___dso_handle(%rip),%r8 # param5 = dyldsMachHeader
+	call	__ZN13dyldbootstrap5startEPK12macho_headeriPPKclS2_	
 
     	# clean up stack and jump to result
 	movq	%rbp,%rsp	# restore the unaligned stack pointer
@@ -206,7 +211,8 @@ __dyld_start:
 	.data
 	.align 2
 __dyld_start_static_picbase: 
-	.g_long   L__dyld_start_picbase
+	.g_long	    L__dyld_start_picbase
+Lmh:	.g_long	    ___dso_handle
 
 #if __ppc__	
 	.set L_mh_offset,0
@@ -246,7 +252,7 @@ __dyld_start:
 	stg	r0,0(r1)	; terminate initial stack frame
 	stgu	r1,-SF_MINSIZE(r1); allocate minimal stack frame
 		
-	; call dyldbootstrap::start(app_mh, argc, argv, slide)
+	# call dyldbootstrap::start(app_mh, argc, argv, slide, dyld_mh)
 	lg	r3,L_mh_offset(r26)	; r3 = mach_header
 	lwz	r4,L_argc_offset(r26)	; r4 = argc (int == 4 bytes)
 	addi	r5,r26,L_argv_offset	; r5 = argv
@@ -256,7 +262,10 @@ L__dyld_start_picbase:
 	addis   r6,r31,ha16(__dyld_start_static_picbase-L__dyld_start_picbase)
 	lg      r6,lo16(__dyld_start_static_picbase-L__dyld_start_picbase)(r6)
 	subf    r6,r6,r31       ; r6 = slide
-	bl	__ZN13dyldbootstrap5startEPK12macho_headeriPPKcl	
+	addis   r7,r31,ha16(Lmh-L__dyld_start_picbase)
+	lg      r7,lo16(Lmh-L__dyld_start_picbase)(r7)
+	add	r7,r6,r7	; r7 = dyld_mh
+	bl	__ZN13dyldbootstrap5startEPK12macho_headeriPPKclS2_	
 	
 	; clean up stack and jump to result
 	mtctr	r3		; Put entry point in count register
@@ -296,10 +305,23 @@ _offset_to_dyld_all_image_infos:
 	.space	16
     
     
+	// Hack to make ___dso_handle work
+	// Without this local symbol, assembler will error out about in subtraction expression
+	// The real ___dso_handle (non-weak) sythesized by the linker
+	// Since this one is weak, the linker will throw this one away and use the real one instead.
+	.data
+	.globl ___dso_handle
+	.weak_definition ___dso_handle
+___dso_handle:	.long 0
+
 	.text
 	.align 2
 __dyld_start:
-	// call dyldbootstrap::start(app_mh, argc, argv, slide)         
+	mov	r8, sp		// save stack pointer
+	sub	sp, #8		// make room for outgoing dyld_mh parameter
+	bic     sp, sp, #7	// force 8-byte alignment
+
+	// call dyldbootstrap::start(app_mh, argc, argv, slide, dyld_mh)
 
 	ldr	r3, L__dyld_start_picbase_ptr
 L__dyld_start_picbase:
@@ -307,23 +329,25 @@ L__dyld_start_picbase:
 	ldr	r3, [r0, r3]	// load expected PC
 	sub	r3, r0, r3	// r3 = slide
 
-	ldr	r0, [sp]	// r0 = mach_header
-	ldr	r1, [sp, #4]	// r1 = argc
-	add	r2, sp, #8	// r2 = argv
+	ldr	r0, [r8]	// r0 = mach_header
+	ldr	r1, [r8, #4]	// r1 = argc
+	add	r2, r8, #8	// r2 = argv
 
-	mov	r8, sp		// save stack pointer
-	bic     sp, sp, #7	// force 8-byte alignment
+	ldr	r4, Lmh
+L3:	add	r4, r4, pc	// r4 = dyld_mh
+	str	r4, [sp, #0]
        
-	bl	__ZN13dyldbootstrap5startEPK12macho_headeriPPKcl
+	bl	__ZN13dyldbootstrap5startEPK12macho_headeriPPKclS2_
        
 	// clean up stack and jump to result
 	add	sp, r8, #4	// remove the mach_header argument.
 	bx	r0		// jump to the program's entry point
 
+
 	.align 2
 L__dyld_start_picbase_ptr:
 	.long	__dyld_start_static_picbase-L__dyld_start_picbase
-
+Lmh:	.long   ___dso_handle-L3-8
 	
 	.text
 	.align 2
@@ -366,7 +390,16 @@ _dyld_fatal_error:
     #error unknown architecture
 #endif
 
-    
-    
+#if __arm__
+	// work around for:  <rdar://problem/6530727> gdb-1109: notifier in dyld does not work if it is in thumb
+ 	.text
+	.align 2
+	.globl	_gdb_image_notifier
+	.private_extern _gdb_image_notifier
+_gdb_image_notifier:
+	bx  lr
+#endif
+
+
 
 

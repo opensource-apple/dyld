@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2006-2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -27,6 +27,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/errno.h>
 #include <sys/mman.h>
 #include <mach/mach.h>
 #include <limits.h>
@@ -124,10 +125,15 @@ public:
 	virtual uint32_t							getFileType() const	= 0;
 	virtual uint32_t							getFlags() const = 0;
 	virtual	Library								getID() const = 0;
+	virtual bool								isDylib() const = 0;
 	virtual bool								isSplitSeg() const = 0;
 	virtual bool								hasSplitSegInfo() const = 0;
 	virtual bool								isRootOwned() const = 0;
 	virtual bool								inSharableLocation() const = 0;
+	virtual bool								hasDynamicLookupLinkage() const = 0;
+	virtual bool								hasMainExecutableLookupLinkage() const = 0;
+	virtual bool								isTwoLevelNamespace() const	= 0;
+	virtual bool								hasDyldInfo() const	= 0;
 	virtual	uint32_t							getNameFileOffset() const = 0;
 	virtual time_t								getLastModTime() const = 0;
 	virtual ino_t								getInode() const = 0;
@@ -142,6 +148,9 @@ public:
 	virtual uint64_t							getExecutableVMSize() const = 0;
 	virtual uint64_t							getWritableVMSize() const = 0;
 	virtual uint64_t							getReadOnlyVMSize() const = 0;
+	// need getDyldInfoExports because export info uses ULEB encoding and size could grow
+	virtual const uint8_t*						getDyldInfoExports() const = 0;
+	virtual void								setDyldInfoExports(const uint8_t* newExports) const = 0;
 };
 
 
@@ -161,10 +170,15 @@ public:
 	virtual uint32_t							getFileType() const		{ return fFileType; }
 	virtual uint32_t							getFlags() const		{ return fFlags; }
 	virtual	Library								getID() const			{ return fDylibID; }
+	virtual bool								isDylib() const			{ return fIsDylib; }
 	virtual bool								isSplitSeg() const;
 	virtual bool								hasSplitSegInfo() const	{ return fHasSplitSegInfo; }
 	virtual bool								isRootOwned() const		{ return fRootOwned; }
 	virtual bool								inSharableLocation() const { return fShareableLocation; }
+	virtual bool								hasDynamicLookupLinkage() const { return fDynamicLookupLinkage; }
+	virtual bool								hasMainExecutableLookupLinkage() const { return fMainExecutableLookupLinkage; }
+	virtual bool								isTwoLevelNamespace() const	{ return (fFlags & MH_TWOLEVEL); }
+	virtual bool								hasDyldInfo() const		{ return fHasDyldInfo; }
 	virtual	uint32_t							getNameFileOffset() const{ return fNameFileOffset; }
 	virtual time_t								getLastModTime() const	{ return fMTime; }
 	virtual ino_t								getInode() const		{ return fInode; }
@@ -179,6 +193,8 @@ public:
 	virtual uint64_t							getExecutableVMSize() const		{ return fVMExecutableSize; }
 	virtual uint64_t							getWritableVMSize() const		{ return fVMWritablSize; }
 	virtual uint64_t							getReadOnlyVMSize() const		{ return fVMReadOnlySize; }
+	virtual const uint8_t*						getDyldInfoExports() const		{ return fDyldInfoExports; }
+	virtual void								setDyldInfoExports(const uint8_t* newExports) const { fDyldInfoExports = newExports; }
 	
 private:
 	typedef typename A::P					P;
@@ -209,6 +225,11 @@ private:
 	bool										fHasSplitSegInfo;
 	bool										fRootOwned;
 	bool										fShareableLocation;
+	bool										fDynamicLookupLinkage;
+	bool										fMainExecutableLookupLinkage;
+	bool										fIsDylib;
+	bool										fHasDyldInfo;
+	mutable const uint8_t*						fDyldInfoExports;
 };
 
 
@@ -229,9 +250,7 @@ private:
 	};
 	typedef __gnu_cxx::hash_map<const char*, const UniversalMachOLayout*, __gnu_cxx::hash<const char*>, CStringEquals> PathToNode;
 
-	static bool					compatibleSubtype(const std::set<ArchPair>* onlyArchs, cpu_type_t cpuType, cpu_subtype_t cpuSubType);
-	static bool					bestSliceForArch(uint32_t sliceCount, const struct fat_arch* slices, ArchPair ap, uint32_t& bestSliceIndex);
-	static const cpu_subtype_t* getArmSubtypeList(cpu_subtype_t s);
+	static bool					requestedSlice(const std::set<ArchPair>* onlyArchs, cpu_type_t cpuType, cpu_subtype_t cpuSubType);
 
 	static PathToNode							fgLayoutCache;
 	const char*									fPath;
@@ -243,80 +262,23 @@ UniversalMachOLayout::PathToNode UniversalMachOLayout::fgLayoutCache;
 
 
 
-// armv7 can run: v7, v6, v5, and v4
-static const cpu_subtype_t kARMV7compatibleSubTypes[] =
-	{ CPU_SUBTYPE_ARM_V7, CPU_SUBTYPE_ARM_V6, CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, 0 };
-
-// armv6 can run: v6, v5, and v4
-static const cpu_subtype_t kARMV6compatibleSubTypes[] =
-	{ CPU_SUBTYPE_ARM_V6, CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, 0};
-
-// xscale can run: xscale, v5, and v4
-static const cpu_subtype_t kARMXscaleCompatibleSubTypes[] =
-	{ CPU_SUBTYPE_ARM_XSCALE, CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, 0};
-
-// armv5 can run: v5 and v4
-static const cpu_subtype_t kARMV5compatibleSubTypes[] =
-	{ CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, 0};
-
-// armv4 can run: v4
-static const cpu_subtype_t kARMV4compatibleSubTypes[] =
-	{ CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, 0 };
-
-const cpu_subtype_t* UniversalMachOLayout::getArmSubtypeList(cpu_subtype_t s)
-{
-	switch ( s ) {
-		case CPU_SUBTYPE_ARM_V7:
-			return kARMV7compatibleSubTypes;
-		case CPU_SUBTYPE_ARM_V6:
-			return kARMV6compatibleSubTypes;
-		case CPU_SUBTYPE_ARM_XSCALE:
-			return kARMXscaleCompatibleSubTypes;
-		case CPU_SUBTYPE_ARM_V5TEJ:
-			return kARMV5compatibleSubTypes;
-		case CPU_SUBTYPE_ARM_V4T:
-			return kARMV4compatibleSubTypes;
-	}
-	return NULL;
-}
-
-
-
 const MachOLayoutAbstraction* UniversalMachOLayout::getSlice(ArchPair ap) const
 {
-	switch ( ap.arch ) {
-		case CPU_TYPE_POWERPC:
-		case CPU_TYPE_I386:
-		case CPU_TYPE_X86_64:
-			// use first matching cputype
-			for(std::vector<MachOLayoutAbstraction*>::const_iterator it=fLayouts.begin(); it != fLayouts.end(); ++it) {
-				const MachOLayoutAbstraction* layout = *it;
-				if ( layout->getArchPair().arch == ap.arch ) 
-					return layout;
-			}
-			break;
-		case CPU_TYPE_ARM:
-			const cpu_subtype_t* list = getArmSubtypeList(ap.subtype);
-			if ( list != NULL ) {
-				// known subtype, find best match
-				for(const cpu_subtype_t* s=list; *s != 0; ++s) {
-					for(std::vector<MachOLayoutAbstraction*>::const_iterator it=fLayouts.begin(); it != fLayouts.end(); ++it) {
-						const MachOLayoutAbstraction* layout = *it;
-						if ( (layout->getArchPair().arch == ap.arch) && (layout->getArchPair().subtype == *s) ) 
-							return layout;
-					}
-				}
-			}
-			else {
-				// unknown arm sub-type, must have exact match
-				for(std::vector<MachOLayoutAbstraction*>::const_iterator it=fLayouts.begin(); it != fLayouts.end(); ++it) {
-					const MachOLayoutAbstraction* layout = *it;
-					if ( (layout->getArchPair().arch == ap.arch) && (layout->getArchPair().subtype == ap.subtype) ) 
-						return layout;
-				}
-			}
+	// use matching cputype and cpusubtype
+	for(std::vector<MachOLayoutAbstraction*>::const_iterator it=fLayouts.begin(); it != fLayouts.end(); ++it) {
+		const MachOLayoutAbstraction* layout = *it;
+		if ( layout->getArchPair().arch == ap.arch ) {
+            switch ( ap.arch ) {
+                case CPU_TYPE_ARM:
+                    if ( layout->getArchPair().subtype == ap.subtype ) 
+                        return layout;
+                    break;
+                default:
+                    return layout;
+            }
+        }
 	}
-	throwf("no compatible slice found in %s", fPath);
+	return NULL;
 }
 
 
@@ -336,74 +298,24 @@ const UniversalMachOLayout& UniversalMachOLayout::find(const char* path, const s
 	return *result;
 }
 
-bool UniversalMachOLayout::bestSliceForArch(uint32_t sliceCount, const struct fat_arch* slices, ArchPair ap, uint32_t& bestSliceIndex)
-{
-	switch ( ap.arch ) {
-		case CPU_TYPE_POWERPC:
-		case CPU_TYPE_I386:
-		case CPU_TYPE_X86_64:
-			// use first matching cputype
-			for (uint32_t i=0; i < sliceCount; ++i) {
-				if ( OSSwapBigToHostInt32(slices[i].cputype) == ap.arch ) {
-					bestSliceIndex = i;
-					return true;
-				}
-			}
-			return false;
-		case CPU_TYPE_ARM:
-			// find best matching arch
-			const cpu_subtype_t* list = getArmSubtypeList(ap.subtype);
-			if ( list != NULL ) {
-				for(const cpu_subtype_t* s=list; *s != 0; ++s) {
-					for (uint32_t i=0; i < sliceCount; ++i) {
-						if ( (OSSwapBigToHostInt32(slices[i].cputype) == ap.arch) && (OSSwapBigToHostInt32(slices[i].cpusubtype) == *s) ) {
-							bestSliceIndex = i;
-							return true;
-						}
-					}
-				}
-				return false;
-			}
-			// unknown arm sub-type, must have exact match
-			for (uint32_t i=0; i < sliceCount; ++i) {
-				if ( (OSSwapBigToHostInt32(slices[i].cputype) == ap.arch) && (OSSwapBigToHostInt32(slices[i].cpusubtype) == ap.subtype) ) {
-					bestSliceIndex = i;
-					return true;
-				}
-			}
-			return false;
-	}
-	throw "unknown architecture";
-}
 
-bool UniversalMachOLayout::compatibleSubtype(const std::set<ArchPair>* onlyArchs, cpu_type_t cpuType, cpu_subtype_t cpuSubType)
+bool UniversalMachOLayout::requestedSlice(const std::set<ArchPair>* onlyArchs, cpu_type_t cpuType, cpu_subtype_t cpuSubType)
 {
+	if ( onlyArchs == NULL )
+		return true;
+	// must match cputype and cpusubtype
 	for (std::set<ArchPair>::const_iterator it = onlyArchs->begin(); it != onlyArchs->end(); ++it) {
-		if ( cpuType == it->arch ) {
-			switch ( it->arch ) {
-				case CPU_TYPE_POWERPC:
-				case CPU_TYPE_I386:
-				case CPU_TYPE_X86_64:
-					// just match cpu type
-					return true;
-				case CPU_TYPE_ARM:
-				{
-					const cpu_subtype_t* list = getArmSubtypeList(it->subtype);
-					if ( list != NULL ) {
-						// see if mach-o file is supported by this ArchPair
-						for(const cpu_subtype_t* s=list; *s != 0; ++s) {
-							if ( *s == cpuSubType )
-								return true;
-						}
-					}
-					else {
-						// unknown arm sub-type, must have exact match
-						if ( it->subtype == cpuSubType )
-							return true;
-					}
-				}
-			}
-		}
+		ArchPair anArch = *it;
+		if ( cpuType == anArch.arch ) {
+            switch ( cpuType ) {
+                case CPU_TYPE_ARM:
+                    if ( cpuSubType == anArch.subtype ) 
+                        return true;
+                    break;
+                default:
+                    return true;
+            }
+        }
 	}
 	return false;
 }
@@ -414,8 +326,13 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<Arch
 {
 	// map in whole file
 	int fd = ::open(path, O_RDONLY, 0);
-	if ( fd == -1 )
-		throwf("can't open file, errno=%d", errno);
+	if ( fd == -1 ) {
+		int err = errno;
+		if  ( err == ENOENT )
+			throwf("file not found");
+		else
+			throwf("can't open file, errno=%d", err);
+	}
 	struct stat stat_buf;
 	if ( fstat(fd, &stat_buf) == -1)
 		throwf("can't stat open file %s, errno=%d", path, errno);
@@ -434,24 +351,14 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<Arch
 			// Fat header is always big-endian
 			const struct fat_arch* slices = (struct fat_arch*)(p + sizeof(struct fat_header));
 			const uint32_t sliceCount = OSSwapBigToHostInt32(fh->nfat_arch);
-			std::set<uint32_t> slicesToUse;
-			if ( onlyArchs == NULL ) {
-				// no filter, so instantiate all slices
-				for (uint32_t i=0; i < sliceCount; ++i) 
-					slicesToUse.insert(i);
-			}
-			else {
-				// instantiate only slices that are best for each architecture
-				for (std::set<ArchPair>::const_iterator it = onlyArchs->begin(); it != onlyArchs->end(); ++it) {
-					uint32_t bestSliceIndex;
-					if ( bestSliceForArch(sliceCount, slices, *it, bestSliceIndex) ) 
-						slicesToUse.insert(bestSliceIndex);
-				}
-			}
 			for (uint32_t i=0; i < sliceCount; ++i) {
-				if ( slicesToUse.count(i) ) {
+				if ( requestedSlice(onlyArchs, OSSwapBigToHostInt32(slices[i].cputype), OSSwapBigToHostInt32(slices[i].cpusubtype)) ) {
 					uint32_t fileOffset = OSSwapBigToHostInt32(slices[i].offset);
 					if ( fileOffset > stat_buf.st_size ) {
+						throwf("malformed universal file, slice %u for architecture 0x%08X is beyond end of file: %s", 
+								i, OSSwapBigToHostInt32(slices[i].cputype), path);
+					}
+					if ( (fileOffset+OSSwapBigToHostInt32(slices[i].size)) > stat_buf.st_size ) {
 						throwf("malformed universal file, slice %u for architecture 0x%08X is beyond end of file: %s", 
 								i, OSSwapBigToHostInt32(slices[i].cputype), path);
 					}
@@ -485,19 +392,19 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<Arch
 		else {
 			try {
 				if ( (OSSwapBigToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapBigToHostInt32(mh->cputype) == CPU_TYPE_POWERPC)) {
-					if ( (onlyArchs == NULL) || compatibleSubtype(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
+					if ( requestedSlice(onlyArchs, OSSwapBigToHostInt32(mh->cputype), OSSwapBigToHostInt32(mh->cpusubtype)) ) 
 						fLayouts.push_back(new MachOLayout<ppc>(mh, 0, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
 				}
 				else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_I386)) {
-					if ( (onlyArchs == NULL) || compatibleSubtype(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
+					if ( requestedSlice(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
 						fLayouts.push_back(new MachOLayout<x86>(mh, 0, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
 				}
 				else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC_64) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_X86_64)) {
-					if ( (onlyArchs == NULL) || compatibleSubtype(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
+					if ( requestedSlice(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
 						fLayouts.push_back(new MachOLayout<x86_64>(mh, 0, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
 				}
 				else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_ARM)) {
-					if ( (onlyArchs == NULL) || compatibleSubtype(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
+					if ( requestedSlice(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
 						fLayouts.push_back(new MachOLayout<arm>(mh, 0, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
 				}
 				else if ( (OSSwapBigToHostInt32(mh->magic) == MH_MAGIC_64) && (OSSwapBigToHostInt32(mh->cputype) == CPU_TYPE_POWERPC64)) {
@@ -522,7 +429,8 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<Arch
 template <typename A>
 MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char* path, ino_t inode, time_t modTime, uid_t uid)
  : fPath(path), fOffset(offset), fArchPair(0,0), fMTime(modTime), fInode(inode), fHasSplitSegInfo(false), fRootOwned(uid==0),
-   fShareableLocation(false)
+   fShareableLocation(false), fDynamicLookupLinkage(false), fMainExecutableLookupLinkage(false), fIsDylib(false), 
+	fHasDyldInfo(false), fDyldInfoExports(NULL)
 {
 	fDylibID.name = NULL;
 	fDylibID.currentVersion = 0;
@@ -533,6 +441,8 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 		throw "Layout object is wrong architecture";
 	switch ( mh->filetype() ) {
 		case MH_DYLIB:
+			fIsDylib = true;
+			break;
 		case MH_BUNDLE:
 		case MH_EXECUTE:
 		case MH_DYLIB_STUB:
@@ -546,6 +456,9 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 	fArchPair.arch = mh->cputype();
 	fArchPair.subtype = mh->cpusubtype();
 	
+	const macho_dyld_info_command<P>* dyldInfo = NULL;
+	const macho_symtab_command<P>* symbolTableCmd = NULL;
+	const macho_dysymtab_command<P>* dynamicSymbolTableCmd = NULL;
 	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)mh + sizeof(macho_header<P>));
 	const uint32_t cmd_count = mh->ncmds();
 	const macho_load_command<P>* cmd = cmds;
@@ -564,6 +477,7 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
 			case LC_REEXPORT_DYLIB:
+			case LC_LOAD_UPWARD_DYLIB:
 				{
 					macho_dylib_command<P>* dylib = (macho_dylib_command<P>*)cmd;
 					Library lib;
@@ -583,6 +497,17 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 					fSegments.push_back(Segment(segCmd->vmaddr(), segCmd->vmsize(), segCmd->fileoff(), 
 								segCmd->filesize(), segCmd->initprot(), segCmd->segname()));
 				}
+				break;
+			case LC_SYMTAB:
+				symbolTableCmd = (macho_symtab_command<P>*)cmd;
+				break;
+			case LC_DYSYMTAB:
+				dynamicSymbolTableCmd = (macho_dysymtab_command<P>*)cmd;
+				break;
+			case LC_DYLD_INFO:
+			case LC_DYLD_INFO_ONLY:
+				fHasDyldInfo = true;
+				dyldInfo = (struct macho_dyld_info_command<P>*)cmd;
 				break;
 		}
 		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
@@ -617,10 +542,31 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 			if ( (fLowReadOnlySegment == NULL) || (seg.address() < fLowReadOnlySegment->address()) )
 				fLowReadOnlySegment = &seg;
 			fVMReadOnlySize += seg.size();
-		}
+		}		
 	}
 	if ( (highSegment != NULL) && (fLowSegment != NULL) )
 		fVMSize = (highSegment->address() + highSegment->size() - fLowSegment->address() + 4095) & (-4096);			
+	
+	// scan undefines looking, for magic ordinals
+	if ( (symbolTableCmd != NULL) && (dynamicSymbolTableCmd != NULL) ) {
+		const macho_nlist<P>* symbolTable = (macho_nlist<P>*)((uint8_t*)machHeader + symbolTableCmd->symoff());
+		const uint32_t startUndefs = dynamicSymbolTableCmd->iundefsym();
+		const uint32_t endUndefs = startUndefs + dynamicSymbolTableCmd->nundefsym();
+		for (uint32_t i=startUndefs; i < endUndefs; ++i) {
+			uint8_t ordinal = GET_LIBRARY_ORDINAL(symbolTable[i].n_desc());
+			if ( ordinal == DYNAMIC_LOOKUP_ORDINAL )
+				fDynamicLookupLinkage = true;
+			else if ( ordinal == EXECUTABLE_ORDINAL )
+				fMainExecutableLookupLinkage = true;
+		}
+	}
+	
+	if ( dyldInfo != NULL ) {
+		if ( dyldInfo->export_off() != 0 ) {
+			fDyldInfoExports = (uint8_t*)machHeader + dyldInfo->export_off();
+		}
+	}
+
 }
 
 template <> cpu_type_t MachOLayout<ppc>::arch()     { return CPU_TYPE_POWERPC; }

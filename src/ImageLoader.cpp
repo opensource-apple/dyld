@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -40,7 +40,6 @@
 
 uint32_t								ImageLoader::fgImagesUsedFromSharedCache = 0;
 uint32_t								ImageLoader::fgImagesWithUsedPrebinding = 0;
-uint32_t								ImageLoader::fgImagesRequiringNoFixups = 0;
 uint32_t								ImageLoader::fgImagesRequiringCoalescing = 0;
 uint32_t								ImageLoader::fgImagesHasWeakDefinitions = 0;
 uint32_t								ImageLoader::fgTotalRebaseFixups = 0;
@@ -59,6 +58,7 @@ uint64_t								ImageLoader::fgTotalWeakBindTime;
 uint64_t								ImageLoader::fgTotalDOF;
 uint64_t								ImageLoader::fgTotalInitTime;
 uint16_t								ImageLoader::fgLoadOrdinal = 0;
+std::vector<ImageLoader::InterposeTuple>ImageLoader::fgInterposingTuples;
 uintptr_t								ImageLoader::fgNextPIEDylibAddress = 0;
 
 
@@ -67,10 +67,11 @@ ImageLoader::ImageLoader(const char* path, unsigned int libCount)
 	: fPath(path), fDevice(0), fInode(0), fLastModified(0), 
 	fPathHash(0), fDlopenReferenceCount(0), fStaticReferenceCount(0),
 	fDynamicReferenceCount(0), fDynamicReferences(NULL), fInitializerRecursiveLock(NULL), 
-	fDepth(0), fLoadOrder(0), fState(0), fLibraryCount(libCount), 
+	fDepth(0), fLoadOrder(fgLoadOrdinal++), fState(0), fLibraryCount(libCount), 
 	fAllLibraryChecksumsAndLoadAddressesMatch(false), fLeaveMapped(false), fNeverUnload(false),
 	fHideSymbols(false), fMatchByInstallName(false),
-	fRegisteredDOF(false), fAllLazyPointersBound(false), fBeingRemoved(false), fAddFuncNotified(false),
+	fInterposed(false), fRegisteredDOF(false), fAllLazyPointersBound(false), 
+    fBeingRemoved(false), fAddFuncNotified(false),
 	fPathOwnedByImage(false), fWeakSymbolsBound(false)
 {
 	if ( fPath != NULL )
@@ -82,9 +83,11 @@ void ImageLoader::deleteImage(ImageLoader* image)
 {
 	// this cannot be done in destructor because libImage() is implemented
 	// in a subclass
+	DependentLibraryInfo libraryInfos[image->libraryCount()]; 
+	image->doGetDependentLibraries(libraryInfos);
 	for(unsigned int i=0; i < image->libraryCount(); ++i) {
 		ImageLoader* lib = image->libImage(i);
-		if ( lib != NULL )
+		if ( (lib != NULL) && ! libraryInfos[i].upward )
 			lib->fStaticReferenceCount--;
 	}
 	delete image;
@@ -96,7 +99,7 @@ ImageLoader::~ImageLoader()
 	if ( fPathOwnedByImage && (fPath != NULL) ) 
 		delete [] fPath;
 	if ( fDynamicReferences != NULL ) {
-		for (std::set<const ImageLoader*>::iterator it = fDynamicReferences->begin(); it != fDynamicReferences->end(); ++it ) {
+		for (std::vector<const ImageLoader*>::iterator it = fDynamicReferences->begin(); it != fDynamicReferences->end(); ++it ) {
 			const_cast<ImageLoader*>(*it)->fDynamicReferenceCount--;
 		}
 		delete fDynamicReferences;
@@ -118,10 +121,20 @@ void ImageLoader::setMapped(const LinkContext& context)
 
 void ImageLoader::addDynamicReference(const ImageLoader* target)
 {
-	if ( fDynamicReferences == NULL )
-		fDynamicReferences = new std::set<const ImageLoader*>();
-	if ( fDynamicReferences->count(target) == 0 ) {	
-		fDynamicReferences->insert(target);
+	bool alreadyInVector = false;
+	if ( fDynamicReferences == NULL ) {
+		fDynamicReferences = new std::vector<const ImageLoader*>();
+	}
+	else {
+		for (std::vector<const ImageLoader*>::iterator it = fDynamicReferences->begin(); it != fDynamicReferences->end(); ++it ) {
+			if ( *it == target ) {
+				alreadyInVector = true;
+				break;
+			}
+		}
+	}
+	if ( ! alreadyInVector ) {	
+		fDynamicReferences->push_back(target);
 		const_cast<ImageLoader*>(target)->fDynamicReferenceCount++;
 	}
 	//dyld::log("dyld: addDynamicReference() from %s to %s, fDynamicReferences->size()=%lu\n", this->getPath(), target->getPath(), fDynamicReferences->size());
@@ -246,6 +259,13 @@ bool ImageLoader::overlapsWithAddressRange(const void* start, const void* end) c
 	for(unsigned int i=0, e=segmentCount(); i < e; ++i) {
 		const uint8_t* segStart = (const uint8_t*)segActualLoadAddress(i);
 		const uint8_t* segEnd = (const uint8_t*)segActualEndAddress(i);
+		if ( strcmp(segName(i), "__UNIXSTACK") == 0 ) {
+			// __UNIXSTACK never slides.  This is the only place that cares
+			// and checking for that segment name in segActualLoadAddress()
+			// is too expensive.
+			segStart -= getSlide();
+			segEnd -= getSlide();
+		}
 		if ( (start <= segStart) && (segStart < end) )
 			return true;
 		if ( (start <= segEnd) && (segEnd < end) )
@@ -332,11 +352,20 @@ const ImageLoader::Symbol* ImageLoader::findExportedSymbolInImageOrDependentImag
 	return this->findExportedSymbolInDependentImagesExcept(name, &dontSearchImages[0], cur, &dontSearchImages[imageCount], foundIn);
 }
 
+// this is called by initializeMainExecutable() to interpose on the initial set of images
+void ImageLoader::applyInterposing(const LinkContext& context)
+{
+	if ( fgInterposingTuples.size() != 0 )
+		this->recursiveApplyInterposing(context);
+}
 
 void ImageLoader::link(const LinkContext& context, bool forceLazysBound, bool preflightOnly, const RPathChain& loaderRPaths)
 {
 	//dyld::log("ImageLoader::link(%s) refCount=%d, neverUnload=%d\n", this->getPath(), fStaticReferenceCount, fNeverUnload);
 	
+	// clear error strings
+	(*context.setErrorStrings)(dyld_error_kind_none, NULL, NULL, NULL);
+
 	uint64_t t0 = mach_absolute_time();
 	this->recursiveLoadLibraries(context, preflightOnly, loaderRPaths);
 	context.notifyBatch(dyld_image_state_dependents_mapped);
@@ -358,20 +387,29 @@ void ImageLoader::link(const LinkContext& context, bool forceLazysBound, bool pr
 
 	uint64_t t4 = mach_absolute_time();
 	this->weakBind(context);
-	context.notifyBatch(dyld_image_state_bound);
-
 	uint64_t t5 = mach_absolute_time();	
+
+	context.notifyBatch(dyld_image_state_bound);
+	uint64_t t6 = mach_absolute_time();	
+
 	std::vector<DOFInfo> dofs;
 	this->recursiveGetDOFSections(context, dofs);
 	context.registerDOFs(dofs);
-	uint64_t t6 = mach_absolute_time();	
+	uint64_t t7 = mach_absolute_time();	
 
+	// interpose any dynamically loaded images
+	if ( !context.linkingMainExecutable && (fgInterposingTuples.size() != 0) ) {
+		this->recursiveApplyInterposing(context);
+	}
 	
+	// clear error strings
+	(*context.setErrorStrings)(dyld_error_kind_none, NULL, NULL, NULL);
+
 	fgTotalLoadLibrariesTime += t1 - t0;
 	fgTotalRebaseTime += t3 - t2;
 	fgTotalBindTime += t4 - t3;
 	fgTotalWeakBindTime += t5 - t4;
-	fgTotalDOF += t6 - t5;
+	fgTotalDOF += t7 - t6;
 	
 	// done with initial dylib loads
 	fgNextPIEDylibAddress = 0;
@@ -393,11 +431,11 @@ bool ImageLoader::decrementDlopenReferenceCount()
 	return false;
 }
 
-void ImageLoader::runInitializers(const LinkContext& context)
+void ImageLoader::runInitializers(const LinkContext& context, InitializerTimingList& timingInfo)
 {
 	uint64_t t1 = mach_absolute_time();
 	mach_port_t this_thread = mach_thread_self();
-	this->recursiveInitialization(context, this_thread);
+	this->recursiveInitialization(context, this_thread, timingInfo);
 	context.notifyBatch(dyld_image_state_initialized);
 	mach_port_deallocate(mach_task_self(), this_thread);
 	uint64_t t2 = mach_absolute_time();
@@ -486,7 +524,7 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context, bool prefli
 			if ( preflightOnly && context.inSharedCache(requiredLibInfo.name) ) {
 				// <rdar://problem/5910137> dlopen_preflight() on image in shared cache leaves it loaded but not objc initialized
 				// in preflight mode, don't even load dylib that are in the shared cache because they will never be unloaded
-				setLibImage(i, NULL, false);
+				setLibImage(i, NULL, false, false);
 				continue;
 			}
 #endif
@@ -500,7 +538,8 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context, bool prefli
 				}
 				if ( fNeverUnload )
 					dependentLib->setNeverUnload();
-				dependentLib->fStaticReferenceCount += 1;
+				if ( ! requiredLibInfo.upward )
+					dependentLib->fStaticReferenceCount += 1;
 				LibraryInfo actualInfo = dependentLib->doGetLibraryInfo();
 				depLibReRequired = requiredLibInfo.required;
 				depLibCheckSumsMatch = ( actualInfo.checksum == requiredLibInfo.info.checksum );
@@ -511,13 +550,18 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context, bool prefli
 				}
 				// check found library version is compatible
 				if ( actualInfo.minVersion < requiredLibInfo.info.minVersion ) {
+					// record values for possible use by CrashReporter or Finder
 					dyld::throwf("Incompatible library version: %s requires version %d.%d.%d or later, but %s provides version %d.%d.%d",
 							this->getShortName(), requiredLibInfo.info.minVersion >> 16, (requiredLibInfo.info.minVersion >> 8) & 0xff, requiredLibInfo.info.minVersion & 0xff,
 							dependentLib->getShortName(), actualInfo.minVersion >> 16, (actualInfo.minVersion >> 8) & 0xff, actualInfo.minVersion & 0xff);
 				}
-				// prebinding for this image disabled if any dependent library changed or slid
-				if ( !depLibCheckSumsMatch || (dependentLib->getSlide() != 0) )
+				// prebinding for this image disabled if any dependent library changed
+				if ( !depLibCheckSumsMatch ) 
 					canUsePrelinkingInfo = false;
+				// prebinding for this image disabled unless both this and dependent are in the shared cache
+				if ( !dependentLib->inSharedCache() || !this->inSharedCache() )
+					canUsePrelinkingInfo = false;
+					
 				//if ( context.verbosePrebinding ) {
 				//	if ( !requiredLib.checksumMatches )
 				//		fprintf(stderr, "dyld: checksum mismatch, (%u v %u) for %s referencing %s\n", 
@@ -531,13 +575,20 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context, bool prefli
 				//	fprintf(stderr, "dyld: exception during processing for %s referencing %s\n", this->getPath(), dependentLib->getPath());		
 				if ( requiredLibInfo.required ) {
 					fState = dyld_image_state_mapped;
+					// record values for possible use by CrashReporter or Finder
+					if ( strstr(msg, "Incompatible") != NULL )
+						(*context.setErrorStrings)(dyld_error_kind_dylib_version, this->getPath(), requiredLibInfo.name, NULL);
+					else if ( strstr(msg, "architecture") != NULL )
+						(*context.setErrorStrings)(dyld_error_kind_dylib_wrong_arch, this->getPath(), requiredLibInfo.name, NULL);
+					else
+						(*context.setErrorStrings)(dyld_error_kind_dylib_missing, this->getPath(), requiredLibInfo.name, NULL);
 					dyld::throwf("Library not loaded: %s\n  Referenced from: %s\n  Reason: %s", requiredLibInfo.name, this->getPath(), msg);
 				}
 				// ok if weak library not found
 				dependentLib = NULL;
 				canUsePrelinkingInfo = false;  // this disables all prebinding, we may want to just slam import vectors for this lib to zero
 			}
-			setLibImage(i, dependentLib, depLibReExported);
+			setLibImage(i, dependentLib, depLibReExported, requiredLibInfo.upward);
 		}
 		fAllLibraryChecksumsAndLoadAddressesMatch = canUsePrelinkingInfo;
 
@@ -592,11 +643,36 @@ void ImageLoader::recursiveRebase(const LinkContext& context)
 		catch (const char* msg) {
 			// this image is not rebased
 			fState = dyld_image_state_dependents_mapped;
+            CRSetCrashLogMessage2(NULL);
 			throw;
 		}
 	}
 }
 
+void ImageLoader::recursiveApplyInterposing(const LinkContext& context)
+{ 
+	if ( ! fInterposed ) {
+		// break cycles
+		fInterposed = true;
+		
+		try {
+			// interpose lower level libraries first
+			for(unsigned int i=0; i < libraryCount(); ++i) {
+				ImageLoader* dependentImage = libImage(i);
+				if ( dependentImage != NULL )
+					dependentImage->recursiveApplyInterposing(context);
+			}
+				
+			// interpose this image
+			doInterpose(context);
+		}
+		catch (const char* msg) {
+			// this image is not interposed
+			fInterposed = false;
+			throw;
+		}
+	}
+}
 
 
 
@@ -628,6 +704,7 @@ void ImageLoader::recursiveBind(const LinkContext& context, bool forceLazysBound
 		catch (const char* msg) {
 			// restore state
 			fState = dyld_image_state_rebased;
+            CRSetCrashLogMessage2(NULL);
 			throw;
 		}
 	}
@@ -644,15 +721,19 @@ void ImageLoader::weakBind(const LinkContext& context)
 	// count how many have not already had weakbinding done
 	int countNotYetWeakBound = 0;
 	int countOfImagesWithWeakDefinitions = 0;
+	int countOfImagesWithWeakDefinitionsNotInSharedCache = 0;
 	for(int i=0; i < count; ++i) {
 		if ( ! imagesNeedingCoalescing[i]->fWeakSymbolsBound )
 			++countNotYetWeakBound;
-		if ( imagesNeedingCoalescing[i]->hasCoalescedExports() )
+		if ( imagesNeedingCoalescing[i]->hasCoalescedExports() ) {
 			++countOfImagesWithWeakDefinitions;
+			if ( ! imagesNeedingCoalescing[i]->inSharedCache() ) 
+				++countOfImagesWithWeakDefinitionsNotInSharedCache;
+		}
 	}
 
 	// don't need to do any coalescing if only one image has overrides, or all have already been done
-	if ( (countOfImagesWithWeakDefinitions > 1) && (countNotYetWeakBound > 0) ) {
+	if ( (countOfImagesWithWeakDefinitionsNotInSharedCache > 0) && (countNotYetWeakBound > 0) ) {
 		// make symbol iterators for each
 		ImageLoader::CoalIterator iterators[count];
 		ImageLoader::CoalIterator* sortedIts[count];
@@ -781,7 +862,7 @@ void ImageLoader::recursiveSpinUnLock()
 }
 
 
-void ImageLoader::recursiveInitialization(const LinkContext& context, mach_port_t this_thread)
+void ImageLoader::recursiveInitialization(const LinkContext& context, mach_port_t this_thread, InitializerTimingList& timingInfo)
 {
 	recursive_lock lock_info(this_thread);
 	recursiveSpinLock(lock_info);
@@ -796,8 +877,8 @@ void ImageLoader::recursiveInitialization(const LinkContext& context, mach_port_
 				ImageLoader* dependentImage = libImage(i);
 				if ( dependentImage != NULL )
 				// don't try to initialize stuff "above" me
-				if ( (dependentImage != NULL) && (dependentImage->fDepth >= fDepth) )
-					dependentImage->recursiveInitialization(context, this_thread);
+				if ( (dependentImage != NULL) && (dependentImage->fDepth >= fDepth) && !libIsUpward(i) )
+					dependentImage->recursiveInitialization(context, this_thread, timingInfo);
 			}
 			
 			// record termination order
@@ -805,17 +886,25 @@ void ImageLoader::recursiveInitialization(const LinkContext& context, mach_port_
 				context.terminationRecorder(this);
 			
 			// let objc know we are about to initalize this image
+			uint64_t t1 = mach_absolute_time();
 			fState = dyld_image_state_dependents_initialized;
 			oldState = fState;
 			context.notifySingle(dyld_image_state_dependents_initialized, this);
-
+			
 			// initialize this image
-			this->doInitialization(context);
-
+			bool hasInitializers = this->doInitialization(context);
+			
 			// let anyone know we finished initalizing this image
 			fState = dyld_image_state_initialized;
 			oldState = fState;
 			context.notifySingle(dyld_image_state_initialized, this);
+			
+			if ( hasInitializers ) {
+				uint64_t t2 = mach_absolute_time();
+				timingInfo.images[timingInfo.count].image = this;
+				timingInfo.images[timingInfo.count].initTime = (t2-t1);
+				timingInfo.count++;
+			}
 		}
 		catch (const char* msg) {
 			// this image is not initialized
@@ -876,14 +965,21 @@ static char* commatize(uint64_t in, char* out)
 }
 
 
-void ImageLoader::printStatistics(unsigned int imageCount)
+void ImageLoader::printStatistics(unsigned int imageCount, const InitializerTimingList& timingInfo)
 {
 	uint64_t totalTime = fgTotalLoadLibrariesTime + fgTotalRebaseTime + fgTotalBindTime + fgTotalWeakBindTime + fgTotalDOF + fgTotalInitTime;
 	char commaNum1[40];
 	char commaNum2[40];
 
 	printTime("total time", totalTime, totalTime);
-	dyld::log("total images loaded:  %d (%u from dyld shared cache, %u needed no fixups)\n", imageCount, fgImagesUsedFromSharedCache, fgImagesRequiringNoFixups);
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+	if ( fgImagesUsedFromSharedCache != 0 )
+		dyld::log("total images loaded:  %d (%u from dyld shared cache)\n", imageCount, fgImagesUsedFromSharedCache);
+	else
+		dyld::log("total images loaded:  %d\n", imageCount);
+#else
+	dyld::log("total images loaded:  %d (%u from dyld shared cache)\n", imageCount, fgImagesUsedFromSharedCache);
+#endif
 	dyld::log("total segments mapped: %u, into %llu pages with %llu pages pre-fetched\n", fgTotalSegmentsMapped, fgTotalBytesMapped/4096, fgTotalBytesPreFetched/4096);
 	printTime("total images loading time", fgTotalLoadLibrariesTime, totalTime);
 	printTime("total dtrace DOF registration time", fgTotalDOF, totalTime);
@@ -901,6 +997,11 @@ void ImageLoader::printStatistics(unsigned int imageCount)
 	printTime("total weak binding fixups time", fgTotalWeakBindTime, totalTime);
 	dyld::log("total bindings lazily fixed up: %s of %s\n", commatize(fgTotalLazyBindFixups, commaNum1), commatize(fgTotalPossibleLazyBindFixups, commaNum2));
 	printTime("total initializer time", fgTotalInitTime, totalTime);
+	for (uintptr_t i=0; i < timingInfo.count; ++i) {
+		dyld::log("%21s ", timingInfo.images[i].image->getShortName());
+		printTime("", timingInfo.images[i].initTime, totalTime);
+	}
+	
 }
 
 

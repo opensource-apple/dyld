@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2006-2009 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -23,10 +23,18 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+ifeq "$(OS_NAME)" "iPhoneOS"
+	RUN_AS_USER = login -f -l mobile
+else
+	RUN_AS_USER = 
+endif
+
+PWD = `pwd`
+
 all-check: all check
 
 check:
-	export DYLD_INSERT_LIBRARIES=/ && export DYLD_PRINT_LIBRARIES=/ &&  export DYLD_PREBIND_DEBUG=/ && ./main
+	${RUN_AS_USER} $(PWD)/main-with-env
 
 all: main
 
@@ -34,7 +42,12 @@ main: main.c
 	${CC} ${CCFLAGS} -w -I${TESTROOT}/include -o main main.c
 	sudo chown root main
 	sudo chmod 4755 main
-
+	echo "#!/bin/sh" > main-with-env
+	echo "export DYLD_INSERT_LIBRARIES=/" >> main-with-env
+	echo "export DYLD_PRINT_LIBRARIES=/" >> main-with-env
+	echo "$(PWD)/main" >> main-with-env
+	chmod +x main-with-env
+	
 clean:
-	${RM} ${RMFLAGS} *~ main
+	${RM} ${RMFLAGS} *~ main main-with-env
 
