@@ -10,3 +10,5 @@ CXXFLAGS = -Wall -g
 
 RM      = rm
 RMFLAGS = -rf
+
+SAFE_RUN	= ${TESTROOT}/bin/fail-if-non-zero.pl

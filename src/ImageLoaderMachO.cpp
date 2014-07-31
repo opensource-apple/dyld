@@ -1798,6 +1798,11 @@ void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, boo
 							continue;
 						uintptr_t* location = ((uintptr_t*)(reloc->r_address + relocBase));
 						uintptr_t value = *location;
+					#if __i386__
+						if ( reloc->r_pcrel ) {
+							value += (uintptr_t)location + 4 - fSlide;
+						}
+					#endif
 						if ( prebound ) {
 							// we are doing relocations, so prebinding was not usable
 							// in a prebound executable, the n_value field is set to the address where the symbol was found when prebound
@@ -1827,7 +1832,16 @@ void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, boo
 							}
 						}
 						value += symbolAddr;
-						*location = value; 
+					#if __i386__
+						if ( reloc->r_pcrel ) {
+							*location = value - ((uintptr_t)location + 4);
+						}
+						else {
+							*location = value; 
+						}
+					#else
+                         *location = value; 
+					#endif
 					}
 					break;
 				default:

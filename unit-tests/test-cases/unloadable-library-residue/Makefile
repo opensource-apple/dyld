@@ -23,17 +23,32 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
-	cd absent/  && ../${TESTROOT}/bin/exit-non-zero-pass.pl "pass message" "fail message" ./main
-	cd present/ && ./main
+###
+### rdar://problem/3884004 Libraries can be half-baked if an error occurs during their first use
+###
+### We indirectly load libfoo which depends on libbar.  The libbar that is loaded does not contain
+### what libfoo needs, so libfoo fails to bind.  The bug was that libfoo was left marked as bound,
+### so the next use of libfoo seemed to succeed, when it should have failed.
+###
 
-all: foo.c main.c
-	${CC} -dynamiclib -prebind -seg1addr 400000 -o libfoo.dylib foo.c
-	mkdir -p absent/
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} -prebind -I${TESTROOT}/include -L. -lfoo -DLIB_ABSENT  -o absent/main  main.c
-	mkdir -p present/
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} -prebind -I${TESTROOT}/include -L. -lfoo -DLIB_PRESENT -o present/main main.c
-	mv libfoo.dylib present/
+
+run: all
+	export DYLD_IMAGE_SUFFIX="_missing" && ./main
+
+all: main libfoo.dylib
+
+main : main.c
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+
+libfoo.dylib : foo.c libbar_missing.dylib libbar.dylib
+	${CC} ${CCFLAGS} foo.c -dynamiclib -o libfoo.dylib libbar.dylib
+
+libbar_missing.dylib : bar.c
+	${CC} ${CCFLAGS} bar.c -dynamiclib -o libbar_missing.dylib -install_name libbar.dylib
+
+libbar.dylib : bar.c
+	${CC} ${CCFLAGS} bar.c -dynamiclib -o libbar.dylib -DHAS_BAR2=1 
 
 clean:
-	${RM} ${RMFLAGS} *~ libfoo.dylib absent present
+	${RM} ${RMFLAGS} *~ main libfoo.dylib libbar.dylib libbar_missing.dylib
+

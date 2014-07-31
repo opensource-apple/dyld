@@ -25,4 +25,16 @@ then
 	../bin/make-recursive.pl ARCH="-arch ppc64" | ../bin/result-filter.pl
 fi
 
+# if Intel, then also run all test cases under emulation
+if [ `machine` = "pentium4" ] 
+then
+	echo ""
+	echo " * * * Running all unit tests for emulated 32-bits * * *"
+	
+	# make clean
+	../bin/make-recursive.pl clean > /dev/null
+
+	# build 64-bit architecture
+	../bin/make-recursive.pl ARCH="-arch ppc" | ../bin/result-filter.pl
+fi
 

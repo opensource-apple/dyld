@@ -33,6 +33,9 @@
  * sp+4	address of lazy pointer
  * sp+0	address of mach header
  *
+ * Some inter-image function calls pass parameters in registers EAX, ECX, or EDX.
+ * Therefore those registers need to be preserved during the lazy binding.
+ * 
  * After the symbol has been resolved and the pointer filled in this is to pop
  * these arguments off the stack and jump to the address of the defined symbol.
  */
@@ -40,9 +43,22 @@
 	.align 4,0x90
 	.globl _stub_binding_helper_interface
 _stub_binding_helper_interface:
+	pushl	%eax		    # save registers that might be trashed by dyld::bindLazySymbol()
+	pushl	%ecx		    
+	pushl	%edx		   
+	subl	$8,%esp		    # reserve space for parameters to dyld::bindLazySymbol()
+	movl	20(%esp), %eax	    
+	movl	%eax, 0(%esp)	    # copy mach header parameter
+	movl	24(%esp), %eax
+	movl	%eax, 4(%esp)	    # copy lazy pointer parameter 
 	call	__ZN4dyld14bindLazySymbolEPK11mach_headerPm
-	addl	$8,%esp
-	jmpl	%eax
+	addl	$8,%esp		    # clean up stack after function call
+	movl	%eax,16(%esp)	    # store target into stack so ret at end will jump there
+	popl	%edx		    # restore registers
+	popl	%ecx
+	popl	%eax
+	addl	$4,%esp		    # remove meta-parameter, other meta-parmaeter now holds target for ret
+	ret
 #endif /* __i386__ */
 
 

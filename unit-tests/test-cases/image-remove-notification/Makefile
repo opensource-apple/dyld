@@ -24,16 +24,18 @@ TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
 run: all
-	cd absent/  && ../${TESTROOT}/bin/exit-non-zero-pass.pl "pass message" "fail message" ./main
-	cd present/ && ./main
+	./main
 
-all: foo.c main.c
-	${CC} -dynamiclib -prebind -seg1addr 400000 -o libfoo.dylib foo.c
-	mkdir -p absent/
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} -prebind -I${TESTROOT}/include -L. -lfoo -DLIB_ABSENT  -o absent/main  main.c
-	mkdir -p present/
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} -prebind -I${TESTROOT}/include -L. -lfoo -DLIB_PRESENT -o present/main main.c
-	mv libfoo.dylib present/
+all: main foo.bundle
+
+main: main.c
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
+
+foo.bundle: foo.c
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o foo.bundle foo.c -bundle
+	
+
 
 clean:
-	${RM} ${RMFLAGS} *~ libfoo.dylib absent present
+	${RM} ${RMFLAGS} *~ main foo.bundle 
+

@@ -23,17 +23,22 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
-	cd absent/  && ../${TESTROOT}/bin/exit-non-zero-pass.pl "pass message" "fail message" ./main
-	cd present/ && ./main
+all :  main 
+	export DYLD_FALLBACK_LIBRARY_PATH=$$PWD && ./main
 
-all: foo.c main.c
-	${CC} -dynamiclib -prebind -seg1addr 400000 -o libfoo.dylib foo.c
-	mkdir -p absent/
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} -prebind -I${TESTROOT}/include -L. -lfoo -DLIB_ABSENT  -o absent/main  main.c
-	mkdir -p present/
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} -prebind -I${TESTROOT}/include -L. -lfoo -DLIB_PRESENT -o present/main main.c
-	mv libfoo.dylib present/
+main : main.c libfoo.dylib libbar.dylib
+	${CC} -I${TESTROOT}/include main.c libfoo.dylib libbar.dylib -o main 
+
+libfoo.dylib : foo.c
+	${CC} -I${TESTROOT}/include  foo.c -DFOO=1 -dynamiclib -o $$PWD/libfoo.dylib
+
+libbar.dylib : bar.c other/libfoo.dylib
+	${CC} -I${TESTROOT}/include  bar.c -dynamiclib other/libfoo.dylib -o $$PWD/libbar.dylib
+
+other/libfoo.dylib : foo.c
+	mkdir -p $$PWD/other
+	${CC} -I${TESTROOT}/include  foo.c -DFOO=2 -dynamiclib  -o $$PWD/other/libfoo.dylib
+
 
 clean:
-	${RM} ${RMFLAGS} *~ libfoo.dylib absent present
+	rm -rf main libfoo.dylib libbar.dylib other

@@ -127,3 +127,8 @@ struct tm* localtime(const time_t* t)
 	return (struct tm*)NULL;
 }
 
+
+char* __ldtoa(long double *ld, int mode, int ndigits, int *decpt, int *sign, char **rve)
+{
+	return "__ldtoa";
+}

@@ -506,6 +506,7 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context)
 					const char* referencedFrom = this->getPath();
 					char buf[strlen(requiredLib.name)+strlen(referencedFrom)+strlen(formatString)+strlen(msg)+2];
 					sprintf(buf, formatString, requiredLib.name, referencedFrom, msg);
+					fLibrariesLoaded = false;
 					throw strdup(buf);  // this is a leak if exception doesn't halt program
 				}
 				// ok if weak library not found
