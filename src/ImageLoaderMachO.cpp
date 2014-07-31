@@ -316,6 +316,38 @@ static uintptr_t sNextAltLoadAddress
 	= 0;
 #endif
 
+static int 
+_shared_region_map_file_with_mmap(
+	int fd,							// file descriptor to map into shared region
+	unsigned int regionCount,		// number of entres in array of regions
+	const _shared_region_mapping_np regions[])	// the array of regions to map
+{
+	// map in each region
+	for(unsigned int i=0; i < regionCount; ++i) {
+		void* mmapAddress = (void*)(uintptr_t)(regions[i].address);
+		size_t size = regions[i].size;
+		if ( (regions[i].init_prot & VM_PROT_ZF) != 0 ) {
+			// do nothing already vm_allocate() which zero fills
+		}
+		else {
+			int protection = 0;
+			if ( regions[i].init_prot & VM_PROT_EXECUTE )
+				protection   |= PROT_EXEC;
+			if ( regions[i].init_prot & VM_PROT_READ )
+				protection   |= PROT_READ;
+			if ( regions[i].init_prot & VM_PROT_WRITE )
+				protection   |= PROT_WRITE;
+			off_t offset = regions[i].file_offset;
+			//fprintf(stderr, "mmap(%p, 0x%08lX, block=0x%08X, %s\n", mmapAddress, size, biggestDiff, fPath);
+			mmapAddress = mmap(mmapAddress, size, protection, MAP_FILE | MAP_FIXED | MAP_PRIVATE, fd, offset);
+			if ( mmapAddress == ((void*)(-1)) )
+				throw "mmap error";
+		}
+	}
+	
+	return 0;
+}
+
 
 static
 bool
@@ -437,6 +469,7 @@ void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInF
 		kSharedRegionLoadFileState,
 		kSharedRegionMapFileState,
 		kSharedRegionMapFilePrivateState,
+		kSharedRegionMapFilePrivateMMapState,
 		kSharedRegionMapFilePrivateOutsideState,
 	};
 	static SharedRegionState sSharedRegionState = kSharedRegionStartState;
@@ -447,7 +480,15 @@ void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInF
 	
 	if ( kSharedRegionStartState == sSharedRegionState ) {
 		if ( hasSharedRegionMapFile() ) {
-			if ( (context.sharedRegionMode == kUsePrivateSharedRegion) || context.slideAndPackDylibs ) { 
+			if ( context.slideAndPackDylibs ) { 
+				sharedRegionMakePrivate(context);
+				// remove underlying submap and block out 0x90000000 to 0xAFFFFFFF
+				vm_address_t addr = (vm_address_t)0x90000000;
+				vm_deallocate(mach_task_self(), addr, 0x20000000);
+				vm_allocate(mach_task_self(), &addr, 0x20000000, false);
+				sSharedRegionState = kSharedRegionMapFilePrivateMMapState;
+			}
+			else if ( context.sharedRegionMode == kUsePrivateSharedRegion ) { 
 				sharedRegionMakePrivate(context);
 				sSharedRegionState = kSharedRegionMapFilePrivateState;
 			}
@@ -476,8 +517,8 @@ void ImageLoaderMachO::mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInF
 		}
 	}
 	
-	if ( kSharedRegionMapFilePrivateState == sSharedRegionState ) {
-		if ( 0 != sharedRegionMapFilePrivate(fd, offsetInFat, lenInFat, fileLen, context) ) {
+	if ( (kSharedRegionMapFilePrivateState == sSharedRegionState) || (kSharedRegionMapFilePrivateMMapState == sSharedRegionState) ) {
+		if ( 0 != sharedRegionMapFilePrivate(fd, offsetInFat, lenInFat, fileLen, context, (kSharedRegionMapFilePrivateMMapState == sSharedRegionState)) ) {
 			sSharedRegionState = kSharedRegionMapFilePrivateOutsideState;
 		}
 	}
@@ -608,12 +649,14 @@ ImageLoaderMachO::sharedRegionMapFile(int fd,
 	return r;
 }
 
+
 int
 ImageLoaderMachO::sharedRegionMapFilePrivate(int fd,
 											 uint64_t offsetInFat,
 											 uint64_t lenInFat,
 											 uint64_t fileLen,
-											 const LinkContext& context)
+											 const LinkContext& context,
+											 bool usemmap)
 {
 	const unsigned int segmentCount = fSegments.size();
 
@@ -650,7 +693,11 @@ ImageLoaderMachO::sharedRegionMapFilePrivate(int fd,
 	uint64_t slide = 0;
 
 	// try map it in privately (don't allow sliding if we pre-calculated the load address to pack dylibs)
-	int r = _shared_region_map_file_np(fd, mappingTableCount, mappingTable, context.slideAndPackDylibs ? NULL : &slide);
+	int r;
+	if ( usemmap )
+		r = _shared_region_map_file_with_mmap(fd, mappingTableCount, mappingTable);
+	else
+		r = _shared_region_map_file_np(fd, mappingTableCount, mappingTable, context.slideAndPackDylibs ? NULL : &slide);
 	if ( 0 == r ) {
 		if ( 0 != slide ) {
 			slide = (slide) & (-4096); // round down to page boundary
@@ -702,7 +749,7 @@ ImageLoaderMachO::sharedRegionMapFilePrivate(int fd,
 		}
 	}
 	if ( context.slideAndPackDylibs && (r != 0) )
-		throw "can't rebase split-seg dylib";
+		throwf("can't rebase split-seg dylib %s because shared_region_map_file_np() returned %d", this->getPath(), r);
 	
 	return r;
 }
@@ -891,8 +938,9 @@ void ImageLoaderMachO::parseLoadCmds()
 							fModInitSection = sect;
 						else if ( type == S_MOD_TERM_FUNC_POINTERS )
 							fModTermSection = sect;
-						else if ( isDataSeg && (strcmp(sect->sectname, "__dyld") == 0) )
-							fDATAdyld = sect;
+						else if ( isDataSeg && (strcmp(sect->sectname, "__dyld") == 0) ) {
+								fDATAdyld = sect;
+						}
 						else if ( isDataSeg && (strcmp(sect->sectname, "__image_notify") == 0) )
 							fImageNotifySection = sect;
 					}
@@ -906,6 +954,12 @@ void ImageLoaderMachO::parseLoadCmds()
 					fDylibID = (struct dylib_command*)cmd;
 				}
 				break;
+			case LC_LOAD_WEAK_DYLIB:
+				// do nothing, just prevent LC_REQ_DYLD exception from occuring
+				break;
+			default:
+				if ( (cmd->cmd & LC_REQ_DYLD) != 0 )
+					throwf("unknown required load command 0x%08X", cmd->cmd);
 		}
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 	}
@@ -1205,7 +1259,7 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 
 	// cache this value that is used in the following loop
 	register const uintptr_t slide = this->fSlide;
-	
+
 	// loop through all local (internal) relocation records
 	const uintptr_t relocBase = this->getRelocBase();
 	const relocation_info* const relocsStart = (struct relocation_info*)(&fLinkEditBase[fDynamicInfo->locreloff]);
@@ -2296,13 +2350,14 @@ void ImageLoaderMachO::applyPrebindingToLinkEdit(const LinkContext& context, uin
 	// walk all exports and slide their n_value
 	struct macho_nlist* lastExport = &symbolTable[dysymtab->iextdefsym+dysymtab->nextdefsym];
 	for (struct macho_nlist* entry = &symbolTable[dysymtab->iextdefsym]; entry < lastExport; ++entry) {
-		entry->n_value += fSlide;
+		if ( (entry->n_type & N_TYPE) == N_SECT )
+			entry->n_value += fSlide;
 	}
 
 	// walk all local symbols and slide their n_value
 	struct macho_nlist* lastLocal = &symbolTable[dysymtab->ilocalsym+dysymtab->nlocalsym];
 	for (struct macho_nlist* entry = &symbolTable[dysymtab->ilocalsym]; entry < lastLocal; ++entry) {
-		if ( (entry->n_type & N_TYPE) == N_SECT )
+		if ( entry->n_sect != NO_SECT )
 			entry->n_value += fSlide;
 	}
 	
@@ -2327,8 +2382,67 @@ void ImageLoaderMachO::applyPrebindingToLinkEdit(const LinkContext& context, uin
 			}
 		}
 	}
-
+	
+	// if multi-module, fix up objc_addr (10.4 and later runtime does not use this, but we want to keep file checksum consistent)
+	if ( dysymtab->nmodtab != 0 ) {
+		dylib_module* const modulesStart = (struct dylib_module*)(&fileToPrebind[dysymtab->modtaboff]);
+		dylib_module* const modulesEnd = &modulesStart[dysymtab->nmodtab];
+		for (dylib_module* module=modulesStart; module < modulesEnd; ++module) {
+			if ( module->objc_module_info_size != 0 ) {
+				module->objc_module_info_addr += fSlide;
+			}
+		}
+	}
 }
+
+// file on disk has been reprebound, but we are still mapped to old file
+void ImageLoaderMachO::prebindUnmap(const LinkContext& context)
+{
+	// this removes all mappings to the old file, so the kernel will unlink (delete) it.
+	//  We need to leave the load commands and __LINKEDIT in place
+	for (std::vector<class Segment*>::iterator it=fSegments.begin(); it != fSegments.end(); ++it) {
+		void* segmentAddress = (void*)((*it)->getActualLoadAddress());
+		uintptr_t segmentSize = (*it)->getSize();
+		//fprintf(stderr, "unmapping segment %s at %p for %s\n", (*it)->getName(), segmentAddress, this->getPath());
+		// save load commands at beginning of __TEXT segment
+		if ( segmentAddress == fMachOData ) {
+			// typically load commands are one or two pages in size, so ok to alloc on stack
+			uint32_t loadCmdSize = sizeof(macho_header) + ((macho_header*)fMachOData)->sizeofcmds;
+			uint32_t loadCmdPages = (loadCmdSize+4095) & (-4096);
+			uint8_t loadcommands[loadCmdPages];
+			memcpy(loadcommands, fMachOData, loadCmdPages);
+			// unmap whole __TEXT segment
+			munmap((void*)(fMachOData), segmentSize);
+			// allocate and copy back mach_header and load commands
+			vm_address_t addr = (vm_address_t)fMachOData;
+			int r2 = vm_allocate(mach_task_self(), &addr, loadCmdPages, false /*at this address*/);
+			if ( r2 != 0 )
+				fprintf(stderr, "prebindUnmap() vm_allocate for __TEXT %d failed\n", loadCmdPages);
+			memcpy((void*)fMachOData, loadcommands, loadCmdPages);
+			//fprintf(stderr, "copying back load commands to %p size=%u for %s\n", segmentAddress, loadCmdPages, this->getPath());
+		}
+		else if ( strcmp((*it)->getName(), "__LINKEDIT") == 0 ) {
+			uint32_t linkEditSize = segmentSize;
+			uint32_t linkEditPages = (linkEditSize+4095) & (-4096);
+			void* linkEditTmp = malloc(linkEditPages);
+			memcpy(linkEditTmp, segmentAddress, linkEditPages);
+			// unmap whole __LINKEDIT segment
+			munmap(segmentAddress, segmentSize);
+			vm_address_t addr = (vm_address_t)segmentAddress;
+			int r2 = vm_allocate(mach_task_self(), &addr, linkEditPages, false /*at this address*/);
+			if ( r2 != 0 )
+				fprintf(stderr, "prebindUnmap() vm_allocate for __LINKEDIT %d failed\n", linkEditPages);
+			memcpy(segmentAddress, linkEditTmp, linkEditPages);
+			//fprintf(stderr, "copying back __LINKEDIT to %p size=%u for %s\n", segmentAddress, linkEditPages, this->getPath());
+			free(linkEditTmp);
+		}
+		else {
+			// unmap any other segment
+			munmap((void*)(segmentAddress), (*it)->getSize());
+		}
+	}
+}
+
 
 
 SegmentMachO::SegmentMachO(const struct macho_segment_command* cmd, ImageLoaderMachO* image, const uint8_t* fileData)

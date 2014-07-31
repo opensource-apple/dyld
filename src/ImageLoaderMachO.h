@@ -96,6 +96,7 @@ protected:
 	virtual	bool		isSubframeworkOf(const LinkContext& context, const ImageLoader* image) const;
 	virtual	bool		hasSubLibrary(const LinkContext& context, const ImageLoader* child) const;
 	virtual bool		isPrebindable() const;
+	virtual void		prebindUnmap(const LinkContext& context);
 
 #if !__LP64__   // split segs not supported for 64-bits
 	virtual void		mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
@@ -121,7 +122,7 @@ private:
 			int			sharedRegionLoadFile(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
 			int			sharedRegionMapFile(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
 			int			sharedRegionMakePrivate(const LinkContext& context);
-			int			sharedRegionMapFilePrivate(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
+			int			sharedRegionMapFilePrivate(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context, bool usemmap);
 			int			sharedRegionMapFilePrivateOutside(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
 			void		initMappingTable(uint64_t offsetInFat, sf_mapping *mappingTable, uintptr_t baseAddress);
 			void		initMappingTable(uint64_t offsetInFat, _shared_region_mapping_np *mappingTable);

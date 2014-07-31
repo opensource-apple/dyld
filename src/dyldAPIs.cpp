@@ -1394,7 +1394,7 @@ void* dlsym(void* handle, const char* symbolName)
 	if ( handle == RTLD_NEXT ) {
 		void* callerAddress = __builtin_return_address(1); // note layers: 1: real client, 0: libSystem glue
 		ImageLoader* callerImage = dyld::findImageContainingAddress(callerAddress);
-		sym = callerImage->resolveSymbol(underscoredName, false, &image);
+		sym = callerImage->findExportedSymbolInDependentImages(underscoredName, &image); // don't search image, but do search what it links against
 		if ( sym != NULL ) {
 			return (void*)image->getExportedSymbolAddress(sym);
 		}
@@ -1409,11 +1409,7 @@ void* dlsym(void* handle, const char* symbolName)
 	if ( handle == RTLD_SELF ) {
 		void* callerAddress = __builtin_return_address(1); // note layers: 1: real client, 0: libSystem glue
 		ImageLoader* callerImage = dyld::findImageContainingAddress(callerAddress);
-		sym = callerImage->findExportedSymbol(underscoredName, NULL, false, &image);  // search first in calling image
-		if ( sym != NULL ) {
-			return (void*)image->getExportedSymbolAddress(sym);
-		}
-		sym = callerImage->resolveSymbol(underscoredName, false, &image);			// search what calling image links against
+		sym = callerImage->findExportedSymbolInImageOrDependentImages(underscoredName, &image); // search image and what it links against
 		if ( sym != NULL ) {
 			return (void*)image->getExportedSymbolAddress(sym);
 		}
@@ -1427,12 +1423,7 @@ void* dlsym(void* handle, const char* symbolName)
 	// real handle
 	image = (ImageLoader*)handle;
 	if ( dyld::validImage(image) ) {
-		ImageLoader* foundIn;
-		sym = image->findExportedSymbol(underscoredName, NULL, true, &foundIn);
-		if ( sym != NULL ) {
-			return (void*)(foundIn->getExportedSymbolAddress(sym));
-		}
-		sym = image->resolveSymbol(underscoredName, false, &image);// search what image links against
+		sym = image->findExportedSymbolInImageOrDependentImages(underscoredName, &image); // search image and what it links against
 		if ( sym != NULL ) {
 			return (void*)image->getExportedSymbolAddress(sym);
 		}
@@ -1448,6 +1439,24 @@ void* dlsym(void* handle, const char* symbolName)
 }
 
 
+static void commitRepreboundFiles(std::vector<ImageLoader*> files, bool unmapOld)
+{
+	// tell file system to flush all dirty buffers to disk
+	// after this sync, the _redoprebinding files will be on disk
+	sync();
+
+	// now commit (swap file) for each re-prebound image
+	// this only updates directories, since the files have already been flushed by previous sync()
+	for (std::vector<ImageLoader*>::iterator it=files.begin(); it != files.end(); it++) {
+		(*it)->reprebindCommit(dyld::gLinkContext, true, unmapOld);
+	}
+
+	// tell file system to flush all dirty buffers to disk
+	// this should flush out all directory changes caused by the file swapping
+	sync();
+}
+
+
 #define UPDATE_PREBINDING_DRY_RUN  0x00000001
 #define UPDATE_PREBINDING_PROGRESS 0x00000002
 
@@ -1460,7 +1469,7 @@ static void _dyld_update_prebinding(int pathCount, const char* paths[], uint32_t
 {
 	if ( dyld::gLogAPIs )
 		fprintf(stderr, "%s()\n", __func__);
-	
+
 	// list of requested dylibs actually loaded
 	std::vector<ImageLoader*> preboundImages;
 	
@@ -1552,35 +1561,36 @@ static void _dyld_update_prebinding(int pathCount, const char* paths[], uint32_t
 			struct timeval currentTime = { 0 , 0 };
 			gettimeofday(&currentTime, NULL);
 			time_t timestamp = currentTime.tv_sec;
+			std::vector<ImageLoader*> updatedImages;
 			for (std::vector<ImageLoader*>::iterator it=preboundImages.begin(); it != preboundImages.end(); it++) {
-				(*it)->reprebind(dyld::gLinkContext, timestamp);
+				uint64_t freespace = (*it)->reprebind(dyld::gLinkContext, timestamp);
+				updatedImages.push_back(*it);
 				if(UPDATE_PREBINDING_PROGRESS & flags) {
 					fprintf(stdout, "update_prebinding: progress: %3u/%u\n", imageNumber, imageCount);
 					fflush(stdout);
 					imageNumber++;
 				}
+				// see if we are running low on disk space (less than 32MB is "low")
+				const uint64_t kMinFreeSpace = 32*1024*1024;  
+				if ( freespace < kMinFreeSpace ) {
+					if ( dyld::gLinkContext.verbosePrebinding || (UPDATE_PREBINDING_DRY_RUN & flags) )
+						fprintf(stderr, "update_prebinding: disk space down to %lluMB, committing %lu prebound files\n", freespace/(1024*1024), updatedImages.size());
+					// commit files processed so far, to free up more disk space
+					commitRepreboundFiles(updatedImages, true);
+					// empty list of temp files
+					updatedImages.clear();
+				}
 			}
 		
-			// tell file system to flush all dirty buffers to disk
-			// after this sync, all the _redoprebinding files will be on disk
-			sync();
-		
-			// now commit (swap file) for each re-prebound image
-			// this only updates directories, since the files have already been flushed by previous sync()
-			for (std::vector<ImageLoader*>::iterator it=preboundImages.begin(); it != preboundImages.end(); it++) {
-				(*it)->reprebindCommit(dyld::gLinkContext, true);
-			}
-		
-			// tell file system to flush all dirty buffers to disk
-			// this should flush out all directory changes caused by the file swapping
-			sync();
+			// commit them, don't need to unmap old, cause we are done
+			commitRepreboundFiles(updatedImages, false);
 		}
 	}
 	catch (const char* msg) {
 		// delete temp files
 		try {
 			for (std::vector<ImageLoader*>::iterator it=preboundImages.begin(); it != preboundImages.end(); it++) {
-				(*it)->reprebindCommit(dyld::gLinkContext, false);
+				(*it)->reprebindCommit(dyld::gLinkContext, false, false);
 			}
 		}
 		catch (const char* commitMsg) {

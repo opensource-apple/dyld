@@ -30,6 +30,7 @@
 #include <mach/mach_time.h> // struct mach_timebase_info
 #include <stdint.h>
 #include <vector>
+#include <set>
 
 #include "mach-o/dyld_gdb.h"
 
@@ -166,11 +167,11 @@ public:
 										// st_mtime from stat() on file
 	time_t								lastModified();
 
-										// image should create prebound version of itself
-	void								reprebind(const LinkContext& context, time_t timestamp);
+										// image should create prebound version of itself and return freespace remaining on disk
+	uint64_t							reprebind(const LinkContext& context, time_t timestamp);
 	
 										// if 'commit', the prebound version should be swapped in, otherwise deleted
-	void								reprebindCommit(const LinkContext& context, bool commit);
+	void								reprebindCommit(const LinkContext& context, bool commit, bool unmapOld);
 	
 										// only valid for main executables, returns a pointer its entry point
 	virtual void*						getMain() const = 0;
@@ -206,8 +207,12 @@ public:
 	virtual const Symbol*				getIndexedExportedSymbol(uint32_t index) const = 0;
 			
 										// find exported symbol as if imported by this image
-										// used by RTLD_NEXT and RTLD_SELF
-	virtual const Symbol*				resolveSymbol(const char* name, bool searchSelf, ImageLoader** foundIn) const;
+										// used by RTLD_NEXT
+	virtual const Symbol*				findExportedSymbolInDependentImages(const char* name, ImageLoader** foundIn) const;
+	
+										// find exported symbol as if imported by this image
+										// used by RTLD_SELF
+	virtual const Symbol*				findExportedSymbolInImageOrDependentImages(const char* name, ImageLoader** foundIn) const;
 	
 										// gets how many symbols are imported by this image
 	virtual uint32_t					getImportedSymbolCount() const = 0;
@@ -362,6 +367,9 @@ protected:
 								// in mach-o a parent library knows name of sub libraries it re-exports..
 	virtual	bool				hasSubLibrary(const LinkContext& context, const ImageLoader* child) const  = 0;
 	
+								// file has been reprebound on disk, unmap this file so original file is released
+	virtual void				prebindUnmap(const LinkContext& context) = 0;
+	
 	static uint32_t				fgImagesWithUsedPrebinding;
 	static uint32_t				fgTotalRebaseFixups;
 	static uint32_t				fgTotalBindFixups;
@@ -391,7 +399,8 @@ protected:
 private:
 	void						init(const char* path, uint64_t offsetInFat, dev_t device, ino_t inode, time_t modDate);
 	intptr_t					assignSegmentAddresses(const LinkContext& context);
-	void						copyAndMap(const char* tempFile, uint8_t** fileToPrebind, uint64_t* fileToPrebindSize);
+	uint64_t					copyAndMap(const char* tempFile, uint8_t** fileToPrebind, uint64_t* fileToPrebindSize);
+	const ImageLoader::Symbol*	findExportedSymbolInDependentImagesExcept(const char* name, std::set<const ImageLoader*>& dontSearchImages, ImageLoader** foundIn) const;
 
 
 	bool						fHideSymbols;		// ignore this image's exported symbols when linking other images
