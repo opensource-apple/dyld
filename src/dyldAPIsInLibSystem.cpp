@@ -440,17 +440,18 @@ const char* libraryName)
  */
 uint32_t dyld_get_sdk_version(const mach_header* mh)
 {
-	const load_command* cmds = NULL;
+	const load_command* startCmds = NULL;
 	if ( mh->magic == MH_MAGIC_64 )
-		cmds = (load_command*)((char *)mh + sizeof(mach_header_64));
+		startCmds = (load_command*)((char *)mh + sizeof(mach_header_64));
 	else if ( mh->magic == MH_MAGIC )
-		cmds = (load_command*)((char *)mh + sizeof(mach_header));
+		startCmds = (load_command*)((char *)mh + sizeof(mach_header));
 	else
 		return 0;  // not a mach-o file, or wrong endianness
 		
+	const load_command* const cmdsEnd = (load_command*)((char*)startCmds + mh->sizeofcmds);
 	const version_min_command* versCmd;
 	const dylib_command* dylibCmd;
-	const load_command* cmd = cmds;
+	const load_command* cmd = startCmds;
 	const char* dylibName;
 #if __IPHONE_OS_VERSION_MIN_REQUIRED 
 	uint32_t foundationVers = 0;
@@ -487,7 +488,13 @@ uint32_t dyld_get_sdk_version(const mach_header* mh)
 #endif
 				break;
 		}
+		// <rdar://problem/14381579> sanity check size of command
+		if ( (cmd->cmdsize < 8) || (cmd->cmdsize > mh->sizeofcmds) )
+			return 0;
 	    cmd = (load_command*)((char *)cmd + cmd->cmdsize);
+		// <rdar://problem/14381579> bounds check
+		if ( (cmd > cmdsEnd) || (cmd < startCmds) )
+			return 0;
 	}
 
 	struct DylibToOSMapping {
@@ -561,19 +568,19 @@ uint32_t dyld_get_program_sdk_version()
 	return dyld_get_sdk_version((mach_header*)_NSGetMachExecuteHeader());
 }
 
-
 uint32_t dyld_get_min_os_version(const struct mach_header* mh)
 {
-	const load_command* cmds = NULL;
+	const load_command* startCmds = NULL;
 	if ( mh->magic == MH_MAGIC_64 )
-		cmds = (load_command*)((char *)mh + sizeof(mach_header_64));
+		startCmds = (load_command*)((char *)mh + sizeof(mach_header_64));
 	else if ( mh->magic == MH_MAGIC )
-		cmds = (load_command*)((char *)mh + sizeof(mach_header));
+		startCmds = (load_command*)((char *)mh + sizeof(mach_header));
 	else
 		return 0;  // not a mach-o file, or wrong endianness
 		
+	const load_command* const cmdsEnd = (load_command*)((char*)startCmds + mh->sizeofcmds);
 	const version_min_command* versCmd;
-	const load_command* cmd = cmds;
+	const load_command* cmd = startCmds;
 	for(uint32_t i = 0; i < mh->ncmds; ++i) {
 		switch ( cmd->cmd ) { 
 #if __IPHONE_OS_VERSION_MIN_REQUIRED          
@@ -585,7 +592,13 @@ uint32_t dyld_get_min_os_version(const struct mach_header* mh)
 				return versCmd->version;	// found explicit min OS version
 				break;
 		}
+		// <rdar://problem/14381579> sanity check size of command
+		if ( (cmd->cmdsize < 8) || (cmd->cmdsize > mh->sizeofcmds) )
+			return 0;
 	    cmd = (load_command*)((char *)cmd + cmd->cmdsize);
+		// <rdar://problem/14381579> bounds check
+		if ( (cmd > cmdsEnd) || (cmd < startCmds) )
+			return 0;
 	}
 	return 0;
 }
