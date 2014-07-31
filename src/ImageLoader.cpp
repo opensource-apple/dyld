@@ -91,6 +91,7 @@ void ImageLoader::init(const char* path, uint64_t offsetInFat, dev_t device, ino
 #endif
 	fAllLazyPointersBound = false;
 	fBeingRemoved = false;
+	fAddFuncNotified = false;
 	fPathOwnedByImage = false;
 #if RECURSIVE_INITIALIZER_LOCK
 	fInitializerRecursiveLock = NULL;
@@ -472,8 +473,8 @@ void ImageLoader::bindAllLazyPointers(const LinkContext& context, bool recursive
 					libInfo.image->bindAllLazyPointers(context, recursive);
 			}
 		}
-		// bind lazys in this image
-		this->doBind(context, true);
+		// bind lazies in this image
+		this->doBindJustLazies(context);
 	}
 }
 

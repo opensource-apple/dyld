@@ -110,13 +110,14 @@ Binder<A>::Binder(const MachOLayoutAbstraction& layout, uint64_t dyldBaseAddress
 	((macho_header<P>*)this->fHeader)->set_flags(this->fHeader->flags() | MH_PREBOUND | MH_SPLIT_SEGS | 0x80000000);
 
 	// calculate fDynamicInfo, fStrings, fSymbolTable
+	const macho_symtab_command<P>* symtab;
 	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)this->fHeader + sizeof(macho_header<P>));
 	const uint32_t cmd_count = this->fHeader->ncmds();
 	const macho_load_command<P>* cmd = cmds;
 	for (uint32_t i = 0; i < cmd_count; ++i) {
 		switch (cmd->cmd()) {
 			case LC_SYMTAB:
-				const macho_symtab_command<P>* symtab = (macho_symtab_command<P>*)cmd;
+				symtab = (macho_symtab_command<P>*)cmd;
 				fSymbolTable = (macho_nlist<P>*)(&this->fLinkEditBase[symtab->symoff()]);
 				fStrings = (const char*)&this->fLinkEditBase[symtab->stroff()];
 				break;
@@ -256,10 +257,12 @@ void Binder<A>::setDependentBinders(const Map& map)
 	if ( (this->fHeader->flags() & MH_NO_REEXPORTED_DYLIBS) == 0 ) {
 		cmd = cmds;
 		// LC_SUB_LIBRARY means re-export one with matching leaf name
+		const char* dylibBaseName;
+		const char* frameworkLeafName;
 		for (uint32_t i = 0; i < cmd_count; ++i) {
 			switch ( cmd->cmd() ) {
 				case LC_SUB_LIBRARY:
-					const char* dylibBaseName = ((macho_sub_library_command<P>*)cmd)->sub_library();
+					dylibBaseName = ((macho_sub_library_command<P>*)cmd)->sub_library();
 					for (typename std::vector<BinderAndReExportFlag>::iterator it = fDependentDylibs.begin(); it != fDependentDylibs.end(); ++it) {
 						const char* dylibName = it->binder->getDylibID();
 						const char* lastSlash = strrchr(dylibName, '/');
@@ -275,7 +278,7 @@ void Binder<A>::setDependentBinders(const Map& map)
 					}
 					break;
 				case LC_SUB_UMBRELLA:
-					const char* frameworkLeafName = ((macho_sub_umbrella_command<P>*)cmd)->sub_umbrella();
+					frameworkLeafName = ((macho_sub_umbrella_command<P>*)cmd)->sub_umbrella();
 					for (typename std::vector<BinderAndReExportFlag>::iterator it = fDependentDylibs.begin(); it != fDependentDylibs.end(); ++it) {
 						const char* dylibName = it->binder->getDylibID();
 						const char* lastSlash = strrchr(dylibName, '/');

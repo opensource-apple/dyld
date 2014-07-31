@@ -31,9 +31,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <errno.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <sys/param.h>
 #include <sys/sysctl.h>
 #include <sys/resource.h>
@@ -390,7 +392,7 @@ class SharedCache
 {
 public:
 							SharedCache(ArchGraph* graph, bool alphaSort, uint64_t dyldBaseAddress);
-	bool					update(const char* rootPath, const char* cacheDir, bool force, bool optimize, int archIndex, int archCount);
+	bool					update(const char* rootPath, const char* cacheDir, bool force, bool optimize, bool deleteExistingFirst, int archIndex, int archCount);
 	static const char*		filename(bool optimized);
 
 private:
@@ -440,7 +442,6 @@ private:
 	std::vector<LayoutInfo>				fDylibs;
 	std::vector<shared_file_mapping_np>	fMappings;
 	uint32_t							fHeaderSize;
-	uint8_t*							fMappedCacheFile;
 	uint64_t							fDyldBaseAddress;
 	uint64_t							fLinkEditsTotalUnoptimizedSize;
 	uint64_t							fLinkEditsStartAddress;
@@ -1195,8 +1196,21 @@ uint8_t* SharedCache<A>::optimizeLINKEDIT()
 }
 
 
+static const char* sCleanupFile = NULL;
+static void cleanup(int sig)
+{
+	::signal(sig, SIG_DFL);
+	if ( sCleanupFile != NULL )
+		::unlink(sCleanupFile);
+	//if ( verbose )
+	//	fprintf(stderr, "update_dyld_shared_cache: deleting temp file in response to a signal\n");
+	if ( sig == SIGINT )
+		::exit(1);
+}
+
+
 template <typename A>
-bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool force, bool optimize, int archIndex, int archCount)
+bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool force, bool optimize, bool deleteExistingFirst, int archIndex, int archCount)
 {
 	bool didUpdate = false;
 	char cachePath[1024];
@@ -1213,29 +1227,28 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 			fprintf(stderr, "update_dyld_shared_cache: warning, empty cache not generated for arch %s\n", archName());
 			return false;
 		}
+		// delete existing cache while building the new one
+		// this is a flag to dyld to stop pinging update_dyld_shared_cache
+		if ( deleteExistingFirst )
+			::unlink(cachePath);
+		uint8_t* inMemoryCache = NULL;
+		uint32_t allocatedCacheSize = 0;
 		char tempCachePath[strlen(cachePath)+16];
 		sprintf(tempCachePath, "%s.tmp%u", cachePath, getpid());
 		try {
-			int fd = ::open(tempCachePath, O_CREAT | O_RDWR | O_TRUNC, 0644);	
-			if ( fd == -1 )
-				throwf("can't create temp file %s, errnor=%d", tempCachePath, errno);
-				
-			// try to allocate whole cache file contiguously
+			// allocate a memory block to hold cache
 			uint32_t cacheFileSize = 0;
 			for(std::vector<shared_file_mapping_np>::iterator it = fMappings.begin(); it != fMappings.end(); ++it) {
 				uint32_t end = it->sfm_file_offset + it->sfm_size;
 				if ( end > cacheFileSize )
 					cacheFileSize = end;
 			}
-			fstore_t fcntlSpec = { F_ALLOCATECONTIG|F_ALLOCATEALL, F_PEOFPOSMODE, 0, cacheFileSize, 0 };
-			fcntl(fd, F_PREALLOCATE, &fcntlSpec);
-  
-			// fill in cache header memory buffer
-			uint8_t buffer[pageAlign(fHeaderSize)];
-			bzero(buffer, sizeof(buffer));
+			if ( vm_allocate(mach_task_self(), (vm_address_t*)(&inMemoryCache), cacheFileSize, VM_FLAGS_ANYWHERE) != KERN_SUCCESS )
+				throwf("can't vm_allocate cache of size %u", cacheFileSize);
+			allocatedCacheSize = cacheFileSize;
 			
 			// fill in header
-			dyldCacheHeader<E>* header = (dyldCacheHeader<E>*)buffer;
+			dyldCacheHeader<E>* header = (dyldCacheHeader<E>*)inMemoryCache;
 			char temp[16];
 			strcpy(temp, "dyld_v1        ");
 			strcpy(&temp[15-strlen(archName())], archName());
@@ -1250,7 +1263,7 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 			//header->set_dependenciesCount(fDependencyPool.size());
 			
 			// fill in mappings
-			dyldCacheFileMapping<E>* mapping = (dyldCacheFileMapping<E>*)&buffer[sizeof(dyldCacheHeader<E>)];
+			dyldCacheFileMapping<E>* mapping = (dyldCacheFileMapping<E>*)&inMemoryCache[sizeof(dyldCacheHeader<E>)];
 			for(std::vector<shared_file_mapping_np>::iterator it = fMappings.begin(); it != fMappings.end(); ++it) {
 				if ( verbose )
 					fprintf(stderr, "update_dyld_shared_cache: cache mappings: address=0x%0llX, size=0x%0llX, fileOffset=0x%0llX, prot=0x%X\n", 
@@ -1274,23 +1287,7 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 				++image;
 			}
 						
-			// write whole header to disk
-			pwrite(fd, buffer, sizeof(buffer), 0);
-			
-			// allocate copy buffer
-			const uint64_t kCopyBufferSize = 256*1024;
-			uint8_t* copyBuffer;
-			vm_address_t addr = 0;
-			if ( vm_allocate(mach_task_self(), &addr, kCopyBufferSize, VM_FLAGS_ANYWHERE) == KERN_SUCCESS )
-				copyBuffer = (uint8_t*)addr;
-			else
-				throw "can't allcoate copy buffer";
-
-			// make zero-fill buffer
-			uint8_t zerofill[4096];
-			bzero(zerofill, sizeof(zerofill));
-
-			// write each segment to cache file
+			// copy each segment to cache buffer
 			int dylibIndex = 0;
 			for(typename std::vector<LayoutInfo>::const_iterator it = fDylibs.begin(); it != fDylibs.end(); ++it, ++dylibIndex) {
 				const char* path = it->layout->getFilePath();
@@ -1301,7 +1298,7 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 				(void)fcntl(src, F_NOCACHE, 1);
 
 				if ( verbose )
-					fprintf(stderr, "update_prebinding: copying %s to cache\n", it->layout->getID().name);
+					fprintf(stderr, "update_dyld_shared_cache: copying %s to cache\n", it->layout->getID().name);
 				try {
 					const std::vector<MachOLayoutAbstraction::Segment>& segs = it->layout->getSegments();
 					for (int i=0; i < segs.size(); ++i) {
@@ -1312,23 +1309,8 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 							const uint64_t segmentSrcStartOffset = it->layout->getOffsetInUniversalFile()+seg.fileOffset();
 							const uint64_t segmentSize = seg.fileSize();
 							const uint64_t segmentDstStartOffset = cacheFileOffsetForAddress(seg.newAddress());
-							for(uint64_t copiedAmount=0; copiedAmount < segmentSize; copiedAmount += kCopyBufferSize) {
-								uint64_t amount = std::min(segmentSize-copiedAmount, kCopyBufferSize);
-								//fprintf(stderr, "copy 0x%08llX bytes at offset 0x%08llX for segment %s in %s to cache offset 0x%08llX\n", 
-								//		amount, segmentSrcStartOffset+copiedAmount, seg.name(), it->layout->getID().name, segmentDstStartOffset+copiedAmount);
-								if ( ::pread(src, copyBuffer, amount, segmentSrcStartOffset+copiedAmount) != amount )
-									throwf("read failure copying dylib errno=%d for %s", errno, it->layout->getID().name);
-								if ( ::pwrite(fd, copyBuffer, amount, segmentDstStartOffset+copiedAmount) != amount )
-									throwf("write failure copying dylib errno=%d for %s", errno, it->layout->getID().name);
-							}
-							if ( seg.size() > seg.fileSize() ) {
-								// write zero-filled area
-								for(uint64_t copiedAmount=seg.fileSize(); copiedAmount < seg.size(); copiedAmount += sizeof(zerofill)) {
-									uint64_t amount = std::min(seg.size()-copiedAmount, (uint64_t)(sizeof(zerofill)));
-									if ( ::pwrite(fd, zerofill, amount, segmentDstStartOffset+copiedAmount) != amount )
-										throwf("write failure copying dylib errno=%d for %s", errno, it->layout->getID().name);
-								}
-							}
+							if ( ::pread(src, &inMemoryCache[segmentDstStartOffset], segmentSize, segmentSrcStartOffset) != segmentSize )
+								throwf("read failure copying dylib errno=%d for %s", errno, it->layout->getID().name);
 						}
 					}
 				}
@@ -1337,26 +1319,14 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 				}
 				::close(src);
 			}
-			
-			// free copy buffer
-			vm_deallocate(mach_task_self(), addr, kCopyBufferSize);
-			
-			// map cache file
-			fMappedCacheFile = (uint8_t*)mmap(NULL, cacheFileSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-			if ( fMappedCacheFile == (uint8_t*)(-1) )
-				throw "can't mmap cache file";
-
-			// close cache file
-			::fsync(fd);
-			::close(fd);
-
+						
 			// set mapped address for each segment
 			for(typename std::vector<LayoutInfo>::const_iterator it = fDylibs.begin(); it != fDylibs.end(); ++it) {
 				std::vector<MachOLayoutAbstraction::Segment>& segs = ((MachOLayoutAbstraction*)(it->layout))->getSegments();
 				for (int i=0; i < segs.size(); ++i) {
 					MachOLayoutAbstraction::Segment& seg = segs[i];
 					if ( seg.size() > 0 )
-						seg.setMappedAddress(fMappedCacheFile + cacheFileOffsetForAddress(seg.newAddress()));
+						seg.setMappedAddress(inMemoryCache + cacheFileOffsetForAddress(seg.newAddress()));
 					//fprintf(stderr, "%s at %p to %p for %s\n", seg.name(), seg.mappedAddress(), (char*)seg.mappedAddress()+ seg.size(), it->layout->getID().name);
 				}
 			}
@@ -1377,11 +1347,11 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 			// merge/optimize all LINKEDIT segments
 			if ( optimize ) {
 				//fprintf(stderr, "update_dyld_shared_cache: original cache file size %uMB\n", cacheFileSize/(1024*1024));
-				cacheFileSize = (this->optimizeLINKEDIT() - fMappedCacheFile);
+				cacheFileSize = (this->optimizeLINKEDIT() - inMemoryCache);
 				//fprintf(stderr, "update_dyld_shared_cache: optimized cache file size %uMB\n", cacheFileSize/(1024*1024));
 				// update header to reduce mapping size
-				dyldCacheHeader<E>* cacheHeader = (dyldCacheHeader<E>*)fMappedCacheFile;
-				dyldCacheFileMapping<E>* mappings = (dyldCacheFileMapping<E>*)&fMappedCacheFile[sizeof(dyldCacheHeader<E>)];
+				dyldCacheHeader<E>* cacheHeader = (dyldCacheHeader<E>*)inMemoryCache;
+				dyldCacheFileMapping<E>* mappings = (dyldCacheFileMapping<E>*)&inMemoryCache[sizeof(dyldCacheHeader<E>)];
 				dyldCacheFileMapping<E>* lastMapping = &mappings[cacheHeader->mappingCount()-1];
 				lastMapping->set_size(cacheFileSize-lastMapping->file_offset());
 				// update fMappings so .map file will print correctly
@@ -1420,33 +1390,53 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 			for(typename std::vector<Binder<A>*>::iterator it = binders.begin(); it != binders.end(); ++it) {
 				delete *it;
 			}
-		
-			// close mapping
-			int result = ::msync(fMappedCacheFile, cacheFileSize, MS_SYNC);
-			if ( result != 0 )
-				throw "error syncing cache file";
-			result = ::munmap(fMappedCacheFile, cacheFileSize);
-			if ( result != 0 )
-				throw "error unmapping cache file";
+	
+			// install signal handlers to delete temp file if program is killed 
+			sCleanupFile = tempCachePath;
+			::signal(SIGINT, cleanup);
+			::signal(SIGBUS, cleanup);
+			::signal(SIGSEGV, cleanup);
 			
-			// cut back cache file to match optmized size
-			if ( optimize ) {
-				if ( ::truncate(tempCachePath, cacheFileSize) != 0 )
-					throw "error truncating cache file";
-			}
+			// create temp file for cache
+			int fd = ::open(tempCachePath, O_CREAT | O_RDWR | O_TRUNC, 0644);	
+			if ( fd == -1 )
+				throwf("can't create temp file %s, errnor=%d", tempCachePath, errno);
+				
+			// try to allocate whole cache file contiguously
+			fstore_t fcntlSpec = { F_ALLOCATECONTIG|F_ALLOCATEALL, F_PEOFPOSMODE, 0, cacheFileSize, 0 };
+			::fcntl(fd, F_PREALLOCATE, &fcntlSpec);
+
+			// write out cache file
+			if ( verbose )
+				fprintf(stderr, "update_dyld_shared_cache: writing cache to disk\n");
+			if ( ::pwrite(fd, inMemoryCache, cacheFileSize, 0) != cacheFileSize )
+				throwf("write() failure creating cache file, errno=%d", errno);
 			
-			// commit 
-			::sync();
-			// flush everything to disk, otherwise if kernel panics before the cache file is completely written to disk
-			// then next reboot will use a corrupted cache and die
+			// flush to disk and close
+			int result = ::fcntl(fd, F_FULLFSYNC, NULL);
+			if ( result == -1 ) 
+				fprintf(stderr, "update_dyld_shared_cache: warning, fcntl(F_FULLFSYNC) failed with errno=%d for %s\n", errno, tempCachePath);
+			result = ::close(fd);
+			if ( result != 0 ) 
+				fprintf(stderr, "update_dyld_shared_cache: warning, close() failed with errno=%d for %s\n", errno, tempCachePath);
+			
+			// atomically swap in new cache file, do this after F_FULLFSYNC
 			result = ::rename(tempCachePath, cachePath);
 			if ( result != 0 ) 
 				throwf("can't swap newly create dyld shared cache file: rename(%s,%s) returned errno=%d", tempCachePath, cachePath, errno);
+				
 			// flush everything to disk to assure rename() gets recorded
 			::sync();
 			didUpdate = true;
+			
+			// restore default signal handlers
+			::signal(SIGINT, SIG_DFL);
+			::signal(SIGBUS, SIG_DFL);
+			::signal(SIGSEGV, SIG_DFL);
 
 			// generate human readable "map" file that shows the layout of the cache file
+			if ( verbose )
+				fprintf(stderr, "update_dyld_shared_cache: writing .map file to disk\n");
 			sprintf(tempCachePath, "%s.map", cachePath);// re-use path buffer
 			FILE* fmap = ::fopen(tempCachePath, "w");	
 			if ( fmap == NULL ) {
@@ -1484,10 +1474,17 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 				}
 				fclose(fmap);
 			}
+			
+			// free in memory cache
+			vm_deallocate(mach_task_self(), (vm_address_t)inMemoryCache, allocatedCacheSize);
+			inMemoryCache = NULL;
 		}
 		catch (...){
-			// remove temp cache
+			// remove temp cache file
 			::unlink(tempCachePath);
+			// remove in memory cache
+			if ( inMemoryCache != NULL ) 
+				vm_deallocate(mach_task_self(), (vm_address_t)inMemoryCache, allocatedCacheSize);
 			throw;
 		}
 	}
@@ -1617,9 +1614,51 @@ static void scanForSharedDylibs(const char* rootPath, const char* dirOfPathFiles
 }
 
 
+// If the 10.5.0 version of update_dyld_shared_cache was killed or crashed, it 
+// could leave large half written cache files laying around.  The function deletes
+// those files.  To prevent the deletion of tmp files being created by another
+// copy of update_dyld_shared_cache, it only deletes the temp cache file if its 
+// creation time was before the last restart of this machine.
+static void deleteOrphanTempCacheFiles()
+{
+	DIR* dir = ::opendir(DYLD_SHARED_CACHE_DIR);
+	if ( dir != NULL ) {
+		std::vector<const char*> filesToDelete;
+		for (dirent* entry = ::readdir(dir); entry != NULL; entry = ::readdir(dir)) {
+			if ( entry->d_type == DT_REG ) {
+				// only look at files with .tmp in name
+				if ( strstr(entry->d_name, ".tmp") != NULL ) {
+					char fullPath[strlen(DYLD_SHARED_CACHE_DIR)+entry->d_namlen+2];
+					strcpy(fullPath, DYLD_SHARED_CACHE_DIR);
+					strcat(fullPath, "/");
+					strcat(fullPath, entry->d_name);
+					struct stat tmpFileStatInfo;
+					if ( stat(fullPath, &tmpFileStatInfo) != -1 ) {
+						int mib[2] = {CTL_KERN, KERN_BOOTTIME};
+						struct timeval boottime;
+						size_t size = sizeof(boottime);
+						if ( (sysctl(mib, 2, &boottime, &size, NULL, 0) != -1) && (boottime.tv_sec != 0) ) {	
+							// make sure this file is older than the boot time of this machine
+							if ( tmpFileStatInfo.st_mtime < boottime.tv_sec ) {
+								filesToDelete.push_back(strdup(fullPath));
+							}
+						}
+					}
+				}
+			}
+		}
+		::closedir(dir);
+		for(std::vector<const char*>::iterator it = filesToDelete.begin(); it != filesToDelete.end(); ++it) {
+			fprintf(stderr, "update_dyld_shared_cache: deleting old temp cache file: %s\n", *it);
+			::unlink(*it);
+		}
+	}
+}
+
+
 
 static bool updateSharedeCacheFile(const char* rootPath, const char* cacheDir, const std::set<cpu_type_t>& onlyArchs, 
-									bool force, bool alphaSort, bool optimize)
+									bool force, bool alphaSort, bool optimize, bool deleteExistingFirst)
 {
 	bool didUpdate = false;
 	// get dyld load address info
@@ -1638,32 +1677,35 @@ static bool updateSharedeCacheFile(const char* rootPath, const char* cacheDir, c
 					SharedCache<ppc> cache(ArchGraph::getArch(*a), alphaSort, dyldBaseAddress);
 		#if __i386__
 					// <rdar://problem/5217377> Rosetta does not work with optimized dyld shared cache
-					didUpdate |= cache.update(rootPath, cacheDir, force, false, index, archCount);
+					didUpdate |= cache.update(rootPath, cacheDir, force, false, deleteExistingFirst, index, archCount);
 		#else
-					didUpdate |= cache.update(rootPath, cacheDir, force, optimize, index, archCount);
+					didUpdate |= cache.update(rootPath, cacheDir, force, optimize, deleteExistingFirst, index, archCount);
 		#endif
 				}
 				break;
 			case CPU_TYPE_POWERPC64:
 				{
 					SharedCache<ppc64> cache(ArchGraph::getArch(*a), alphaSort, dyldBaseAddress);
-					didUpdate |= cache.update(rootPath, cacheDir, force, optimize, index, archCount);
+					didUpdate |= cache.update(rootPath, cacheDir, force, optimize, deleteExistingFirst, index, archCount);
 				}
 				break;
 			case CPU_TYPE_I386:
 				{
 					SharedCache<x86> cache(ArchGraph::getArch(*a), alphaSort, dyldBaseAddress);
-					didUpdate |= cache.update(rootPath, cacheDir, force, optimize, index, archCount);
+					didUpdate |= cache.update(rootPath, cacheDir, force, optimize, deleteExistingFirst, index, archCount);
 				}
 				break;
 			case CPU_TYPE_X86_64:
 				{
 					SharedCache<x86_64> cache(ArchGraph::getArch(*a), alphaSort, dyldBaseAddress);
-					didUpdate |= cache.update(rootPath, cacheDir, force, optimize, index, archCount);
+					didUpdate |= cache.update(rootPath, cacheDir, force, optimize, deleteExistingFirst, index, archCount);
 				}
 				break;
 		}
 	}
+	
+	deleteOrphanTempCacheFiles();
+	
 	return didUpdate;
 }
 
@@ -1673,31 +1715,40 @@ static void usage()
 	fprintf(stderr, "update_dyld_shared_cache [-force] [-root dir] [-arch arch] [-debug]\n");
 }
 
+// flag so that we only update cache once per invocation
+static bool doNothingAndDrainQueue = false;
 
-kern_return_t do_dyld_shared_cache_missing(mach_port_t dyld_port, cpu_type_t arch)
+static kern_return_t do_update_cache(cpu_type_t arch, bool deleteExistingCacheFileFirst)
 {
-	std::set<cpu_type_t> onlyArchs;
-	onlyArchs.insert(arch);
-	try {
-		scanForSharedDylibs("", "/var/db/dyld/shared_region_roots/", onlyArchs);
-		if ( updateSharedeCacheFile("", DYLD_SHARED_CACHE_DIR, onlyArchs, false, false, true) )
-			fprintf(stderr, "update_dyld_shared_cache[%u] regenerated cache for arch=%s\n", getpid(), ArchGraph::archName(arch));
-	}
-	catch (const char* msg) {
-		fprintf(stderr, "update_dyld_shared_cache[%u] for arch=%s failed: %s\n", getpid(), ArchGraph::archName(arch), msg);
-		return KERN_FAILURE;
+	if ( !doNothingAndDrainQueue ) {
+		std::set<cpu_type_t> onlyArchs;
+		onlyArchs.insert(arch);
+		try {
+			scanForSharedDylibs("", "/var/db/dyld/shared_region_roots/", onlyArchs);
+			if ( updateSharedeCacheFile("", DYLD_SHARED_CACHE_DIR, onlyArchs, false, false, true, deleteExistingCacheFileFirst) )
+				fprintf(stderr, "update_dyld_shared_cache[%u] regenerated cache for arch=%s\n", getpid(), ArchGraph::archName(arch));
+		}
+		catch (const char* msg) {
+			fprintf(stderr, "update_dyld_shared_cache[%u] for arch=%s failed: %s\n", getpid(), ArchGraph::archName(arch), msg);
+			return KERN_FAILURE;
+		}
 	}
 	return KERN_SUCCESS;
 }
 
 
+
+kern_return_t do_dyld_shared_cache_missing(mach_port_t dyld_port, cpu_type_t arch)
+{
+	return do_update_cache(arch, false);
+}
+
+
 kern_return_t do_dyld_shared_cache_out_of_date(mach_port_t dyld_port, cpu_type_t arch)
 {
-	// reduce priority of this process so it only runs at the lowest priority 
-	setpriority(PRIO_PROCESS, 0, PRIO_MAX);
-	
-	// and then rebuild cache
-	return do_dyld_shared_cache_missing(dyld_port, arch);
+	// If cache exists but is out of date, delete the file while building the new one.
+	// This will stop dyld from pinging update_dyld_share_cache while the cache is being built.
+	return do_update_cache(arch, true);
 }
 
 
@@ -1706,12 +1757,18 @@ int main(int argc, const char* argv[])
 	mach_port_t mp;
 	if ( bootstrap_check_in(bootstrap_port, "com.apple.dyld", &mp) == KERN_SUCCESS ) {
 		// started by launchd
-		// Just process one message and quit
 		mach_msg_size_t mxmsgsz = sizeof(union __RequestUnion__do_dyld_server_subsystem) + MAX_TRAILER_SIZE;
-		mach_msg_server_once(dyld_server_server, mxmsgsz, mp, MACH_RCV_TIMEOUT);
-		// The problem with staying alive and processing messages is that the rest of this 
-		// tool leaks mapped memory and file descriptors.  Quiting will clean that up.
-		// <rdar://problem/5392427> 9A516 - Keep getting disk full errors
+		doNothingAndDrainQueue = false;
+		while ( mach_msg_server(dyld_server_server, mxmsgsz, mp, MACH_RCV_TIMEOUT) == KERN_SUCCESS ) {
+			// keep processing messages
+			doNothingAndDrainQueue = true;
+			// but set flag so work is no longer done.
+			// This is because the rest of the tool leaks and processing more than once
+			// can hog system resources: <rdar://problem/5392427> 9A516 - Keep getting disk full errors
+			// We drain the queue of messages because there is usually are a couple of duplicate messages.
+			// It is ok to miss some messages.  If the cache is out of date or missing, some new process
+			// will discover it and send another message.  
+		}
 		return 0;
 	}
 	else {
@@ -1811,7 +1868,7 @@ int main(int argc, const char* argv[])
 			
 			// build list of shared dylibs
 			scanForSharedDylibs(rootPath, "/var/db/dyld/shared_region_roots/", onlyArchs);
-			updateSharedeCacheFile(rootPath, DYLD_SHARED_CACHE_DIR, onlyArchs, force, alphaSort, optimize);
+			updateSharedeCacheFile(rootPath, DYLD_SHARED_CACHE_DIR, onlyArchs, force, alphaSort, optimize, false);
 			
 			// To make a universal bootable image with dyld caches,
 			// build the rosetta cache and symlink ppc to point to it.

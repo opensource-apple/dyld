@@ -40,6 +40,7 @@
 
 #include <vector>
 #include <set>
+#include <ext/hash_map>
 
 #include "MachOFileAbstraction.hpp"
 #include "Architectures.hpp"
@@ -274,6 +275,8 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<cpu_
 			for (unsigned long i=0; i < OSSwapBigToHostInt32(fh->nfat_arch); ++i) {
 				uint32_t fileOffset = OSSwapBigToHostInt32(archs[i].offset);
 				cpu_type_t curArch =  OSSwapBigToHostInt32(archs[i].cputype);
+				if ( fileOffset > stat_buf.st_size )
+					throwf("malformed universal file, slice for architecture 0x%08X is beyond end of file: %s", curArch, path);
 				try {
 					if ( (onlyArchs == NULL) || (onlyArchs->count(curArch) != 0) ) {
 						switch ( curArch ) {

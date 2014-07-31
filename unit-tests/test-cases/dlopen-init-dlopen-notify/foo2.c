@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -20,32 +20,18 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-#include <stdio.h>
-#include <mach-o/dyld.h>
 
-#include "test.h"
+#include <dlfcn.h>
 
-///
-/// rdar://problem/3736945
-///
-///  Test that a std framework can be dynamically loaded via the fallback paths
-///
-///
+static void myInit() __attribute__((constructor));
 
+static void myInit() 
+{		
 
-
-int
-main(int argc, const char* argv[])
-{
-	const struct mach_header *image;
-
-	image = NSAddImage("AppKit.framework/AppKit",
-			NSADDIMAGE_OPTION_RETURN_ON_ERROR | NSADDIMAGE_OPTION_WITH_SEARCHING);
-	if ( image != NULL )
-		PASS("AppKit loaded");
-	else
-		FAIL("Could not load AppKit");
-
-	return 0;
 }
 
+
+int foo2()
+{
+	return 10;
+}

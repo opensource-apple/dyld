@@ -389,9 +389,11 @@ void Rebaser<A>::doCodeUpdate(uint8_t kind, uint64_t address, int64_t codeToData
 				throwf("codeToDataDelta=0x%0llX is not a multiple of 64K", codeToDataDelta);
 			p = (uint32_t*)mappedAddressForVMAddress(address);
 			instruction = BigEndian::get32(*p);
-			uint16_t originalLo16 = instruction & 0x0000FFFF;
-			uint16_t delta64Ks = codeToDataDelta >> 16;
-			instruction = (instruction & 0xFFFF0000) | ((originalLo16+delta64Ks) & 0x0000FFFF);
+			{
+				uint16_t originalLo16 = instruction & 0x0000FFFF;
+				uint16_t delta64Ks = codeToDataDelta >> 16;
+				instruction = (instruction & 0xFFFF0000) | ((originalLo16+delta64Ks) & 0x0000FFFF);
+			}
 			BigEndian::set32(*p, instruction);
 			break;
 		case 4:	// only used for i386, a reference to something in the IMPORT segment

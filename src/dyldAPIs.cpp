@@ -454,7 +454,7 @@ const struct mach_header* addImage(void* callerAddress, const char* path, bool s
 		}
 		// not halting, so set error state for NSLinkEditError to find
 		setLastError(NSLinkEditOtherError, 0, path, msg);
-		free((void*)msg);
+		free((void*)msg); 	// our free() will do nothing if msg is a string literal
 		image = NULL;
 	}
 	// free rpaths (getRPaths() malloc'ed each string)
@@ -1245,8 +1245,31 @@ static void registerThreadHelpers(const dyld::LibSystemHelpers* helpers)
 			if ( ! readOnlyBootVolume() ) {
 				if ( dyld::gSharedCacheNotFound )
 					(*helpers->dyld_shared_cache_missing)();
-				else if ( dyld::gSharedCacheNeedsUpdating )
+				else if ( dyld::imMemorySharedCacheHeader() == NULL ) {
+					// since shared cache is not mapped and not missing, it must be 
+					// corrupt.  Don't need to test contents, just
+					// ping launchd to start update_dyld_shared_cache
+					// rdar://problem/5694507 
 					(*helpers->dyld_shared_cache_out_of_date)();
+				}
+				else if ( dyld::gSharedCacheNeedsUpdating ) {
+					// To reduce the storm of messages to update_dyld_shared_cache
+					// don't message if the cache file is missing (which means the cache is in
+					// the process of being regenerated) or if the contents of the cache file
+					// don't match what is already in memory (which means the cache has
+					// already be regenerated).
+					int fd = dyld::openSharedCacheFile();
+					if ( fd != -1 ) {
+						uint8_t onDiskCache[4096];
+						if ( ::read(fd, onDiskCache, 4096) == 4096 ) {
+							if ( ::memcmp(onDiskCache, dyld::imMemorySharedCacheHeader(), 4096) == 0 ) {
+								// ping launchd to start update_dyld_shared_cache
+								(*helpers->dyld_shared_cache_out_of_date)();
+							}
+						}
+						::close(fd);
+					}
+				}
 			}
 		}
 	}
@@ -1318,6 +1341,7 @@ bool dlopen_preflight(const char* path)
 		const char* str = dyld::mkstringf("dlopen_preflight(%s): %s", path, msg);
 		dlerrorSet(str);
 		free((void*)str);
+		free((void*)msg); 	// our free() will do nothing if msg is a string literal
 	}
 	// free rpaths (getRPaths() malloc'ed each string)
 	for(std::vector<const char*>::iterator it=rpathsFromCallerImage.begin(); it != rpathsFromCallerImage.end(); ++it) {
@@ -1436,6 +1460,7 @@ void* dlopen(const char* path, int mode)
 		const char* str = dyld::mkstringf("dlopen(%s, %d): %s", path, mode, msg);
 		dlerrorSet(str);
 		free((void*)str);
+		free((void*)msg); 	// our free() will do nothing if msg is a string literal
 		result = NULL;
 	}
 	// free rpaths (getRPaths() malloc'ed each string)

@@ -153,6 +153,7 @@ public:
 		bool			prebinding;
 		bool			bindFlat;
 		bool			linkingMainExecutable;
+		bool			startedInitializingMainExecutable;
 		bool			verboseOpts;
 		bool			verboseEnv;
 		bool			verboseMapping;
@@ -360,6 +361,8 @@ public:
 			void						setBeingRemoved() { fBeingRemoved = true; }
 			bool						isBeingRemoved() const { return fBeingRemoved; }
 			
+			void						setAddFuncNotified() { fAddFuncNotified = true; }
+			bool						addFuncNotified() const { return fAddFuncNotified; }
 	
 protected:	
 	struct DependentLibrary;
@@ -456,6 +459,9 @@ protected:
 	
 								// do any symbolic fix ups in this image
 	virtual void				doBind(const LinkContext& context, bool forceLazysBound) = 0;
+	
+								// called later via API to force all lazy pointer to be bound
+	virtual void				doBindJustLazies(const LinkContext& context) = 0;
 	
 								// update any segment permissions
 	virtual void				doUpdateMappingPermissions(const LinkContext& context) = 0;
@@ -569,6 +575,7 @@ private:
 #endif
 								fAllLazyPointersBound : 1,
 								fBeingRemoved : 1,
+								fAddFuncNotified : 1,
 								fPathOwnedByImage : 1;
 
 #if RECURSIVE_INITIALIZER_LOCK

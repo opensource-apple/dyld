@@ -20,7 +20,5 @@
 		<key>DYLD_NO_FIX_PREBINDING</key>
 		<string>1</string>
 	</dict>
-	<key>ThrottleInterval</key>
-	<integer>60</integer>
 </dict>
 </plist>

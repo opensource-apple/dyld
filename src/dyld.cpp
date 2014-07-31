@@ -328,8 +328,12 @@ static void	unregisterDOF(int registrationID)
 //
 static void notifyAddImageCallbacks(ImageLoader* image)
 {
-	for (std::vector<ImageCallback>::iterator it=sAddImageCallbacks.begin(); it != sAddImageCallbacks.end(); it++)
-		(*it)(image->machHeader(), image->getSlide());
+	// use guard so that we cannot notify about the same image twice
+	if ( ! image->addFuncNotified() ) {
+		for (std::vector<ImageCallback>::iterator it=sAddImageCallbacks.begin(); it != sAddImageCallbacks.end(); it++)
+			(*it)(image->machHeader(), image->getSlide());
+		image->setAddFuncNotified();
+	}
 }
 
 
@@ -675,6 +679,9 @@ const char* getExecutablePath()
 
 void initializeMainExecutable()
 {
+
+	// record that we've reached this step
+	gLinkContext.startedInitializingMainExecutable = true;
 
 #if __i386__
 	// make all __IMPORT segments in the shared cache read-only
@@ -2076,6 +2083,21 @@ static int __attribute__((noinline)) _shared_region_map_np(int fd, uint32_t coun
 	#define ARCH_CACHE_MAGIC	"dyld_v1  x86_64"
 #endif
 
+const void*	imMemorySharedCacheHeader()
+{
+	return sSharedCache;
+}
+
+int openSharedCacheFile()
+{
+#if __ppc__
+		// rosetta cannot handle optimized _ppc cache, so it use _rosetta cache instead, rdar://problem/5495438
+		if ( isRosetta() )
+			return ::open(DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME_ROSETTA, O_RDONLY);
+		else
+#endif
+		return ::open(DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME, O_RDONLY);
+}
 
 static void mapSharedCache()
 {	
@@ -2092,14 +2114,7 @@ static void mapSharedCache()
 	}
 	else {
 		// map in shared cache to shared region
-		int fd;
-#if __ppc__
-		// rosetta cannot handle optimized _ppc cache, so it use _rosetta cache instead, rdar://problem/5495438
-		if ( isRosetta() )
-			fd = open(DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME_ROSETTA, O_RDONLY);
-		else
-#endif
-		fd = open(DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME, O_RDONLY);
+		int fd = openSharedCacheFile();
 		if ( fd != -1 ) {
 			uint8_t firstPage[4096];
 			if ( ::read(fd, firstPage, 4096) == 4096 ) {
@@ -2113,7 +2128,9 @@ static void mapSharedCache()
 					if ( fstat(fd, &stat_buf) == 0 ) {
 						goodCache = true;
 						for (const shared_file_mapping_np* p = mappings; p < end; ++p) {
-							if ( p->sfm_file_offset+p->sfm_size > (uint64_t)stat_buf.st_size )
+							// rdar://problem/5694507 old update_dyld_shared_cache tool could make a cache file
+							// that is not page aligned, but otherwise ok.
+							if ( p->sfm_file_offset+p->sfm_size > (uint64_t)(stat_buf.st_size+4095 & (-4096)) )
 								goodCache = false;
 						}
 					}

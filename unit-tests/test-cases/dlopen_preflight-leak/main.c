@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -21,31 +21,25 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 #include <stdio.h>
-#include <mach-o/dyld.h>
+#include <stdlib.h>
+#include <dlfcn.h>
+#include <unistd.h>
+#include <stdlib.h>
 
+  
 #include "test.h"
 
-///
-/// rdar://problem/3736945
-///
-///  Test that a std framework can be dynamically loaded via the fallback paths
-///
-///
 
-
-
-int
-main(int argc, const char* argv[])
+int main()
 {
-	const struct mach_header *image;
-
-	image = NSAddImage("AppKit.framework/AppKit",
-			NSADDIMAGE_OPTION_RETURN_ON_ERROR | NSADDIMAGE_OPTION_WITH_SEARCHING);
-	if ( image != NULL )
-		PASS("AppKit loaded");
-	else
-		FAIL("Could not load AppKit");
-
-	return 0;
+	for (int i=0; i < 100; ++i) {
+		dlopen_preflight("libfoo.dylib");
+	}
+	
+	// execute leaks command on myself
+	char cmd[512];
+	sprintf(cmd, "leaks %u\n", getpid());
+	system(cmd);
+	 	
+	return EXIT_SUCCESS;
 }
-

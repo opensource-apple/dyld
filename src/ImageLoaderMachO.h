@@ -94,6 +94,7 @@ protected:
 	virtual	void		getRPaths(const LinkContext& context, std::vector<const char*>&) const;
 	virtual void		doRebase(const LinkContext& context);
 	virtual void		doBind(const LinkContext& context, bool forceLazysBound);
+	virtual void		doBindJustLazies(const LinkContext& context);
 	virtual void		doUpdateMappingPermissions(const LinkContext& context);
 	virtual void		doInitialization(const LinkContext& context);
 	virtual void		doGetDOFSections(const LinkContext& context, std::vector<ImageLoader::DOFInfo>& dofs);

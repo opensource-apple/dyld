@@ -1,4 +1,4 @@
-.Dd Sept 25, 2004
+.Dd Jan 16, 2008
 .Dt DLSYM 3
 .Sh NAME
 .Nm dlsym
@@ -40,8 +40,18 @@ is called with the special
 .Fa handle
 .Dv RTLD_NEXT ,
 then the search for the symbol is limited to the images which were loaded
-after the one issuing the call to
+by the image issuing the call to
 .Fn dlsym .
+In other words, search the dylib symbols that the calling image linked against when it was built.
+.Pp
+If
+.Fn dlsym
+is called with the special
+.Fa handle
+.Dv RTLD_SELF ,
+then the search for the symbol starts with the image that called
+.Fn dlsym .
+If it is not found, the search continues as if RTLD_NEXT was used.
 .Pp
 .Sh RETURN VALUES
 The
@@ -60,7 +70,5 @@ must NOT be prepended with an underscore.
 .Xr dlsym 3
 .Xr dlerror 3
 .Xr dyld 3
-.Xr NSModule 3
-.Xr NSObjectFileImage 3
 .Xr ld 1
 .Xr cc 1

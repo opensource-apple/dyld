@@ -102,6 +102,8 @@ namespace dyld {
 	extern void					registerImageStateSingleChangeHandler(dyld_image_states state, dyld_image_state_change_handler handler);
 	extern void					registerImageStateBatchChangeHandler(dyld_image_states state, dyld_image_state_change_handler handler);
 	extern void					garbageCollectImages();
+	extern int					openSharedCacheFile();
+	extern const void*			imMemorySharedCacheHeader();
 
 };
 

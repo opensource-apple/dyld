@@ -2459,7 +2459,7 @@ void ImageLoaderMachO::makeImportSegmentWritable(const LinkContext& context)
 {
 	if ( fReadOnlyImportSegment != NULL ) {
 		if ( fInSharedCache ) {
-			if ( !context.linkingMainExecutable ) {
+			if ( context.startedInitializingMainExecutable ) {
 				_spin_lock(&fgReadOnlyImportSpinLock);
 				context.makeSharedCacheImportSegmentsWritable(true);
 			}
@@ -2475,7 +2475,7 @@ void ImageLoaderMachO::makeImportSegmentReadOnly(const LinkContext& context)
 {
 	if ( fReadOnlyImportSegment != NULL ) {
 		if ( fInSharedCache ) {
-			if ( !context.linkingMainExecutable ) {
+			if ( context.startedInitializingMainExecutable ) {
 				context.makeSharedCacheImportSegmentsWritable(false);
 				_spin_unlock(&fgReadOnlyImportSpinLock);
 			}
@@ -2806,14 +2806,14 @@ bool ImageLoaderMachO::usablePrebinding(const LinkContext& context) const
 	return false;
 }
 
+void ImageLoaderMachO::doBindJustLazies(const LinkContext& context)
+{
+	// some API called requested that all lazy pointers in this image be force bound
+	this->doBindIndirectSymbolPointers(context, false, true, false);
+}
+
 void ImageLoaderMachO::doBind(const LinkContext& context, bool forceLazysBound)
 {
-	// check for runtime forcing of lazy pointers to be bound
-	if ( forceLazysBound && (this->getState() > dyld_image_state_bound) ) {
-		this->doBindIndirectSymbolPointers(context, false, forceLazysBound, false);
-		return;
-	}
-
 	// set dyld entry points in image
 	this->setupLazyPointerHandler(context);
 
