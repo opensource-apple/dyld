@@ -113,6 +113,7 @@ private:
 			uintptr_t	resolveUndefined(const LinkContext& context, const struct macho_nlist* symbol, bool twoLevel, ImageLoader **foundIn);
 			uintptr_t	getRelocBase();
 			uintptr_t	getFirstWritableSegmentAddress();
+            void        resetPreboundLazyPointers(const LinkContext& context, uintptr_t relocBase);
 			void		doImageInit(const LinkContext& context);
 			void		doModInitFunctions(const LinkContext& context);
 			void		setupLazyPointerHandler(const LinkContext& context);

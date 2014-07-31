@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -20,9 +20,19 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
+#include <stdio.h>  // fprintf(), NULL
+#include <stdlib.h> // exit(), EXIT_SUCCESS
+#include <stdbool.h> 
 
+#include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
-int foo()
+extern bool checkRebasing();
+
+int main(int argc, const char* argv[])
 {
-	return 10;
+	if ( checkRebasing() ) 
+		PASS("prebased-performance");
+	else
+		FAIL("prebased-performance");
+	return EXIT_SUCCESS;
 }

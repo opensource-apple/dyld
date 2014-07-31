@@ -401,12 +401,11 @@ const struct mach_header* _dyld_get_image_header(uint32_t image_index)
 
 
 static __attribute__((noinline)) 
-const struct mach_header* addImage(const char* path, bool search, bool dontLoad, bool matchInstallName, bool abortOnError)
+const struct mach_header* addImage(void* callerAddress, const char* path, bool search, bool dontLoad, bool matchInstallName, bool abortOnError)
 {
 	ImageLoader*	image = NULL;
 	try {
 		dyld::clearErrorMessage();
-		void* callerAddress = __builtin_return_address(2); // note layers: 2: real client, 1: libSystem glue, 0: dyld API
 		ImageLoader* callerImage = dyld::findImageContainingAddress(callerAddress);
 		dyld::LoadContext context;
 		context.useSearchPaths		= search;
@@ -448,21 +447,24 @@ const struct mach_header* NSAddImage(const char* path, uint32_t options)
 	const bool search = ( (options & NSADDIMAGE_OPTION_WITH_SEARCHING) != 0 );
 	const bool matchInstallName = ( (options & NSADDIMAGE_OPTION_MATCH_FILENAME_BY_INSTALLNAME) != 0 );
 	const bool abortOnError = ( (options & NSADDIMAGE_OPTION_RETURN_ON_ERROR) == 0 );
-	return addImage(path, search, dontLoad, matchInstallName, abortOnError);
+	void* callerAddress = __builtin_return_address(1); // note layers: 1: real client, 0: libSystem glue
+	return addImage(callerAddress, path, search, dontLoad, matchInstallName, abortOnError);
 }
 
 bool NSAddLibrary(const char* path)
 {
 	if ( dyld::gLogAPIs )
 		fprintf(stderr, "%s(\"%s\")\n", __func__, path);
-	return (addImage(path, false, false, false, false) != NULL);
+	void* callerAddress = __builtin_return_address(1); // note layers: 1: real client, 0: libSystem glue
+	return (addImage(callerAddress, path, false, false, false, false) != NULL);
 }
 
 bool NSAddLibraryWithSearching(const char* path)
 {
 	if ( dyld::gLogAPIs )
 		fprintf(stderr, "%s(\"%s\")\n", __func__, path);
-	return (addImage(path, true, false, false, false) != NULL);
+	void* callerAddress = __builtin_return_address(1); // note layers: 1: real client, 0: libSystem glue
+	return (addImage(callerAddress, path, true, false, false, false) != NULL);
 }
 
 

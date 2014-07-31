@@ -23,6 +23,8 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+MACHINE =  $(shell machine)
+
 ifeq "-arch ppc" "$(ARCH)"
 	EXTRA_FLAG = -maltivec -force_cpusubtype_ALL
 else 
@@ -31,6 +33,12 @@ else
 	else
 		ifeq "-arch i386" "$(ARCH)"
 			EXTRA_FLAG = ""
+		else
+			ifeq "" "$(ARCH)"
+				ifeq "ppc970" "$(MACHINE)"
+					EXTRA_FLAG = -maltivec -force_cpusubtype_ALL
+				endif
+			endif
 		endif
 	endif
 endif

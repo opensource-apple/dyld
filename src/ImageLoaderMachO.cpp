@@ -34,8 +34,12 @@
 #include <mach-o/reloc.h> 
 #include <mach-o/nlist.h> 
 #include <sys/sysctl.h>
+#include <libkern/OSAtomic.h>
 #if __ppc__ || __ppc64__
 	#include <mach-o/ppc/reloc.h>
+#endif
+#if __x86_64__
+	#include <mach-o/x86_64/reloc.h>
 #endif
 
 #ifndef S_ATTR_SELF_MODIFYING_CODE
@@ -76,7 +80,11 @@ extern "C" void sys_icache_invalidate(void *, size_t);
 	struct macho_routines_command	: public routines_command  {};	
 #endif
 
+#if __x86_64__
+	#define POINTER_RELOC X86_64_RELOC_UNSIGNED
+#else
 	#define POINTER_RELOC GENERIC_RELOC_VANILLA
+#endif
 
 uint32_t ImageLoaderMachO::fgHintedBinaryTreeSearchs = 0;
 uint32_t ImageLoaderMachO::fgUnhintedBinaryTreeSearchs = 0;
@@ -1120,6 +1128,9 @@ void* ImageLoaderMachO::getMain() const
 			#elif __i386__
 				const i386_thread_state_t* registers = (i386_thread_state_t*)(((char*)cmd) + 16);
 				return (void*)registers->eip;
+			#elif __x86_64__
+				const x86_thread_state64_t* registers = (x86_thread_state64_t*)(((char*)cmd) + 16);
+				return (void*)registers->rip;
 			#else
 				#warning need processor specific code
 			#endif
@@ -1208,6 +1219,10 @@ uintptr_t ImageLoaderMachO::getFirstWritableSegmentAddress()
 
 uintptr_t ImageLoaderMachO::getRelocBase()
 {
+#if __x86_64__
+	// r_address is offset from first writable segment
+	return getFirstWritableSegmentAddress();
+#endif
 #if __ppc__ || __i386__
 	if ( fIsSplitSeg ) {
 		// in split segment libraries r_address is offset from first writable segment
@@ -1246,14 +1261,40 @@ static inline void otherRelocsPPC(uintptr_t* locationToFix, uint8_t relocationTy
 }
 #endif
 
+#if __ppc__ || __i386__
+void ImageLoaderMachO::resetPreboundLazyPointers(const LinkContext& context, uintptr_t relocBase)
+{
+	// loop through all local (internal) relocation records looking for pre-bound-lazy-pointer values
+	register const uintptr_t slide = this->fSlide;
+	const relocation_info* const relocsStart = (struct relocation_info*)(&fLinkEditBase[fDynamicInfo->locreloff]);
+	const relocation_info* const relocsEnd = &relocsStart[fDynamicInfo->nlocrel];
+	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
+		if ( (reloc->r_address & R_SCATTERED) != 0 ) {
+			const struct scattered_relocation_info* sreloc = (struct scattered_relocation_info*)reloc;
+			if (sreloc->r_length == RELOC_SIZE) {
+				uintptr_t* locationToFix = (uintptr_t*)(sreloc->r_address + relocBase);
+				switch(sreloc->r_type) {
+		#if __ppc__ 
+					case PPC_RELOC_PB_LA_PTR:
+						*locationToFix = sreloc->r_value + slide;
+						break;
+		#endif
+		#if __i386__
+					case GENERIC_RELOC_PB_LA_PTR:
+						*locationToFix = sreloc->r_value + slide;
+						break;
+		#endif
+				}
+			}
+		}
+	}
+}
+#endif
+
 void ImageLoaderMachO::doRebase(const LinkContext& context)
 {
 	// if prebound and loaded at prebound address, then no need to rebase
-	// Note: you might think that the check for allDependentLibrariesAsWhenPreBound() is not needed
-	// but it is.  If a dependent library changed, this image's lazy pointers into that library
-	// need to be updated (reset back to lazy binding handler).  That work is done most easily
-	// here because there is a PPC_RELOC_PB_LA_PTR reloc record for each lazy pointer.
-	if ( this->usablePrebinding(context) && this->usesTwoLevelNameSpace() ) {
+	if ( this->usablePrebinding(context) ) {
 		// skip rebasing cause prebound and prebinding not disabled
 		++fgImagesWithUsedPrebinding; // bump totals for statistics
 		return;
@@ -1278,18 +1319,40 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 		}
 	}
 
+	// cache values that are used in the following loop
+	const uintptr_t relocBase = this->getRelocBase();
+	register const uintptr_t slide = this->fSlide;
+
+#if __ppc__ || __i386__
+	// if prebound and we got here, then prebinding is not valid, so reset all lazy pointers
+	if ( this->isPrebindable() )
+		this->resetPreboundLazyPointers(context, relocBase);
+#endif
+
+	// if loaded at preferred address, no rebasing necessary
+	if ( slide == 0 ) 
+		return;
+
 	// if there are __TEXT fixups, temporarily make __TEXT writable
 	if ( fTextSegmentWithFixups != NULL ) 
 		fTextSegmentWithFixups->tempWritable();
 
-	// cache this value that is used in the following loop
-	register const uintptr_t slide = this->fSlide;
-
 	// loop through all local (internal) relocation records
-	const uintptr_t relocBase = this->getRelocBase();
 	const relocation_info* const relocsStart = (struct relocation_info*)(&fLinkEditBase[fDynamicInfo->locreloff]);
 	const relocation_info* const relocsEnd = &relocsStart[fDynamicInfo->nlocrel];
 	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
+	#if __x86_64__
+		// only one kind of local relocation supported for x86_64
+		if ( reloc->r_length != 3 ) 
+			throw "bad local relocation length";
+		if ( reloc->r_type != X86_64_RELOC_UNSIGNED ) 
+			throw "unknown local relocation type";
+		if ( reloc->r_pcrel != 0 ) 
+			throw "bad local relocation pc_rel";
+		if ( reloc->r_extern != 0 ) 
+			throw "extern relocation found with local relocations";
+		*((uintptr_t*)(reloc->r_address + relocBase)) += slide;
+	#endif
 	#if __ppc__ || __ppc64__ || __i386__
 		if ( (reloc->r_address & R_SCATTERED) == 0 ) {
 			if ( reloc->r_symbolnum == R_ABS ) {
@@ -1325,12 +1388,6 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 					case GENERIC_RELOC_VANILLA:
 						*locationToFix += slide;
 						break;
-		#if __ppc__ || __ppc64__
-					case PPC_RELOC_PB_LA_PTR:
-						// should only see these in prebound images, and we got here so prebinding is being ignored
-						*locationToFix = sreloc->r_value + slide;
-						break;
-		#endif
 		#if __ppc__
 					case PPC_RELOC_HI16: 
 					case PPC_RELOC_LO16: 
@@ -1340,10 +1397,14 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 						otherRelocsPPC(locationToFix, sreloc->r_type, reloc->r_address, slide);
 						break;
 		#endif
+		#if __ppc__ || __ppc64__
+					case PPC_RELOC_PB_LA_PTR:
+						// do nothing
+						break;
+		#endif
 		#if __i386__
 					case GENERIC_RELOC_PB_LA_PTR:
-						// should only see these in prebound images, and we got here so prebinding is being ignored
-						*locationToFix = sreloc->r_value + slide;
+						// do nothing
 						break;
 		#endif
 					default:
@@ -1354,7 +1415,7 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 				throw "bad local scattered relocation length";
 			}
 		}
-	#endif 
+	#endif
 	}
 	
 	// if there were __TEXT fixups, restore write protection
@@ -1973,14 +2034,35 @@ uintptr_t ImageLoaderMachO::bindIndirectSymbol(uintptr_t* ptrToBind, const struc
 #if __i386__
 	// i386 has special self-modifying stubs that change from "CALL rel32" to "JMP rel32"
 	if ( ((sect->flags & SECTION_TYPE) == S_SYMBOL_STUBS) && ((sect->flags & S_ATTR_SELF_MODIFYING_CODE) != 0) && (sect->reserved2 == 5) ) {
-		uint8_t* const jmpTableEntryToPatch = (uint8_t*)ptrToBind;
 		uint32_t rel32 = targetAddr - (((uint32_t)ptrToBind)+5);
-		//fprintf(stderr, "rewriting stub at %p\n", jmpTableEntryToPatch);
-		jmpTableEntryToPatch[0] = 0xE9; // JMP rel32
-		jmpTableEntryToPatch[1] = rel32 & 0xFF;
-		jmpTableEntryToPatch[2] = (rel32 >> 8) & 0xFF;
-		jmpTableEntryToPatch[3] = (rel32 >> 16) & 0xFF;
-		jmpTableEntryToPatch[4] = (rel32 >> 24) & 0xFF;
+		// re-write instruction in a thread-safe manner
+		// use 8-byte compare-and-swap to alter 5-byte jump table entries
+		// loop is required in case the extra three bytes that cover the next entry are altered by another thread
+		bool done = false;
+		while ( !done ) {
+			volatile int64_t* jumpPtr = (int64_t*)ptrToBind;
+			int pad = 0;
+			// By default the three extra bytes swapped follow the 5-byte JMP.
+			// But, if the 5-byte jump is up against the end of the __IMPORT segment
+			// We don't want to access bytes off the end of the segment, so we shift
+			// the extra bytes to precede the 5-byte JMP.
+			if ( (((uint32_t)ptrToBind + 8) & 0x00000FFC) == 0x00000000 ) {
+				jumpPtr = (int64_t*)((uint32_t)ptrToBind - 3);
+				pad = 3;
+			}
+			int64_t oldEntry = *jumpPtr;
+			union {
+				int64_t int64;
+				uint8_t bytes[8];
+			} newEntry;
+			newEntry.int64 = oldEntry;
+			newEntry.bytes[pad+0] = 0xE9; // JMP rel32
+			newEntry.bytes[pad+1] = rel32 & 0xFF;
+			newEntry.bytes[pad+2] = (rel32 >> 8) & 0xFF;
+			newEntry.bytes[pad+3] = (rel32 >> 16) & 0xFF;
+			newEntry.bytes[pad+4] = (rel32 >> 24) & 0xFF;
+			done = OSAtomicCompareAndSwap64Barrier(oldEntry, newEntry.int64, (int64_t*)jumpPtr);
+		}
 	}
 	else
 #endif
@@ -2530,7 +2612,7 @@ void ImageLoaderMachO::applyPrebindingToLinkEdit(const LinkContext& context, uin
 				switch(sreloc->r_type) {
 		#if __ppc__ || __ppc64__
 					case PPC_RELOC_PB_LA_PTR:
-		#elif __i386__
+		#elif __i386__ || __x86_64__
 					case GENERIC_RELOC_PB_LA_PTR:
 		#else
 			#error unknown architecture

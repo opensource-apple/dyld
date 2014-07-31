@@ -74,7 +74,7 @@ int main()
 	}
 
 	CheckFunc func = NSAddressOfSymbol(sym);
-	if ( !func() ) {
+	if ( func == NULL ) {
 		FAIL("NSAddressOfSymbol failed");
 		return 1;
 	}

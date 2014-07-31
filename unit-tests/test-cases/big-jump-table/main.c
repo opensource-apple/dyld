@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -20,9 +20,17 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
+#include <stdio.h>  // fprintf(), NULL
+#include <stdlib.h> // exit(), EXIT_SUCCESS
+
+#include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
 
-int bar()
+
+int main()
 {
-	return 10;
+	PASS("big-jump-table");
+	return EXIT_SUCCESS;
 }
+
+

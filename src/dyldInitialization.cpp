@@ -31,6 +31,9 @@
 #if __ppc__ || __ppc64__
 	#include <mach-o/ppc/reloc.h>
 #endif
+#if __x86_64__
+	#include <mach-o/x86_64/reloc.h>
+#endif
 #include "dyld.h"
 
 #if __LP64__
@@ -47,7 +50,11 @@
 	#define RELOC_SIZE				2
 #endif
 
+#if __x86_64__
+	#define POINTER_RELOC X86_64_RELOC_UNSIGNED
+#else
 	#define POINTER_RELOC GENERIC_RELOC_VANILLA
+#endif
 
 //
 //  Code to bootstrap dyld into a runnable state
@@ -107,6 +114,9 @@ static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 	const struct load_command* const cmds = (struct load_command*)(((char*)mh)+sizeof(macho_header));
 	const struct load_command* cmd = cmds;
 	const struct macho_segment_command* linkEditSeg = NULL;
+#if __x86_64__
+	const struct macho_segment_command* firstWritableSeg = NULL;
+#endif
 	const struct dysymtab_command* dynamicSymbolTable = NULL;
 	for (uint32_t i = 0; i < cmd_count; ++i) {
 		switch (cmd->cmd) {
@@ -128,6 +138,10 @@ static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 							}
 						}
 					}
+#if __x86_64__
+					if ( (firstWritableSeg == NULL) && (seg->initprot & VM_PROT_WRITE) )
+						firstWritableSeg = seg;
+#endif
 				}
 				break;
 			case LC_DYSYMTAB:
@@ -138,7 +152,11 @@ static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 	}
 	
 	// use reloc's to rebase all random data pointers
+#if __x86_64__
+	const uintptr_t relocBase = firstWritableSeg->vmaddr + slide;
+#else
 	const uintptr_t relocBase = (uintptr_t)mh;
+#endif
 	const relocation_info* const relocsStart = (struct relocation_info*)(linkEditSeg->vmaddr + slide + dynamicSymbolTable->locreloff - linkEditSeg->fileoff);
 	const relocation_info* const relocsEnd = &relocsStart[dynamicSymbolTable->nlocrel];
 	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {

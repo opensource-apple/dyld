@@ -433,7 +433,7 @@
 				PRODUCT_NAME = dyld;
 				STRIPFLAGS = "-S";
 				UNSTRIPPED_PRODUCT = NO;
-				VALID_ARCHS = "ppc ppc64 i386";
+				VALID_ARCHS = "ppc ppc64 i386 x86_64";
 				VERSIONING_SYSTEM = "apple-generic";
 				WARNING_CFLAGS = (
 					"-Wmost",
@@ -477,7 +477,7 @@
 				OTHER_REZFLAGS = "";
 				PRODUCT_NAME = dyldapis;
 				SECTORDER_FLAGS = "";
-				VALID_ARCHS = "ppc ppc64 i386";
+				VALID_ARCHS = "ppc ppc64 i386 x86_64";
 				WARNING_CFLAGS = (
 					"-Wmost",
 					"-Wno-four-char-constants",
@@ -597,6 +597,7 @@
 				OTHER_LDFLAGS_i386 = "-lstdc++-static  -seg1addr 8fe00000 -exported_symbols_list src/dyld.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
 				OTHER_LDFLAGS_ppc = "-lstdc++-static  -seg1addr 8fe00000 -exported_symbols_list src/dyld.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
 				OTHER_LDFLAGS_ppc64 = "-lstdc++-static  -seg1addr 8fe00000 -exported_symbols_list src/dyld64.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
+				OTHER_LDFLAGS_x86_64 = "-lstdc++-static  -seg1addr 0x7fff5fc00000 -exported_symbols_list src/dyld64.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
 				OTHER_REZFLAGS = "";
 				PER_ARCH_CFLAGS_ppc = "";
 				PER_ARCH_CFLAGS_ppc64 = "-msoft-float";
@@ -604,7 +605,7 @@
 				PRODUCT_NAME = dyld;
 				STRIPFLAGS = "-S";
 				UNSTRIPPED_PRODUCT = NO;
-				VALID_ARCHS = "ppc ppc64 i386";
+				VALID_ARCHS = "ppc ppc64 i386 x86_64";
 				VERSIONING_SYSTEM = "apple-generic";
 				WARNING_CFLAGS = (
 					"-Wmost",
@@ -635,6 +636,7 @@
 				OTHER_LDFLAGS_i386 = "-lstdc++-static  -seg1addr 8fe00000 -exported_symbols_list src/dyld.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
 				OTHER_LDFLAGS_ppc = "-lstdc++-static  -seg1addr 8fe00000 -exported_symbols_list src/dyld.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
 				OTHER_LDFLAGS_ppc64 = "-lstdc++-static  -seg1addr 8fe00000 -exported_symbols_list src/dyld64.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
+				OTHER_LDFLAGS_x86_64 = "-lstdc++-static  -seg1addr 0x7fff5fc00000 -exported_symbols_list src/dyld64.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
 				OTHER_REZFLAGS = "";
 				PER_ARCH_CFLAGS_ppc = "";
 				PER_ARCH_CFLAGS_ppc64 = "-msoft-float";
@@ -642,7 +644,7 @@
 				PRODUCT_NAME = dyld;
 				STRIPFLAGS = "-S";
 				UNSTRIPPED_PRODUCT = NO;
-				VALID_ARCHS = "ppc ppc64 i386";
+				VALID_ARCHS = "ppc ppc64 i386 x86_64";
 				VERSIONING_SYSTEM = "apple-generic";
 				WARNING_CFLAGS = (
 					"-Wmost",
@@ -672,6 +674,7 @@
 				OTHER_LDFLAGS_i386 = "-lstdc++-static  -seg1addr 8fe00000 -exported_symbols_list src/dyld.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
 				OTHER_LDFLAGS_ppc = "-lstdc++-static  -seg1addr 8fe00000 -exported_symbols_list src/dyld.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
 				OTHER_LDFLAGS_ppc64 = "-lstdc++-static  -seg1addr 8fe00000 -exported_symbols_list src/dyld64.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
+				OTHER_LDFLAGS_x86_64 = "-lstdc++-static  -seg1addr 0x7fff5fc00000 -exported_symbols_list src/dyld64.exp -nostdlib /usr/local/lib/system/libc.a -lgcc_eh -lgcc -Wl,-e,__dyld_start -Wl,-dylinker -Wl,-dylinker_install_name,/usr/lib/dyld";
 				OTHER_REZFLAGS = "";
 				PER_ARCH_CFLAGS_ppc = "";
 				PER_ARCH_CFLAGS_ppc64 = "-msoft-float";
@@ -679,7 +682,7 @@
 				PRODUCT_NAME = dyld;
 				STRIPFLAGS = "-S";
 				UNSTRIPPED_PRODUCT = NO;
-				VALID_ARCHS = "ppc ppc64 i386";
+				VALID_ARCHS = "ppc ppc64 i386 x86_64";
 				VERSIONING_SYSTEM = "apple-generic";
 				WARNING_CFLAGS = (
 					"-Wmost",
@@ -705,7 +708,7 @@
 				OTHER_REZFLAGS = "";
 				PRODUCT_NAME = dyldapis;
 				SECTORDER_FLAGS = "";
-				VALID_ARCHS = "ppc ppc64 i386";
+				VALID_ARCHS = "ppc ppc64 i386 x86_64";
 				WARNING_CFLAGS = (
 					"-Wmost",
 					"-Wno-four-char-constants",
@@ -729,7 +732,7 @@
 				OTHER_REZFLAGS = "";
 				PRODUCT_NAME = dyldapis;
 				SECTORDER_FLAGS = "";
-				VALID_ARCHS = "ppc ppc64 i386";
+				VALID_ARCHS = "ppc ppc64 i386 x86_64";
 				WARNING_CFLAGS = (
 					"-Wmost",
 					"-Wno-four-char-constants",
@@ -751,7 +754,7 @@
 				OTHER_REZFLAGS = "";
 				PRODUCT_NAME = dyldapis;
 				SECTORDER_FLAGS = "";
-				VALID_ARCHS = "ppc ppc64 i386";
+				VALID_ARCHS = "ppc ppc64 i386 x86_64";
 				WARNING_CFLAGS = (
 					"-Wmost",
 					"-Wno-four-char-constants",

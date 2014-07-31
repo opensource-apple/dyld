@@ -123,6 +123,49 @@ L_end:
 #endif /* __i386__ */
 
 
+#if __x86_64__
+	.data
+	.align 3
+__dyld_start_static: 
+	.quad   __dyld_start
+
+# stable entry points into dyld
+	.text
+	.align 2
+	.globl	_stub_binding_helper
+_stub_binding_helper:
+	jmp	_stub_binding_helper_interface
+	nop
+	nop
+	nop
+	.globl	_dyld_func_lookup
+_dyld_func_lookup:
+	jmp	__Z18lookupDyldFunctionPKcPm
+
+	.text
+	.align 2,0x90
+	.globl __dyld_start
+__dyld_start:
+	pushq	$0		# push a zero for debugger end of frames marker
+	movq	%rsp,%rbp	# pointer to base of kernel frame
+	andq    $-16,%rsp       # force SSE alignment
+	
+	# call dyldbootstrap::start(app_mh, argc, argv, slide)
+	movq	8(%rbp),%rdi	# param1 = mh into %rdi
+	movl	16(%rbp),%esi	# param2 = argc into %esi
+	leaq	24(%rbp),%rdx	# param3 = &argv[0] into %rdx
+	movq	__dyld_start_static(%rip), %r8
+	leaq	__dyld_start(%rip), %rcx
+	subq	 %r8, %rcx	# param4 = slide into %rcx
+	call	__ZN13dyldbootstrap5startEPK11mach_headeriPPKcl	
+
+    	# clean up stack and jump to result
+	movq	%rbp,%rsp	# restore the unaligned stack pointer
+	addq	$16,%rsp	# remove the mh argument, and debugger end frame marker
+	movq	$0,%rbp		# restore ebp back to zero
+	jmp	*%rax		# jump to the entry point
+	
+#endif /* __x86_64__ */
 
 #if __ppc__ || __ppc64__
 #include <architecture/ppc/mode_independent_asm.h>

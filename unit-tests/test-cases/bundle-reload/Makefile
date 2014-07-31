@@ -38,7 +38,7 @@ main : main.c
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c
 
 test.bundle : bundle.cxx
-	${CC} ${CXXFLAGS} -bundle -o test.bundle bundle.cxx
+	${CXX} ${CXXFLAGS} -bundle -o test.bundle bundle.cxx
 
 clean:
 	${RM} ${RMFLAGS} *~ main test.bundle
