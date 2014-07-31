@@ -27,7 +27,9 @@ include ${TESTROOT}/include/common.makefile
 # <rdar://problem/5366233> Leopard (9a499): dyld crash with recursive calls to dlclose()
 
 
-run: all
+all-check: all check
+
+check:
 	./main
 
 all: main libfoo.dylib 

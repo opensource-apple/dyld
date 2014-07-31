@@ -63,6 +63,9 @@ public:
 	
 	static uint32_t	get32(const uint32_t& from)				INLINE { return OSReadBigInt32(&from, 0); }
 	static void		set32(uint32_t& into, uint32_t value)	INLINE { OSWriteBigInt32(&into, 0, value); }
+
+	static int32_t	get32(const int32_t& from)				INLINE { return OSReadBigInt32(&from, 0); }
+	static void		set32(int32_t& into, int32_t value)		INLINE { OSWriteBigInt32(&into, 0, value); }
 	
 	static uint64_t get64(const uint64_t& from)				INLINE { return OSReadBigInt64(&from, 0); }
 	static void		set64(uint64_t& into, uint64_t value)	INLINE { OSWriteBigInt64(&into, 0, value); }
@@ -92,6 +95,9 @@ public:
 	
 	static uint32_t	get32(const uint32_t& from)				INLINE { return OSReadLittleInt32(&from, 0); }
 	static void		set32(uint32_t& into, uint32_t value)	INLINE { OSWriteLittleInt32(&into, 0, value); }
+	
+	static int32_t	get32(const int32_t& from)				INLINE { return OSReadLittleInt32(&from, 0); }
+	static void		set32(int32_t& into, int32_t value)		INLINE { OSWriteLittleInt32(&into, 0, value); }
 	
 	static uint64_t get64(const uint64_t& from)				INLINE { return OSReadLittleInt64(&from, 0); }
 	static void		set64(uint64_t& into, uint64_t value)	INLINE { OSWriteLittleInt64(&into, 0, value); }

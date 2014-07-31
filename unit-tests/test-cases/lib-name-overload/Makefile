@@ -35,24 +35,25 @@ include ${TESTROOT}/include/common.makefile
 
 PWD = `pwd`
 
+all-check: all check
 
-run : all
+check:
 	# verify it runs as-is
 	./main
 	# verify dyld doesn't hang on the circularity
 	DYLD_LIBRARY_PATH=$(PWD) && export DYLD_LIBRARY_PATH && ${TESTROOT}/bin/exit-zero-pass.pl "lib-name-overload" "lib-name-overload" ./main
 
-all : main 
+all: main 
 
 other/libfoo.dylib : foo2.c
 	mkdir -p other
-	gcc foo2.c -dynamiclib  -o $(PWD)/other/libfoo.dylib 
+	${CC} foo2.c -dynamiclib  -o $(PWD)/other/libfoo.dylib 
 
 libfoo.dylib : foo.c other/libfoo.dylib
-	gcc foo.c -dynamiclib $(PWD)/other/libfoo.dylib -sub_library libfoo -o $(PWD)/libfoo.dylib 
+	${CC} foo.c -dynamiclib $(PWD)/other/libfoo.dylib -sub_library libfoo -o $(PWD)/libfoo.dylib 
 
 main : main.c libfoo.dylib
-	gcc main.c -I${TESTROOT}/include -o main libfoo.dylib
+	${CC} main.c -I${TESTROOT}/include -o main libfoo.dylib
 
 	
 clean:

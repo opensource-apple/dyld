@@ -32,15 +32,18 @@ fi
 # if Intel, then also run all test cases under emulation
 if [ "`sysctl -n hw.machine`" = "i386" ] 
 then
-	echo ""
-	echo " * * * Running all unit tests for emulated 32-bits * * *"
-	
-	# make clean
-	../bin/make-recursive.pl clean > /dev/null
 
-	# build ppc architecture
-	../bin/make-recursive.pl ARCH="ppc" | ../bin/result-filter.pl
+	if [ -x /usr/libexec/oah/translate ] 
+	then
+		echo ""
+		echo " * * * Running all unit tests for emulated 32-bits * * *"
+		
+		# make clean
+		../bin/make-recursive.pl clean > /dev/null
 
+		# build ppc architecture
+		../bin/make-recursive.pl ARCH="ppc" | ../bin/result-filter.pl
+	fi
 
 	# if 64-bit capable Intel, then also run all test cases for 64-bits
 	if [ `sysctl -n hw.optional.x86_64` = "1" ] 

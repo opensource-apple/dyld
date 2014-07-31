@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2006-2009 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -23,20 +23,22 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+all-check: all check
+
+check:
 	./main
 
 all: main test.bundle test.dylib
 
 main : main.c foo.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c foo.c
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c foo.c -mmacosx-version-min=10.5
 
 
 test.bundle : foo.c
-	${CC} ${CCFLAGS} -bundle foo.c -o test.bundle
+	${CC} ${CCFLAGS} -bundle foo.c -o test.bundle -mmacosx-version-min=10.5
 
 test.dylib : foo.c
-	${CC} ${CCFLAGS} -dynamiclib foo.c -o test.dylib
+	${CC} ${CCFLAGS} -dynamiclib foo.c -o test.dylib -mmacosx-version-min=10.5
 
 
 

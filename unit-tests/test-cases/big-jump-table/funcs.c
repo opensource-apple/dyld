@@ -20,11 +20,13 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-
+#include <mach/mach_time.h>
+#include <stdio.h>
 #include "foo.h"
 
 static void __attribute__((constructor)) myinit()
 {
+//	uint64_t t1 = mach_absolute_time();
 	foo002();
 	foo003();
 	foo004();
@@ -849,5 +851,9 @@ static void __attribute__((constructor)) myinit()
 #if CASE <= 1
 	foo817();
 #endif
+
+//	uint64_t t2 = mach_absolute_time();
+//	fprintf(stderr, "total time = %lld\n", t2-t1);
+
 }
 

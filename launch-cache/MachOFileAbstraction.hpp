@@ -43,58 +43,29 @@ struct uuid_command {
 	#define S_16BYTE_LITERALS 0xE
 #endif
 
+
 #include "FileAbstraction.hpp"
 #include "Architectures.hpp"
 
+// utility to pair together a cpu-type and cpu-sub-type
+struct ArchPair
+{
+	uint32_t	arch;
+	uint32_t	subtype;
+	
+	ArchPair(uint32_t cputype, uint32_t cpusubtype) : arch(cputype), subtype(cpusubtype) {}
+	
+	bool operator<(const ArchPair& other) const { 
+		if ( this->arch != other.arch )
+			return (this->arch < other.arch);
+		return (this->subtype < other.subtype);
+	}
+};
 
 
 //
 // This abstraction layer makes every mach-o file look like a 64-bit mach-o file with native endianness
 //
-
-
-
-//
-// mach-o file header
-//
-template <typename P> struct macho_header_content {};
-template <> struct macho_header_content<Pointer32<BigEndian> >    { mach_header		fields; };
-template <> struct macho_header_content<Pointer64<BigEndian> >	  { mach_header_64	fields; };
-template <> struct macho_header_content<Pointer32<LittleEndian> > { mach_header		fields; };
-template <> struct macho_header_content<Pointer64<LittleEndian> > { mach_header_64	fields; };
-
-template <typename P>
-class macho_header {
-public:
-	uint32_t		magic() const					INLINE { return E::get32(header.fields.magic); }
-	void			set_magic(uint32_t value)		INLINE { E::set32(header.fields.magic, value); }
-
-	uint32_t		cputype() const					INLINE { return E::get32(header.fields.cputype); }
-	void			set_cputype(uint32_t value)		INLINE { E::set32((uint32_t&)header.fields.cputype, value); }
-
-	uint32_t		cpusubtype() const				INLINE { return E::get32(header.fields.cpusubtype); }
-	void			set_cpusubtype(uint32_t value)	INLINE { E::set32((uint32_t&)header.fields.cpusubtype, value); }
-
-	uint32_t		filetype() const				INLINE { return E::get32(header.fields.filetype); }
-	void			set_filetype(uint32_t value)	INLINE { E::set32(header.fields.filetype, value); }
-
-	uint32_t		ncmds() const					INLINE { return E::get32(header.fields.ncmds); }
-	void			set_ncmds(uint32_t value)		INLINE { E::set32(header.fields.ncmds, value); }
-
-	uint32_t		sizeofcmds() const				INLINE { return E::get32(header.fields.sizeofcmds); }
-	void			set_sizeofcmds(uint32_t value)	INLINE { E::set32(header.fields.sizeofcmds, value); }
-
-	uint32_t		flags() const					INLINE { return E::get32(header.fields.flags); }
-	void			set_flags(uint32_t value)		INLINE { E::set32(header.fields.flags, value); }
-
-	uint32_t		reserved() const				INLINE { return E::get32(header.fields.reserved); }
-	void			set_reserved(uint32_t value)	INLINE { E::set32(header.fields.reserved, value); }
-
-	typedef typename P::E		E;
-private:
-	macho_header_content<P>	header;
-};
-
 
 //
 // mach-o load command
@@ -729,8 +700,172 @@ private:
 };
 
 
+//
+// mach-o file header
+//
+template <typename P> struct macho_header_content {};
+template <> struct macho_header_content<Pointer32<BigEndian> >    { mach_header		fields; };
+template <> struct macho_header_content<Pointer64<BigEndian> >	  { mach_header_64	fields; };
+template <> struct macho_header_content<Pointer32<LittleEndian> > { mach_header		fields; };
+template <> struct macho_header_content<Pointer64<LittleEndian> > { mach_header_64	fields; };
+
+template <typename P>
+class macho_header {
+public:
+	uint32_t		magic() const					INLINE { return E::get32(header.fields.magic); }
+	void			set_magic(uint32_t value)		INLINE { E::set32(header.fields.magic, value); }
+
+	uint32_t		cputype() const					INLINE { return E::get32(header.fields.cputype); }
+	void			set_cputype(uint32_t value)		INLINE { E::set32((uint32_t&)header.fields.cputype, value); }
+
+	uint32_t		cpusubtype() const				INLINE { return E::get32(header.fields.cpusubtype); }
+	void			set_cpusubtype(uint32_t value)	INLINE { E::set32((uint32_t&)header.fields.cpusubtype, value); }
+
+	uint32_t		filetype() const				INLINE { return E::get32(header.fields.filetype); }
+	void			set_filetype(uint32_t value)	INLINE { E::set32(header.fields.filetype, value); }
+
+	uint32_t		ncmds() const					INLINE { return E::get32(header.fields.ncmds); }
+	void			set_ncmds(uint32_t value)		INLINE { E::set32(header.fields.ncmds, value); }
+
+	uint32_t		sizeofcmds() const				INLINE { return E::get32(header.fields.sizeofcmds); }
+	void			set_sizeofcmds(uint32_t value)	INLINE { E::set32(header.fields.sizeofcmds, value); }
+
+	uint32_t		flags() const					INLINE { return E::get32(header.fields.flags); }
+	void			set_flags(uint32_t value)		INLINE { E::set32(header.fields.flags, value); }
+
+	uint32_t		reserved() const				INLINE { return E::get32(header.fields.reserved); }
+	void			set_reserved(uint32_t value)	INLINE { E::set32(header.fields.reserved, value); }
+
+    const macho_segment_command<P>* getSegment(const char *segname) const
+    {
+        const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)this + sizeof(macho_header<P>));
+        const uint32_t cmd_count = this->ncmds();
+        const macho_load_command<P>* cmd = cmds;
+        for (uint32_t i = 0; i < cmd_count; ++i) {
+            if ( cmd->cmd() == macho_segment_command<P>::CMD ) {
+                const macho_segment_command<P>* segcmd = 
+                    (macho_segment_command<P>*)cmd;
+                if (0 == strncmp(segname, segcmd->segname(), 16)) {
+                    return segcmd;
+                }
+            }
+            cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
+        }
+        return NULL;
+    }
+
+    const macho_section<P>* getSection(const char *segname, const char *sectname) const
+    {
+        const macho_segment_command<P>* const segcmd = getSegment(segname);
+        if (!segcmd) return NULL;
+
+        const macho_section<P>* sectcmd = (macho_section<P>*)(segcmd+1);
+        const uint32_t section_count = segcmd->nsects();
+        for (uint32_t j = 0; j < section_count; ++j) {
+            if (0 == ::strncmp(sectcmd[j].sectname(), sectname, 16)) {
+                return sectcmd+j;
+            }
+        }
+
+        return NULL;
+    }
+
+	typedef typename P::E		E;
+private:
+	macho_header_content<P>	header;
+};
 
 
+
+//
+// compressed dyld info load command
+//
+template <typename P>
+class macho_dyld_info_command {
+public:
+	uint32_t		cmd() const					INLINE { return E::get32(fields.cmd); }
+	void			set_cmd(uint32_t value)		INLINE { E::set32(fields.cmd, value); }
+
+	uint32_t		cmdsize() const				INLINE { return E::get32(fields.cmdsize); }
+	void			set_cmdsize(uint32_t value)	INLINE { E::set32(fields.cmdsize, value); }
+
+	uint32_t		rebase_off() const				INLINE { return E::get32(fields.rebase_off); }
+	void			set_rebase_off(uint32_t value)	INLINE { E::set32(fields.rebase_off, value);  }
+	
+	uint32_t		rebase_size() const				INLINE { return E::get32(fields.rebase_size); }
+	void			set_rebase_size(uint32_t value)	INLINE { E::set32(fields.rebase_size, value);  }
+	
+	uint32_t		bind_off() const				INLINE { return E::get32(fields.bind_off); }
+	void			set_bind_off(uint32_t value)	INLINE { E::set32(fields.bind_off, value);  }
+	
+	uint32_t		bind_size() const				INLINE { return E::get32(fields.bind_size); }
+	void			set_bind_size(uint32_t value)	INLINE { E::set32(fields.bind_size, value);  }
+	
+	uint32_t		weak_bind_off() const				INLINE { return E::get32(fields.weak_bind_off); }
+	void			set_weak_bind_off(uint32_t value)	INLINE { E::set32(fields.weak_bind_off, value);  }
+	
+	uint32_t		weak_bind_size() const				INLINE { return E::get32(fields.weak_bind_size); }
+	void			set_weak_bind_size(uint32_t value)	INLINE { E::set32(fields.weak_bind_size, value);  }
+	
+	uint32_t		lazy_bind_off() const				INLINE { return E::get32(fields.lazy_bind_off); }
+	void			set_lazy_bind_off(uint32_t value)	INLINE { E::set32(fields.lazy_bind_off, value);  }
+	
+	uint32_t		lazy_bind_size() const				INLINE { return E::get32(fields.lazy_bind_size); }
+	void			set_lazy_bind_size(uint32_t value)	INLINE { E::set32(fields.lazy_bind_size, value);  }
+	
+	uint32_t		export_off() const				INLINE { return E::get32(fields.export_off); }
+	void			set_export_off(uint32_t value)	INLINE { E::set32(fields.export_off, value);  }
+	
+	uint32_t		export_size() const				INLINE { return E::get32(fields.export_size); }
+	void			set_export_size(uint32_t value)	INLINE { E::set32(fields.export_size, value);  }
+	
+	
+	typedef typename P::E		E;
+private:
+	dyld_info_command	fields;
+};
+
+#ifndef NO_ULEB 
+inline uint64_t read_uleb128(const uint8_t*& p, const uint8_t* end) {
+	uint64_t result = 0;
+	int		 bit = 0;
+	do {
+		if (p == end)
+			throw "malformed uleb128 extends beyond trie";
+
+		uint64_t slice = *p & 0x7f;
+
+		if (bit >= 64 || slice << bit >> bit != slice)
+			throw "uleb128 too big for 64-bits";
+		else {
+			result |= (slice << bit);
+			bit += 7;
+		}
+	} 
+	while (*p++ & 0x80);
+	return result;
+}
+	
+
+static int64_t read_sleb128(const uint8_t*& p, const uint8_t* end)
+{
+	int64_t result = 0;
+	int bit = 0;
+	uint8_t byte;
+	do {
+		if (p == end)
+			throw "malformed sleb128";
+		byte = *p++;
+		result |= ((byte & 0x7f) << bit);
+		bit += 7;
+	} while (byte & 0x80);
+	// sign extend negative numbers
+	if ( (byte & 0x40) != 0 )
+		result |= (-1LL) << bit;
+	return result;
+}
+
+#endif
 
 
 #endif	// __MACH_O_FILE_ABSTRACTION__

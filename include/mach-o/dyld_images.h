@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2006-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -23,6 +23,9 @@
 #ifndef _DYLD_IMAGES_
 #define _DYLD_IMAGES_
 
+#include <stdbool.h>
+#include <mach/mach.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -43,6 +46,15 @@ extern "C" {
  * The notification is called after infoArray is updated.  This means that if gdb attaches to a process
  * and infoArray is NULL, gdb can set a break point on notification and let the proccess continue to
  * run until the break point.  Then gdb can inspect the full infoArray.
+ *
+ * The dyldVersion field always points to a C string that contains the dyld version.  For instance,
+ * in dyld-127.3, dyldVersion would contain a pointer to "127.3".
+ *
+ * The errorMessage and terminationFlags fields are normally zero.  If dyld terminates a process
+ * (for instance because a required dylib or symbol is missing), then the errorMessage field will
+ * be set to point to a C string message buffer containing the reason dyld terminate the process.
+ * The low bit of the terminationFlags will be set if dyld terminated the process before any user
+ * code ran, in which case there is no need for the crash log to contain the backtrace.
  */
 
 enum dyld_image_mode { dyld_image_adding=0, dyld_image_removing=1 };
@@ -58,14 +70,35 @@ struct dyld_image_info {
 typedef void (*dyld_image_notifier)(enum dyld_image_mode mode, uint32_t infoCount, const struct dyld_image_info info[]);
 
 struct dyld_all_image_infos {
-	uint32_t						version;		/* == 1 in Mac OS X 10.4 */
+	uint32_t						version;		/* 1 in Mac OS X 10.4 and 10.5 */
 	uint32_t						infoArrayCount;
 	const struct dyld_image_info*	infoArray;
 	dyld_image_notifier				notification;		
 	bool							processDetachedFromSharedRegion;
+	/* the following fields are only in version 2 (Mac OS X 10.6, iPhoneOS 2.0) and later */
+	bool							libSystemInitialized;
+	const struct mach_header*		dyldImageLoadAddress;
+	/* the following field is only in version 3 (Mac OS X 10.6) and later */
+	void*							jitInfo;
+	/* the following fields are only in version 5 (Mac OS X 10.6) and later */
+	const char*						dyldVersion;
+	const char*						errorMessage;
+	uintptr_t						terminationFlags;
+	/* the following field is only in version 6 (Mac OS X 10.6) and later */
+	void*							coreSymbolicationShmPage;
+	/* the following field is only in version 7 (Mac OS X 10.6) and later */
+	uintptr_t						systemOrderFlag;
 };
 extern struct dyld_all_image_infos  dyld_all_image_infos;
 
+
+/*
+ * Beginning in Mac OS X 10.6, rather than looking up the symbol "_dyld_all_image_infos"
+ * in dyld's symbol table, you can add DYLD_ALL_IMAGE_INFOS_OFFSET_OFFSET to the mach_header
+ * for dyld and read the 32-bit unsigned int at that location.  Adding that value to dyld's
+ * mach_header address gets you the address of dyld_all_image_infos in dyld.
+ */
+#define DYLD_ALL_IMAGE_INFOS_OFFSET_OFFSET 0x1010
 
 
 

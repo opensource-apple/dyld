@@ -27,7 +27,9 @@ include ${TESTROOT}/include/common.makefile
 # verify that apple[0] parameter is correct by comparing to argv[1]
 #
 
-run: all
+all-check: all check
+
+check:
 	./main-10.4 ./main-10.4
 	./main-10.5 ./main-10.5
 	./main-10.4.stripped ./main-10.4.stripped

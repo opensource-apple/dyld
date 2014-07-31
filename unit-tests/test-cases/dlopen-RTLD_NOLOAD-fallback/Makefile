@@ -34,7 +34,9 @@ include ${TESTROOT}/include/common.makefile
 ###
 
 
-run: all
+all-check: all check
+
+check:
 	export DYLD_FALLBACK_LIBRARY_PATH=hide && ./main /foo/bar/libfoo.dylib
 
 all: main 

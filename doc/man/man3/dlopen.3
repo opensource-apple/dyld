@@ -1,4 +1,4 @@
-.Dd Nov 6, 2006
+.Dd Aug 28, 2008
 .Os
 .Dt DLOPEN 3
 .Sh NAME
@@ -143,10 +143,9 @@ contains a slash (i.e. a full path or a partial path)
 searches the following the following until it finds a compatible Mach-O file: 
 $DYLD_LIBRARY_PATH (with leaf name from 
 .Fa path
-), current working directory (for partial paths), $DYLD_FALLBACK_LIBRARY_PATH
-(with leaf name from 
-.Fa path
-).
+), then the supplied 
+.Fa path 
+(using current working directory for partial paths).
 .Pp
 Note: There are no configuration files to control dlopen searching.  
 .Pp

@@ -91,6 +91,7 @@ sub find_callback
 	open(STDOUT, ">/tmp/unit-tests-stdout") || die("$!");
 	open(STDERR, ">/tmp/unit-tests-stderr") || die("$!");
 
+	$ENV{UNIT_TEST_NAME} = $reldir;
 	my $exit = system(@$cmd);
 
 	close(STDOUT) || die("$!");

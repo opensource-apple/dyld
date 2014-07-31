@@ -23,6 +23,7 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+PWD = $(shell pwd)
 
 #
 # tests combinations of dlopen() and LD_LIBRARY_PATH
@@ -37,13 +38,15 @@ include ${TESTROOT}/include/common.makefile
 # 6) fullpath and LD_LIBRARY_PATH set to alt
 #
 
-run: all
+all-check: all check
+
+check:
 	cd alt1 && ../main "libfoo.dylib" 1 "leafname found in cwd"
 	./main "./alt1/libfoo.dylib" 1 "relative path"
-	./main "`pwd`/alt2/libfoo.dylib" 2 "fullpath"
-	export LD_LIBRARY_PATH="`pwd`/alt1" && ./main "libfoo.dylib" 1 "leafname and LD_LIBRARY_PATH overrides cwd"
-	export LD_LIBRARY_PATH="`pwd`/alt1" && cd alt3 && ../main "libfoo.dylib" 1 "leafname and alt LD_LIBRARY_PATH"
-	export LD_LIBRARY_PATH="`pwd`/alt1" && ./main "`pwd`/alt2/libfoo.dylib" 2 "fullpath and LD_LIBRARY_PATH"
+	./main "${PWD}/alt2/libfoo.dylib" 2 "fullpath"
+	export LD_LIBRARY_PATH="${PWD}/alt1" && ./main "libfoo.dylib" 1 "leafname and LD_LIBRARY_PATH overrides cwd"
+	export LD_LIBRARY_PATH="${PWD}/alt1" && cd alt3 && ../main "libfoo.dylib" 1 "leafname and alt LD_LIBRARY_PATH"
+	export LD_LIBRARY_PATH="${PWD}/alt1" && ./main "${PWD}/alt2/libfoo.dylib" 2 "fullpath and LD_LIBRARY_PATH"
 
 all: main alt1/libfoo.dylib alt2/libfoo.dylib alt3
 
@@ -53,14 +56,14 @@ main : main.c libfoo.dylib
 
 alt1/libfoo.dylib : foo.c
 	mkdir -p alt1
-	${CC} ${CCFLAGS} -dynamiclib foo.c -o "`pwd`/alt1/libfoo.dylib" -DVALUE=1
+	${CC} ${CCFLAGS} -dynamiclib foo.c -o "${PWD}/alt1/libfoo.dylib" -DVALUE=1
 
 alt2/libfoo.dylib : foo.c
 	mkdir -p alt2
-	${CC} ${CCFLAGS} -dynamiclib foo.c -o "`pwd`/alt2/libfoo.dylib" -DVALUE=2
+	${CC} ${CCFLAGS} -dynamiclib foo.c -o "${PWD}/alt2/libfoo.dylib" -DVALUE=2
 
 libfoo.dylib : foo.c
-	${CC} ${CCFLAGS} -dynamiclib foo.c -o "`pwd`/libfoo.dylib" -DVALUE=0
+	${CC} ${CCFLAGS} -dynamiclib foo.c -o "${PWD}/libfoo.dylib" -DVALUE=0
 
 alt3 :
 	mkdir -p alt3

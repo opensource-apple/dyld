@@ -25,7 +25,10 @@ include ${TESTROOT}/include/common.makefile
 
 SHELL = bash # use bash shell so we can redirect just stderr
 
-run: all
+
+all-check: all check
+
+check:
 	export DYLD_PRINT_SEGMENTS=1 && ./main  2> segments.log
 	grep __FOOBAR segments.log > /dev/null || echo "PASS zero-length-segment"
 	(grep __FOOBAR segments.log > /dev/null && echo "FAIL zero-length-segment") || /usr/bin/true

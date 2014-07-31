@@ -23,8 +23,7 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
-	./main
+all-check: all check
 
 all: main
 
@@ -36,6 +35,9 @@ libfoo.dylib : foo.c libbar.dylib
 
 libbar.dylib : bar.c
 	${CC}  -I${TESTROOT}/include -dynamiclib bar.c -o libbar.dylib -install_name /usr/local/hide/libbar.dylib
+
+check:
+	./main
 
 clean:
 	${RM} ${RMFLAGS} *~  main libbar.dylib libfoo.dylib

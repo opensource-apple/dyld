@@ -23,8 +23,9 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+all-check: all check
 
-run: all
+check:
 	./main 
 
 all: main

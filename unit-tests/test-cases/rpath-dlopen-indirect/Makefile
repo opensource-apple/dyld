@@ -23,6 +23,7 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+PWD = $(shell pwd)
 
 #
 # a main executable linked with -rpath calls into a dylib which calls 
@@ -30,8 +31,9 @@ include ${TESTROOT}/include/common.makefile
 # find the dlopen path.
 #
 
+all-check: all check
 
-run: all
+check:
 	./main
 
 all: main
@@ -44,7 +46,7 @@ libbar.dylib : bar.c hide/hole/libfoo.dylib
 	${CC} bar.c -dynamiclib -o libbar.dylib  -I${TESTROOT}/include
 
 main : main.c libbar.dylib
-	${CC} -I${TESTROOT}/include main.c -o main libbar.dylib -Wl,-rpath -Wl,`pwd`/hide/hole
+	${CC} -I${TESTROOT}/include main.c -o main libbar.dylib -Wl,-rpath -Wl,${PWD}/hide/hole
 
 clean:
 	${RM} ${RMFLAGS} *~  main hide/hole/libfoo.dylib hide libbar.dylib

@@ -23,11 +23,27 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+STACK_BASE = 0x8fe01000
+
+ifeq "armv6" "$(ARCH)"
+	STACK_BASE = 0x2fe01000
+endif
+ifeq "ppc64" "$(ARCH)"
+	STACK_BASE = 0x7fff5fc00000
+endif
+ifeq "x86_64" "$(ARCH)"
+	STACK_BASE = 0x7fff5fc00000
+endif
+
+
+
+all-check: all check
+
+check:
 	${TESTROOT}/bin/exit-zero-pass.pl "dyld did slide" "dyld did not slide" ./main
 
 all:
-	${CC} ${CCFLAGS} -Wno-deprecated-declarations -I${TESTROOT}/include -o main main.c -pagezero_size 0x40000000
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations -I${TESTROOT}/include -o main main.c -Wl,-stack_addr,${STACK_BASE} -Wl,-stack_size,0x00100000
 
 clean:
 	${RM} ${RMFLAGS} main

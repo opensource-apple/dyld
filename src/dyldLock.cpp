@@ -30,6 +30,9 @@
 
 static pthread_mutex_t	sGlobalMutex;
 
+// <rdar://problem/6361143> Need a way to determine if a gdb call to dlopen() would block
+int	__attribute__((visibility("hidden")))			_dyld_global_lock_held = 0;
+
 
 //
 // This initializer can go away once the following is available:
@@ -46,21 +49,23 @@ void dyldGlobalLockInitialize()
 
 LockHelper::LockHelper() 
 { 
-	pthread_mutex_lock(&sGlobalMutex);
+	dyldGlobalLockAcquire();
 }
 
 LockHelper::~LockHelper() 
 { 
-	pthread_mutex_unlock(&sGlobalMutex);
+	dyldGlobalLockRelease();
 }
 
 void dyldGlobalLockAcquire() 
 {
 	pthread_mutex_lock(&sGlobalMutex);
+	_dyld_global_lock_held = 1;
 }
 
 void dyldGlobalLockRelease() 
 {
+	_dyld_global_lock_held = 0;
 	pthread_mutex_unlock(&sGlobalMutex);
 }
 

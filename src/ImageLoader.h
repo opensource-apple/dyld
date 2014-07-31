@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2004-2008 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -27,24 +27,54 @@
 #define __IMAGELOADER__
 
 #include <sys/types.h>
+#include <unistd.h>
 #include <mach/mach_time.h> // struct mach_timebase_info
 #include <mach/mach_init.h> // struct mach_thread_self
+#include <mach/shared_region.h>
+#include <mach-o/loader.h> 
+#include <mach-o/nlist.h> 
 #include <stdint.h>
 #include <vector>
 #include <set>
+#include <new>
 
 #include "mach-o/dyld_images.h"
 #include "mach-o/dyld_priv.h"
 
+#if __i386__
+	#define SHARED_REGION_BASE SHARED_REGION_BASE_I386
+	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_I386
+#elif __x86_64__
+	#define SHARED_REGION_BASE SHARED_REGION_BASE_X86_64
+	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_X86_64
+#elif __ppc__
+	#define SHARED_REGION_BASE SHARED_REGION_BASE_PPC
+	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_PPC
+#elif __ppc64__
+	#define SHARED_REGION_BASE SHARED_REGION_BASE_PPC64
+	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_PPC64
+#elif __arm__
+	#define SHARED_REGION_BASE SHARED_REGION_BASE_ARM
+	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_ARM
+#endif
 
-#define SPLIT_SEG_SHARED_REGION_SUPPORT 0
-#define SPLIT_SEG_DYLIB_SUPPORT (__ppc__ || __i386__)
+
+
+#define SPLIT_SEG_SHARED_REGION_SUPPORT __arm__
+#define SPLIT_SEG_DYLIB_SUPPORT (__ppc__ || __i386__ || __arm__)
+#define PREBOUND_IMAGE_SUPPORT (__ppc__ || __i386__ || __arm__)
 #define TEXT_RELOC_SUPPORT (__ppc__ || __i386__)
 #define DYLD_SHARED_CACHE_SUPPORT (__ppc__ || __i386__ || __ppc64__ || __x86_64__)
-#define IMAGE_NOTIFY_SUPPORT 0
-#define RECURSIVE_INITIALIZER_LOCK 1
 #define SUPPORT_OLD_CRT_INITIALIZATION (__ppc__ || __i386__)
+#define COMPRESSED_DYLD_INFO_SUPPORT (__i386__ || __x86_64__)
+#define CORESYMBOLICATION_SUPPORT   (__i386__ || __x86_64__)
+#if __arm__
+	#define INITIAL_IMAGE_COUNT 100
+#else
+	#define INITIAL_IMAGE_COUNT 200
+#endif
 
+#define CODESIGNING_SUPPORT __arm__
 
 // utilities
 namespace dyld {
@@ -53,6 +83,15 @@ namespace dyld {
 	extern void warn(const char* format, ...)  __attribute__((format(printf, 1, 2)));
 	extern const char* mkstringf(const char* format, ...)  __attribute__((format(printf, 1, 2)));
 };
+
+
+#if __LP64__
+	struct macho_header				: public mach_header_64  {};
+	struct macho_nlist				: public nlist_64  {};	
+#else
+	struct macho_header				: public mach_header  {};
+	struct macho_nlist				: public nlist  {};	
+#endif
 
 
 struct ProgramVars
@@ -112,28 +151,22 @@ public:
 	};
 
 	struct LinkContext {
-		ImageLoader*	(*loadLibrary)(const char* libraryName, bool search, bool findDLL, const char* origin, const RPathChain* rpaths);
+		ImageLoader*	(*loadLibrary)(const char* libraryName, bool search, const char* origin, const RPathChain* rpaths);
 		void			(*terminationRecorder)(ImageLoader* image);
 		bool			(*flatExportFinder)(const char* name, const Symbol** sym, const ImageLoader** image);
 		bool			(*coalescedExportFinder)(const char* name, const Symbol** sym, const ImageLoader** image);
+		unsigned int	(*getCoalescedImages)(ImageLoader* images[]);
 		void			(*undefinedHandler)(const char* name);
-#if IMAGE_NOTIFY_SUPPORT
-		void			(*addImageNeedingNotification)(ImageLoader* image);
-		void			(*notifyAdding)(const ImageLoader* const * images, unsigned int count);
-#endif
 		MappedRegion*	(*getAllMappedRegions)(MappedRegion*);
 		void *			(*bindingHandler)(const char *, const char *, void *);
-		void			(*notifySingle)(dyld_image_states, const struct mach_header*, const char* path, time_t modDate);
+		void			(*notifySingle)(dyld_image_states, const ImageLoader* image);
 		void			(*notifyBatch)(dyld_image_states state);
 		void			(*removeImage)(ImageLoader* image);
 		void			(*registerDOFs)(const std::vector<DOFInfo>& dofs);
 		void			(*clearAllDepths)();
 		unsigned int	(*imageCount)();
-		void			(*notifySharedCacheInvalid)();
-#if __i386__
-		void			(*makeSharedCacheImportSegmentsWritable)(bool writable);
-#endif
 		void			(*setNewProgramVars)(const ProgramVars&);
+		bool			(*inSharedCache)(const char* path);
 #if SUPPORT_OLD_CRT_INITIALIZATION
 		void			(*setRunInitialzersOldWay)();
 #endif
@@ -146,6 +179,7 @@ public:
 		ProgramVars		programVars;
 		ImageLoader*	mainExecutable;
 		const char*		imageSuffix;
+		const char**	rootPaths;
 		PrebindMode		prebindUsage;
 		SharedRegionMode sharedRegionMode;
 		bool			dyldLoadedAtSameAddressNeededBySharedCache; 
@@ -154,16 +188,42 @@ public:
 		bool			bindFlat;
 		bool			linkingMainExecutable;
 		bool			startedInitializingMainExecutable;
+		bool			noPIE;
+		bool			processIsRestricted;
 		bool			verboseOpts;
 		bool			verboseEnv;
 		bool			verboseMapping;
 		bool			verboseRebase;
 		bool			verboseBind;
+		bool			verboseWeakBind;
 		bool			verboseInit;
 		bool			verboseDOF;
 		bool			verbosePrebinding;
 		bool			verboseWarnings;
 	};
+	
+	struct CoalIterator
+	{
+		ImageLoader*	image;
+		const char*		symbolName;
+		unsigned int	loadOrder;
+		bool			weakSymbol;
+		bool			symbolMatches;
+		bool			done;
+		// the following are private to the ImageLoader subclass
+		uintptr_t		curIndex;
+		uintptr_t		endIndex;
+		uintptr_t		address;
+		uintptr_t		type;
+		uintptr_t		addend;
+	};
+	
+	virtual	void			initializeCoalIterator(CoalIterator&, unsigned int loadOrder) = 0;
+	virtual	bool			incrementCoalIterator(CoalIterator&) = 0;
+	virtual	uintptr_t		getAddressCoalIterator(CoalIterator&, const LinkContext& context) = 0;
+	virtual	void			updateUsesCoalIterator(CoalIterator&, uintptr_t newAddr, ImageLoader* target, const LinkContext& context) = 0;
+	
+	
 	
 										// constructor is protected, but anyone can delete an image
 	virtual								~ImageLoader();
@@ -190,9 +250,6 @@ public:
 
 	uint32_t							getPathHash() const { return fPathHash; }
 
-										// get path used to load this image represents (ZeroLink only) which image this .o is part of
-	const char*							getLogicalPath() const;
-
 										// get path this image is intended to be placed on disk or NULL if no preferred install location
 	virtual const char*					getInstallPath() const = 0;
 
@@ -200,9 +257,6 @@ public:
 	bool								matchInstallPath() const;
 	void								setMatchInstallPath(bool);
 	
-										// if path was a fat file, offset of image loaded in that fat file
-	uint64_t							getOffsetInFatFile() const;
-
 										// mark that this image's exported symbols should be ignored when linking other images (e.g. RTLD_LOCAL)
 	void								setHideExports(bool hide = true);
 	
@@ -220,6 +274,9 @@ public:
 
 										// checks if the specifed address is within one of this image's segments
 	virtual bool						containsAddress(const void* addr) const;
+
+										// checks if the specifed symbol is within this image's symbol table
+	virtual bool						containsSymbol(const void* addr) const = 0;
 
 										// checks if the specifed address range overlaps any of this image's segments
 	virtual bool						overlapsWithAddressRange(const void* start, const void* end) const;
@@ -246,7 +303,7 @@ public:
 	virtual bool						hasCoalescedExports() const = 0;
 	
 										// search symbol table of definitions in this image for requested name
-	virtual const Symbol*				findExportedSymbol(const char* name, const void* hint, bool searchReExports, const ImageLoader** foundIn) const = 0;
+	virtual const Symbol*				findExportedSymbol(const char* name, bool searchReExports, const ImageLoader** foundIn) const = 0;
 	
 										// gets address of implementation (code) of the specified exported symbol
 	virtual uintptr_t					getExportedSymbolAddress(const Symbol* sym, const LinkContext& context, const ImageLoader* requestor=NULL) const = 0;
@@ -278,16 +335,25 @@ public:
 	virtual const Symbol*				getIndexedImportedSymbol(uint32_t index) const = 0;
 			
 										// gets attributes of the specified imported symbol
-	virtual ReferenceFlags				geImportedSymbolInfo(const Symbol* sym) const = 0;
+	virtual ReferenceFlags				getImportedSymbolInfo(const Symbol* sym) const = 0;
 			
 										// gets name of the specified imported symbol
 	virtual const char*					getImportedSymbolName(const Symbol* sym) const = 0;
 			
+										// find the closest symbol before addr
+	virtual const char*					findClosestSymbol(const void* addr, const void** closestAddr) const = 0;
+	
 										// checks if this image is a bundle and can be loaded but not linked
 	virtual bool						isBundle() const = 0;
 	
 										// checks if this image is a dylib 
 	virtual bool						isDylib() const = 0;
+	
+										// checks if this image is a main executable 
+	virtual bool						isExecutable() const = 0;
+	
+										// checks if this image is a main executable 
+	virtual bool						isPositionIndependentExecutable() const = 0;
 	
 										// only for main executable
 	virtual bool						forceFlat() const = 0;
@@ -295,23 +361,21 @@ public:
 										// called at runtime when a lazily bound function is first called
 	virtual uintptr_t					doBindLazySymbol(uintptr_t* lazyPointer, const LinkContext& context) = 0;
 	
+										// called at runtime when a fast lazily bound function is first called
+	virtual uintptr_t					doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context) = 0;
+
 										// calls termination routines (e.g. C++ static destructors for image)
 	virtual void						doTermination(const LinkContext& context) = 0;
 					
-#if IMAGE_NOTIFY_SUPPORT
-										// tell this image about other images
-	virtual void						doNotification(enum dyld_image_mode mode, uint32_t infoCount, const struct dyld_image_info info[]) = 0;
-#endif					
 										// return if this image has initialization routines
 	virtual bool						needsInitialization() = 0;
 			
-#if IMAGE_NOTIFY_SUPPORT
-										// return if this image has a routine to be called when any image is loaded or unloaded
-	virtual bool						hasImageNotification() = 0;
-#endif	
 										// return if this image has specified section and set start and length
 	virtual bool						getSectionContent(const char* segmentName, const char* sectionName, void** start, size_t* length) = 0;
-			
+
+										// fills in info about __eh_frame and __unwind_info sections
+	virtual void						getUnwindInfo(dyld_unwind_sections* info) = 0;
+
 										// given a pointer into an image, find which segment and section it is in
 	virtual bool						findSection(const void* imageInterior, const char** segmentName, const char** sectionName, size_t* sectionOffset) = 0;
 	
@@ -324,6 +388,31 @@ public:
 										// add all RPATH paths this image contains
 	virtual	void						getRPaths(const LinkContext& context, std::vector<const char*>&) const = 0;
 	
+										// image has or uses weak definitions that need runtime coalescing
+	virtual bool						participatesInCoalescing() const = 0;
+		
+										// if image has a UUID, copy into parameter and return true
+	virtual	bool						getUUID(uuid_t) const = 0;
+	
+	
+//
+// A segment is a chunk of an executable file that is mapped into memory.  
+//
+	virtual unsigned int				segmentCount() const = 0;
+	virtual const char*					segName(unsigned int) const = 0;
+	virtual uintptr_t					segSize(unsigned int) const = 0;
+	virtual uintptr_t					segFileSize(unsigned int) const = 0;
+	virtual bool						segHasTrailingZeroFill(unsigned int) = 0;
+	virtual uintptr_t					segFileOffset(unsigned int) const = 0;
+	virtual bool						segReadable(unsigned int) const = 0;
+	virtual bool						segWriteable(unsigned int) const = 0;
+	virtual bool						segExecutable(unsigned int) const = 0;
+	virtual bool						segUnaccessible(unsigned int) const = 0;
+	virtual bool						segHasPreferredLoadAddress(unsigned int) const = 0;
+	virtual uintptr_t					segPreferredLoadAddress(unsigned int) const = 0;
+	virtual uintptr_t					segActualLoadAddress(unsigned int) const = 0;
+	virtual uintptr_t					segActualEndAddress(unsigned int) const = 0;
+
 	
 
 	dyld_image_states					getState() { return (dyld_image_states)fState; }
@@ -350,12 +439,13 @@ public:
 	static void							addSuffix(const char* path, const char* suffix, char* result);
 	
 	static uint32_t						hash(const char*);
+	
+										// used instead of directly deleting image
+	static void							deleteImage(ImageLoader*);
 		
 			void						setPath(const char* path);	// only called for images created from memory
 			void						setPathUnowned(const char* path);
-			
-			void						setLogicalPath(const char* path);
-			
+						
 			void						clearDepth() { fDepth = 0; }
 			
 			void						setBeingRemoved() { fBeingRemoved = true; }
@@ -364,36 +454,12 @@ public:
 			void						setAddFuncNotified() { fAddFuncNotified = true; }
 			bool						addFuncNotified() const { return fAddFuncNotified; }
 	
-protected:	
-	struct DependentLibrary;
-public:
-	friend class iterator;
-	
-	class iterator
-	{
-	public:
-		iterator&		operator++() { ++fLocation; return *this; }
-		bool			operator!=(const iterator& it) const { return (it.fLocation != this->fLocation); }
-		ImageLoader*	operator*() const { return fLocation->image; }
-	private:
-		friend class ImageLoader;
-		iterator(DependentLibrary* loc) : fLocation(loc) {}
-		DependentLibrary*	fLocation;
-	};
-	
-	iterator beginDependents() { return iterator(fLibraries); }
-	iterator endDependents() { return iterator(&fLibraries[fLibrariesCount]); }
-	
-	
-		
-	friend class Segment;
-		
-protected:
+protected:			
 	// abstract base class so all constructors protected
-					ImageLoader(const char* path, uint64_t offsetInFat, const struct stat& info); 
-					ImageLoader(const char* moduleName); 
+					ImageLoader(const char* path, unsigned int libCount); 
 					ImageLoader(const ImageLoader&);
 	void			operator=(const ImageLoader&);
+	void			operator delete(void* image) throw() { free(image); } 
 	
 
 	struct LibraryInfo {
@@ -417,38 +483,31 @@ protected:
 		bool				reExported;
 	};
 
-	class SegmentIterator
-	{
-	public:
-		SegmentIterator&	operator++(); // use inline later to work around circular reference
-		bool				operator!=(const SegmentIterator& it) const { return (it.fLocation != this->fLocation); }
-		class Segment*		operator*() const { return fLocation; }
-		SegmentIterator(class Segment* loc) : fLocation(loc) {}
-	private:
-		class Segment*		fLocation;
-	};
 
 	typedef void (*Initializer)(int argc, const char* argv[], const char* envp[], const char* apple[], const ProgramVars* vars);
 	typedef void (*Terminator)(void);
 	
+
+
+	unsigned int			libraryCount() const { return fLibraryCount; }
+	virtual ImageLoader*	libImage(unsigned int) const = 0;
+	virtual bool			libReExported(unsigned int) const = 0;
+	virtual void			setLibImage(unsigned int, ImageLoader*, bool) = 0;
+
+
 						// To link() an image, its dependent libraries are loaded, it is rebased, bound, and initialized.
 						// These methods do the above, exactly once, and it the right order
-	void				recursiveLoadLibraries(const LinkContext& context, const RPathChain& loaderRPaths);
+	void				recursiveLoadLibraries(const LinkContext& context, bool preflightOnly, const RPathChain& loaderRPaths);
 	void				recursiveUnLoadMappedLibraries(const LinkContext& context);
 	unsigned int		recursiveUpdateDepth(unsigned int maxDepth);
 	void				recursiveValidate(const LinkContext& context);
 	void				recursiveRebase(const LinkContext& context);
 	void				recursiveBind(const LinkContext& context, bool forceLazysBound);
+	void				weakBind(const LinkContext& context);
 	void				recursiveGetDOFSections(const LinkContext& context, std::vector<DOFInfo>& dofs);
-#if IMAGE_NOTIFY_SUPPORT
-	void				recursiveImageAnnouncement(const LinkContext& context, ImageLoader**& newImages);
-#endif
 	void				recursiveInitialization(const LinkContext& context, mach_port_t this_thread);
 
-								// return how many libraries this image depends on
-	virtual uint32_t			doGetDependentLibraryCount() = 0;
-	
-								// fill in information about dependent libraries (array length is doGetDependentLibraryCount())
+								// fill in information about dependent libraries (array length is fLibraryCount)
 	virtual void				doGetDependentLibraries(DependentLibraryInfo libs[]) = 0;
 	
 								// called on images that are libraries, returns info about itself
@@ -462,9 +521,6 @@ protected:
 	
 								// called later via API to force all lazy pointer to be bound
 	virtual void				doBindJustLazies(const LinkContext& context) = 0;
-	
-								// update any segment permissions
-	virtual void				doUpdateMappingPermissions(const LinkContext& context) = 0;
 	
 								// if image has any dtrace DOF sections, append them to list to be registered
 	virtual void				doGetDOFSections(const LinkContext& context, std::vector<DOFInfo>& dofs) = 0;
@@ -484,12 +540,6 @@ protected:
 								// set how much all segments slide
 	virtual void				setSlide(intptr_t slide) = 0;		
 	
-								// utility routine to map in all segements in fSegments from a file
-	virtual void				mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
-	
-								// utility routine to map in all segements in fSegments from a memory image
-	virtual void				mapSegments(const void* memoryImage, uint64_t imageLen, const LinkContext& context);
-
 								// returns if all dependent libraries checksum's were as expected and none slide
 			bool				allDependentLibrariesAsWhenPreBound() const;
 
@@ -504,17 +554,15 @@ protected:
 	
 								// mark that target should not be unloaded unless this is also unloaded
 	void						addDynamicReference(const ImageLoader* target);
-				
-								// used to start iterating Segments
-	virtual SegmentIterator		beginSegments() const = 0;
 	
-								// used to end iterating Segments
-	virtual SegmentIterator		endSegments() const = 0;
+	void						setFileInfo(dev_t device, ino_t inode, time_t modDate);
 	
-
+	static uintptr_t			fgNextPIEDylibAddress;
 	static uint32_t				fgImagesWithUsedPrebinding;
 	static uint32_t				fgImagesUsedFromSharedCache;
 	static uint32_t				fgImagesRequiringNoFixups;
+	static uint32_t				fgImagesHasWeakDefinitions;
+	static uint32_t				fgImagesRequiringCoalescing;
 	static uint32_t				fgTotalRebaseFixups;
 	static uint32_t				fgTotalBindFixups;
 	static uint32_t				fgTotalBindSymbolsResolved;
@@ -527,16 +575,13 @@ protected:
 	static uint64_t				fgTotalLoadLibrariesTime;
 	static uint64_t				fgTotalRebaseTime;
 	static uint64_t				fgTotalBindTime;
+	static uint64_t				fgTotalWeakBindTime;
+	static uint64_t				fgTotalDOF;
 	static uint64_t				fgTotalInitTime;
-	static uintptr_t			fgNextSplitSegAddress;
 	const char*					fPath;
-	const char*					fLogicalPath; // for ZeroLink - the image which this bundle is part of
 	dev_t						fDevice;
 	ino_t						fInode;
 	time_t						fLastModified;
-	uint64_t					fOffsetInFatFile;
-	DependentLibrary*			fLibraries;
-	uint32_t					fLibrariesCount;
 	uint32_t					fPathHash;
 	uint32_t					fDlopenReferenceCount;	// count of how many dlopens have been done on this image
 	uint32_t					fStaticReferenceCount;	// count of images that have a fLibraries entry pointing to this image
@@ -544,7 +589,6 @@ protected:
 	std::set<const ImageLoader*>* fDynamicReferences;	// list of all images this image used because of a flat/coalesced lookup
 
 private:
-#if RECURSIVE_INITIALIZER_LOCK
 	struct recursive_lock {
 						recursive_lock(mach_port_t t) : thread(t), count(0) {}
 		mach_port_t		thread;
@@ -552,93 +596,31 @@ private:
 	};
 	void						recursiveSpinLock(recursive_lock&);
 	void						recursiveSpinUnLock();
-#endif 
 
-	void						init(const char* path, uint64_t offsetInFat, dev_t device, ino_t inode, time_t modDate);
-	intptr_t					assignSegmentAddresses(const LinkContext& context);
 	const ImageLoader::Symbol*	findExportedSymbolInDependentImagesExcept(const char* name, const ImageLoader** dsiStart, 
 										const ImageLoader**& dsiCur, const ImageLoader** dsiEnd, const ImageLoader** foundIn) const;
 
 
 
+	recursive_lock*				fInitializerRecursiveLock;
 	uint16_t					fDepth;
 	uint16_t					fLoadOrder;
 	uint32_t					fState : 8,
+								fLibraryCount : 10,
 								fAllLibraryChecksumsAndLoadAddressesMatch : 1,
 								fLeaveMapped : 1,		// when unloaded, leave image mapped in cause some other code may have pointers into it
 								fNeverUnload : 1,		// image was statically loaded by main executable
 								fHideSymbols : 1,		// ignore this image's exported symbols when linking other images
 								fMatchByInstallName : 1,// look at image's install-path not its load path
 								fRegisteredDOF : 1,
-#if IMAGE_NOTIFY_SUPPORT
-								fAnnounced : 1,
-#endif
 								fAllLazyPointersBound : 1,
 								fBeingRemoved : 1,
 								fAddFuncNotified : 1,
-								fPathOwnedByImage : 1;
+								fPathOwnedByImage : 1,
+								fWeakSymbolsBound : 1;
 
-#if RECURSIVE_INITIALIZER_LOCK
-	recursive_lock*				fInitializerRecursiveLock;
-#else
-	uint32_t					fInitializerLock;
-#endif
 	static uint16_t				fgLoadOrdinal;
 };
-
-
-//
-// Segment is an abstract base class.  A segment is a chunk of an executable
-// file that is mapped into memory.  Each subclass of ImageLoader typically
-// implements its own concrete subclass of Segment.
-//
-//  
-class Segment {
-public:
-	virtual						~Segment() {}
-
-	virtual const char*			getName() = 0;
-	virtual uintptr_t			getSize() = 0;
-	virtual uintptr_t			getFileSize() = 0;
-	virtual bool				hasTrailingZeroFill();
-	virtual uintptr_t			getFileOffset() = 0;
-	virtual bool				readable() = 0;
-	virtual bool				writeable() = 0;
-	virtual bool				executable() = 0;
-	virtual bool				unaccessible() = 0;
-	virtual uintptr_t			getActualLoadAddress(const ImageLoader*) = 0;
-	virtual uintptr_t			getPreferredLoadAddress() = 0;
-	virtual void				unmap(const ImageLoader*) = 0;
-	virtual Segment*			next(Segment*) = 0;
-#if __i386__
-	virtual bool				readOnlyImportStubs() = 0;
-#endif
-	
-	
-protected:
-	// abstract base class so all constructors protected
-								Segment() {}
-								Segment(const Segment&);
-	void						operator=(const Segment&);
-
-	virtual bool				hasPreferredLoadAddress() = 0;
-	//virtual void				setActualLoadAddress(uint64_t addr) = 0;
-	virtual void				map(int fd, uint64_t offsetInFatWrapper, intptr_t slide, const ImageLoader* image, const ImageLoader::LinkContext& context);
-	
-	static bool					reserveAddressRange(uintptr_t start, size_t length);
-	static uintptr_t			reserveAnAddressRange(size_t length, const class ImageLoader::LinkContext& context);
-	static uintptr_t			fgNextPIEDylibAddress;
-
-private:
-	void						setPermissions(const ImageLoader::LinkContext& context, const ImageLoader* image);
-	void						map(const void* memoryImage, intptr_t slide, const ImageLoader* image, const ImageLoader::LinkContext& context);
-	void						tempWritable(const ImageLoader::LinkContext& context, const ImageLoader* image);
-	
-	friend class ImageLoader;
-	friend class ImageLoaderMachO;
-};
-
-inline ImageLoader::SegmentIterator& ImageLoader::SegmentIterator::operator++() { fLocation = fLocation->next(fLocation); return *this; }
 
 
 

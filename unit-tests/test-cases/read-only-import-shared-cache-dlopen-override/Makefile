@@ -24,7 +24,9 @@ TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
 
-run: all
+all-check: all check
+
+check:
 	export DYLD_INSERT_LIBRARIES="libmymalloc.dylib" && ./main
 
 all: main libmymalloc.dylib

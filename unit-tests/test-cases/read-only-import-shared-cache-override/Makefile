@@ -24,19 +24,20 @@ TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
 
-run: all
+all-check: all check
+
+check:
+	cp /usr/lib/libSystem.B.dylib ./libSystem.B.dylib
 	export DYLD_LIBRARY_PATH=`pwd` && ./main
 
-all: main libSystem.B.dylib
+all: main 
 
 main: main.c libfoo.dylib
-	${CC} ${CCFLAGS}  -o main main.c
+	${CC} ${CCFLAGS} -I${TESTROOT}/include  -o main main.c
 
 libfoo.dylib : foo.c
-	${CC} ${CCFLAGS} -dynamiclib -I${TESTROOT}/include -o libfoo.dylib foo.c -framework Cocoa
+	${CC} ${CCFLAGS} -dynamiclib -I${TESTROOT}/include -o libfoo.dylib foo.c -framework CoreFoundation
 
-libSystem.B.dylib: /usr/lib/libSystem.B.dylib
-	cp /usr/lib/libSystem.B.dylib ./libSystem.B.dylib
 
 
 clean:

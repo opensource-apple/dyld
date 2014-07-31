@@ -28,8 +28,9 @@ include ${TESTROOT}/include/common.makefile
 # a main executable run with DYLD_LIBRARY_PATH will override its rpath
 #
 
+all-check: all check
 
-run: all
+check:
 	export DYLD_LIBRARY_PATH=`pwd`/hide1 && ./main
 
 all: main hide2/libfoo.dylib hide1/libfoo.dylib

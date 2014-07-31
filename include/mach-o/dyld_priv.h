@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2003-2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2003-2008 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -33,26 +33,6 @@ extern "C" {
 #endif /* __cplusplus */
 
 
-/*
- * Given an imageOffset into an ObjectFileImage, returns 
- * the segment/section name and offset into that section of
- * that imageOffset.  Returns FALSE if the imageOffset is not 
- * in any section.  You can used the resulting sectionOffset to
- * index into the data returned by NSGetSectionDataInObjectFileImage.
- * 
- * First appeared in Mac OS X 10.3 
- *
- * SPI: currently only used by ZeroLink to detect +load methods
- */
-bool 
-NSFindSectionAndOffsetInObjectFileImage(
-    NSObjectFileImage objectFileImage, 
-    unsigned long imageOffset,
-    const char** segmentName, 	/* can be NULL */
-    const char** sectionName, 	/* can be NULL */
-    unsigned long* sectionOffset);	/* can be NULL */
-
-
 //
 // Possible state changes for which you can register to be notified
 //
@@ -64,7 +44,7 @@ enum dyld_image_states
 	dyld_image_state_bound					= 40,
 	dyld_image_state_dependents_initialized	= 45,		// Only single notification for this
 	dyld_image_state_initialized			= 50,
-	dyld_image_state_terminated				= 60		// FIX ME - only called if image has termination routine
+	dyld_image_state_terminated				= 60		// Only single notification for this
 };
 
 // 
@@ -89,15 +69,51 @@ dyld_register_image_state_change_handler(enum dyld_image_states state, bool batc
 
 
 //
+// get slide for a given loaded mach_header  
+// Mac OS X 10.6 and later
 //
+extern intptr_t _dyld_get_image_slide(const struct mach_header* mh);
+
+
 //
-extern void
-_dyld_library_locator(const char* (*handler)(const char*));
+// get pointer to this process's dyld_all_image_infos
+// Exists in Mac OS X 10.4 and later through _dyld_func_lookup()
+// Exists in Mac OS X 10.6 and later through libSystem.dylib
+//
+const struct dyld_all_image_infos* _dyld_get_all_image_infos();
 
-extern void* dlord(void* handle, uint32_t ordinal); /* Mac OS X 10.5 and later */
 
 
-#define	RTLD_MAIN_ONLY		((void *) -5)	/* Search main executable only (Mac OS X 10.5 and later) */
+struct dyld_unwind_sections
+{
+	const struct mach_header*		mh;
+	const void*						dwarf_section;
+	uintptr_t						dwarf_section_length;
+	const void*						compact_unwind_section;
+	uintptr_t						compact_unwind_section_length;
+};
+
+
+//
+// Returns true iff some loaded mach-o image contains "addr".
+//	info->mh							mach header of image containing addr
+//  info->dwarf_section					pointer to start of __TEXT/__eh_frame section
+//  info->dwarf_section_length			length of __TEXT/__eh_frame section
+//  info->compact_unwind_section		pointer to start of __TEXT/__unwind_info section
+//  info->compact_unwind_section_length	length of __TEXT/__unwind_info section
+//
+// Exists in Mac OS X 10.6 and later 
+extern bool _dyld_find_unwind_sections(void* addr, struct dyld_unwind_sections* info);
+
+
+//
+// This is an optimized form of dladdr() that only returns the dli_fname field.
+//
+// Exists in Mac OS X 10.6 and later 
+extern const char* dyld_image_path_containing_address(const void* addr);
+
+
+
 
 
 

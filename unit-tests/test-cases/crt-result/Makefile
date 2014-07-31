@@ -28,7 +28,9 @@ include ${TESTROOT}/include/common.makefile
 # for both crt1.0 and crt1.10.5.o
 #
 
-run: all
+all-check: all check
+
+check:
 	${TESTROOT}/bin/exit-zero-pass.pl "crt-result good-10.4" "crt-result good-10.4"    ./good-10.4
 	${TESTROOT}/bin/exit-zero-pass.pl "crt-result good-10.5" "crt-result good-10.5"    ./good-10.5
 	${TESTROOT}/bin/exit-non-zero-pass.pl "crt-result bad-10.4" "crt-result bad-10.4"  ./bad-10.4

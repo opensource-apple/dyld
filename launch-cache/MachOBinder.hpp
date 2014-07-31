@@ -45,6 +45,7 @@
 #include "Architectures.hpp"
 #include "MachOLayout.hpp"
 #include "MachORebaser.hpp"
+#include "MachOTrie.hpp"
 
 
 
@@ -71,14 +72,18 @@ private:
 	typedef typename A::P::E				E;
 	typedef typename A::P::uint_t			pint_t;
 	struct BinderAndReExportFlag { Binder<A>* binder; bool reExport; };
-	typedef __gnu_cxx::hash_map<const char*, const macho_nlist<P>*, __gnu_cxx::hash<const char*>, CStringEquals> NameToSymbolMap;
+	typedef __gnu_cxx::hash_map<const char*, pint_t, __gnu_cxx::hash<const char*>, CStringEquals> NameToAddrMap;
 	
 	void										doBindExternalRelocations();
 	void										doBindIndirectSymbols();
 	void										doSetUpDyldSection();
 	void										doSetPreboundUndefines();
+	void										doBindDyldInfo();
+	void										doBindDyldLazyInfo();
+	void										bindDyldInfoAt(uint8_t segmentIndex, uint64_t segmentOffset, uint8_t type, 
+																int libraryOrdinal, int64_t addend, const char* symbolName);
 	pint_t										resolveUndefined(const macho_nlist<P>* undefinedSymbol);
-	const macho_nlist<P>*						findExportedSymbol(const char* name);
+	bool										findExportedSymbolAddress(const char* name, pint_t* result);
 	void										bindStub(uint8_t elementSize, uint8_t* location, pint_t vmlocation, pint_t value);
 	const char*									parentUmbrella();
 
@@ -86,7 +91,7 @@ private:
 	static uint8_t								pointerRelocType();
 	
 	std::vector<BinderAndReExportFlag>			fDependentDylibs;
-	NameToSymbolMap								fHashTable;
+	NameToAddrMap								fHashTable;
 	uint64_t									fDyldBaseAddress;
 	const macho_nlist<P>*						fSymbolTable;
 	const char*									fStrings;
@@ -94,6 +99,7 @@ private:
 	const macho_segment_command<P>*				fFristWritableSegment;
 	const macho_dylib_command<P>*				fDylibID;
 	const macho_dylib_command<P>*				fParentUmbrella;
+	const macho_dyld_info_command<P>*			fDyldInfo;
 	bool										fOriginallyPrebound;
 };
 
@@ -102,7 +108,7 @@ template <typename A>
 Binder<A>::Binder(const MachOLayoutAbstraction& layout, uint64_t dyldBaseAddress)
 	: Rebaser<A>(layout), fDyldBaseAddress(dyldBaseAddress),
 	  fSymbolTable(NULL), fStrings(NULL), fDynamicInfo(NULL),
-	  fFristWritableSegment(NULL), fDylibID(NULL),
+	  fFristWritableSegment(NULL), fDylibID(NULL), fDyldInfo(NULL),
 	  fParentUmbrella(NULL)
 {
 	fOriginallyPrebound = ((this->fHeader->flags() & MH_PREBOUND) != 0);
@@ -136,9 +142,16 @@ Binder<A>::Binder(const MachOLayoutAbstraction& layout, uint64_t dyldBaseAddress
 			case LC_SUB_FRAMEWORK:
 				fParentUmbrella = (macho_dylib_command<P>*)cmd;
 				break;
+			case LC_DYLD_INFO:
+			case LC_DYLD_INFO_ONLY:
+				fDyldInfo = (macho_dyld_info_command<P>*)cmd;
+				break;
+			case LC_RPATH:
+				throwf("LC_RPATH not supported in dylibs in dyld shared cache");
+				break;
 			default:
 				if ( cmd->cmd() & LC_REQ_DYLD )
-					throwf("unknown required load command %d", cmd->cmd());
+					throwf("unknown required load command 0x%08X", cmd->cmd());
 		}
 		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
 	}	
@@ -147,38 +160,53 @@ Binder<A>::Binder(const MachOLayoutAbstraction& layout, uint64_t dyldBaseAddress
 	if ( fSymbolTable == NULL )	
 		throw "no LC_SYMTAB";
 	// build hash table
-	if ( fDynamicInfo->tocoff() == 0 ) {
-		const macho_nlist<P>* start = &fSymbolTable[fDynamicInfo->iextdefsym()];
-		const macho_nlist<P>* end = &start[fDynamicInfo->nextdefsym()];
-		fHashTable.resize(fDynamicInfo->nextdefsym()); // set initial bucket count
-		for (const macho_nlist<P>* sym=start; sym < end; ++sym) {
-			const char* name = &fStrings[sym->n_strx()];
-			fHashTable[name] = sym;
+//	fprintf(stderr, "exports for %s\n", layout.getFilePath());
+	if ( fDyldInfo != NULL ) {
+		std::vector<mach_o::trie::Entry> exports;
+		const uint8_t* exportsStart = &this->fLinkEditBase[fDyldInfo->export_off()];
+		const uint8_t* exportsEnd = &exportsStart[fDyldInfo->export_size()];
+		mach_o::trie::parseTrie(exportsStart, exportsEnd, exports);
+		pint_t baseAddress = layout.getSegments()[0].newAddress();
+		for(std::vector<mach_o::trie::Entry>::iterator it = exports.begin(); it != exports.end(); ++it) {
+			fHashTable[it->name] = it->address + baseAddress;
+			//fprintf(stderr, "0x%08llX %s\n", it->address + baseAddress, it->name);
 		}
 	}
 	else {
-		int32_t count = fDynamicInfo->ntoc();
-		fHashTable.resize(count); // set initial bucket count
-		const struct dylib_table_of_contents* toc = (dylib_table_of_contents*)&this->fLinkEditBase[fDynamicInfo->tocoff()];
-		for (int32_t i = 0; i < count; ++i) {
-			const uint32_t index = E::get32(toc[i].symbol_index);
-			const macho_nlist<P>* sym = &fSymbolTable[index];
-			const char* name = &fStrings[sym->n_strx()];
-			fHashTable[name] = sym;
+		if ( fDynamicInfo->tocoff() == 0 ) {
+			const macho_nlist<P>* start = &fSymbolTable[fDynamicInfo->iextdefsym()];
+			const macho_nlist<P>* end = &start[fDynamicInfo->nextdefsym()];
+			fHashTable.resize(fDynamicInfo->nextdefsym()); // set initial bucket count
+			for (const macho_nlist<P>* sym=start; sym < end; ++sym) {
+				const char* name = &fStrings[sym->n_strx()];
+				fHashTable[name] = sym->n_value();
+				//fprintf(stderr, " 0x%08llX %s\n", sym->n_value(), name);
+			}
+		}
+		else {
+			int32_t count = fDynamicInfo->ntoc();
+			fHashTable.resize(count); // set initial bucket count
+			const struct dylib_table_of_contents* toc = (dylib_table_of_contents*)&this->fLinkEditBase[fDynamicInfo->tocoff()];
+			for (int32_t i = 0; i < count; ++i) {
+				const uint32_t index = E::get32(toc[i].symbol_index);
+				const macho_nlist<P>* sym = &fSymbolTable[index];
+				const char* name = &fStrings[sym->n_strx()];
+				fHashTable[name] = sym->n_value();
+				//fprintf(stderr, "- 0x%08llX %s\n", sym->n_value(), name);
+			}
 		}
 	}
-
 }
 
 template <> uint8_t	Binder<ppc>::pointerRelocSize()    { return 2; }
-template <> uint8_t	Binder<ppc64>::pointerRelocSize()  { return 3; }
 template <> uint8_t	Binder<x86>::pointerRelocSize()   { return 2; }
 template <> uint8_t	Binder<x86_64>::pointerRelocSize() { return 3; }
+template <> uint8_t	Binder<arm>::pointerRelocSize() { return 2; }
 
 template <> uint8_t	Binder<ppc>::pointerRelocType()    { return GENERIC_RELOC_VANILLA; }
-template <> uint8_t	Binder<ppc64>::pointerRelocType()  { return GENERIC_RELOC_VANILLA; }
 template <> uint8_t	Binder<x86>::pointerRelocType()   { return GENERIC_RELOC_VANILLA; }
 template <> uint8_t	Binder<x86_64>::pointerRelocType() { return X86_64_RELOC_UNSIGNED; }
+template <> uint8_t	Binder<arm>::pointerRelocType() { return ARM_RELOC_VANILLA; }
 
 
 template <typename A>
@@ -312,9 +340,16 @@ template <typename A>
 void Binder<A>::bind()
 {
 	this->doSetUpDyldSection();
-	this->doBindExternalRelocations();
-	this->doBindIndirectSymbols();
-	this->doSetPreboundUndefines();
+	if ( fDyldInfo != NULL ) {
+		this->doBindDyldInfo();
+		this->doBindDyldLazyInfo();
+		// weak bind info is processed at launch time
+	}
+	else {
+		this->doBindExternalRelocations();
+		this->doBindIndirectSymbols();
+		this->doSetPreboundUndefines();
+	}
 }
 
 
@@ -344,6 +379,213 @@ void Binder<A>::doSetUpDyldSection()
 		}
 		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
 	}
+}
+
+template <typename A>
+void Binder<A>::bindDyldInfoAt(uint8_t segmentIndex, uint64_t segmentOffset, uint8_t type, int libraryOrdinal, int64_t addend, const char* symbolName)
+{
+	//printf("%d 0x%08llX type=%d, lib=%d, addend=%lld, symbol=%s\n", segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName);
+	const std::vector<MachOLayoutAbstraction::Segment>& segments = this->fLayout.getSegments();
+	if ( segmentIndex > segments.size() )
+		throw "bad segment index in rebase info";
+		
+	if ( libraryOrdinal == BIND_SPECIAL_DYLIB_FLAT_LOOKUP ) 
+		throw "flat_namespace linkage not allowed in dyld shared cache";
+	
+	if ( libraryOrdinal == BIND_SPECIAL_DYLIB_MAIN_EXECUTABLE ) 
+		throw "linkage to main executable not allowed in dyld shared cache";
+	
+	if ( libraryOrdinal < 0 ) 
+		throw "bad mach-o binary, special library ordinal not allowd in dyld shared cache";
+	
+	if ( (unsigned)libraryOrdinal > fDependentDylibs.size() ) 
+		throw "bad mach-o binary, library ordinal too big";
+	
+	Binder<A>* binder;
+	if ( libraryOrdinal == BIND_SPECIAL_DYLIB_SELF ) 
+		binder = this;
+	else
+		binder = fDependentDylibs[libraryOrdinal-1].binder;
+	pint_t targetSymbolAddress;
+	if ( ! binder->findExportedSymbolAddress(symbolName, &targetSymbolAddress) ) 
+		throwf("could not resolve %s expected in %s", symbolName, binder->getDylibID());
+
+	// do actual update
+	const MachOLayoutAbstraction::Segment& seg = segments[segmentIndex];
+	uint8_t*  mappedAddr = (uint8_t*)seg.mappedAddress() + segmentOffset;
+	pint_t*   mappedAddrP = (pint_t*)mappedAddr;
+	uint32_t* mappedAddr32 = (uint32_t*)mappedAddr;
+	int32_t svalue32new;
+	switch ( type ) {
+		case BIND_TYPE_POINTER:
+			P::setP(*mappedAddrP, targetSymbolAddress + addend);
+			break;
+		
+		case BIND_TYPE_TEXT_ABSOLUTE32:
+			E::set32(*mappedAddr32, targetSymbolAddress + addend);
+			break;
+			
+		case BIND_TYPE_TEXT_PCREL32:
+			svalue32new = seg.address() + segmentOffset + 4 - (targetSymbolAddress + addend);
+			E::set32(*mappedAddr32, svalue32new);
+			break;
+		
+		default:
+			throw "bad bind type";
+	}
+}
+
+
+
+template <typename A>
+void Binder<A>::doBindDyldLazyInfo()
+{
+	const uint8_t* p = &this->fLinkEditBase[fDyldInfo->lazy_bind_off()];
+	const uint8_t* end = &p[fDyldInfo->lazy_bind_size()];
+	
+	uint8_t type = BIND_TYPE_POINTER;
+	uint64_t segmentOffset = 0;
+	uint8_t segmentIndex = 0;
+	const char* symbolName = NULL;
+	int libraryOrdinal = 0;
+	int64_t addend = 0;
+	while ( p < end ) {
+		uint8_t immediate = *p & BIND_IMMEDIATE_MASK;
+		uint8_t opcode = *p & BIND_OPCODE_MASK;
+		++p;
+		switch (opcode) {
+			case BIND_OPCODE_DONE:
+				// this opcode marks the end of each lazy pointer binding
+				break;
+			case BIND_OPCODE_SET_DYLIB_ORDINAL_IMM:
+				libraryOrdinal = immediate;
+				break;
+			case BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB:
+				libraryOrdinal = read_uleb128(p, end);
+				break;
+			case BIND_OPCODE_SET_DYLIB_SPECIAL_IMM:
+				// the special ordinals are negative numbers
+				if ( immediate == 0 )
+					libraryOrdinal = 0;
+				else {
+					int8_t signExtended = BIND_OPCODE_MASK | immediate;
+					libraryOrdinal = signExtended;
+				}
+				break;
+			case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
+				symbolName = (char*)p;
+				while (*p != '\0')
+					++p;
+				++p;
+				break;
+			case BIND_OPCODE_SET_ADDEND_SLEB:
+				addend = read_sleb128(p, end);
+				break;
+			case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+				segmentIndex = immediate;
+				segmentOffset = read_uleb128(p, end);
+				break;
+			case BIND_OPCODE_DO_BIND:
+				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName);
+				segmentOffset += sizeof(pint_t);
+				break;
+			case BIND_OPCODE_SET_TYPE_IMM:
+			case BIND_OPCODE_ADD_ADDR_ULEB:
+			case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
+			case BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
+			case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
+			default:
+				throwf("bad lazy bind opcode %d", *p);
+		}
+	}	
+	
+
+}
+
+template <typename A>
+void Binder<A>::doBindDyldInfo()
+{
+	const uint8_t* p = &this->fLinkEditBase[fDyldInfo->bind_off()];
+	const uint8_t* end = &p[fDyldInfo->bind_size()];
+	
+	uint8_t type = 0;
+	uint64_t segmentOffset = 0;
+	uint8_t segmentIndex = 0;
+	const char* symbolName = NULL;
+	int libraryOrdinal = 0;
+	int64_t addend = 0;
+	uint32_t count;
+	uint32_t skip;
+	bool done = false;
+	while ( !done && (p < end) ) {
+		uint8_t immediate = *p & BIND_IMMEDIATE_MASK;
+		uint8_t opcode = *p & BIND_OPCODE_MASK;
+		++p;
+		switch (opcode) {
+			case BIND_OPCODE_DONE:
+				done = true;
+				break;
+			case BIND_OPCODE_SET_DYLIB_ORDINAL_IMM:
+				libraryOrdinal = immediate;
+				break;
+			case BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB:
+				libraryOrdinal = read_uleb128(p, end);
+				break;
+			case BIND_OPCODE_SET_DYLIB_SPECIAL_IMM:
+				// the special ordinals are negative numbers
+				if ( immediate == 0 )
+					libraryOrdinal = 0;
+				else {
+					int8_t signExtended = BIND_OPCODE_MASK | immediate;
+					libraryOrdinal = signExtended;
+				}
+				break;
+			case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
+				symbolName = (char*)p;
+				while (*p != '\0')
+					++p;
+				++p;
+				break;
+			case BIND_OPCODE_SET_TYPE_IMM:
+				type = immediate;
+				break;
+			case BIND_OPCODE_SET_ADDEND_SLEB:
+				addend = read_sleb128(p, end);
+				break;
+			case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+				segmentIndex = immediate;
+				segmentOffset = read_uleb128(p, end);
+				break;
+			case BIND_OPCODE_ADD_ADDR_ULEB:
+				segmentOffset += read_uleb128(p, end);
+				break;
+			case BIND_OPCODE_DO_BIND:
+				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName);
+				segmentOffset += sizeof(pint_t);
+				break;
+			case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
+				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName);
+				segmentOffset += read_uleb128(p, end) + sizeof(pint_t);
+				break;
+			case BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
+				bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName);
+				segmentOffset += immediate*sizeof(pint_t) + sizeof(pint_t);
+				break;
+			case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
+				count = read_uleb128(p, end);
+				skip = read_uleb128(p, end);
+				for (uint32_t i=0; i < count; ++i) {
+					bindDyldInfoAt(segmentIndex, segmentOffset, type, libraryOrdinal, addend, symbolName);
+					segmentOffset += skip + sizeof(pint_t);
+				}
+				break;
+			default:
+				throwf("bad bind opcode %d", *p);
+		}
+	}	
+
+	
+
 }
 
 
@@ -376,9 +618,9 @@ void Binder<A>::doSetPreboundUndefines()
 	macho_nlist<P>* const lastUndefine = &symbolTable[dysymtab->iundefsym()+dysymtab->nundefsym()];
 	for (macho_nlist<P>* entry = &symbolTable[dysymtab->iundefsym()]; entry < lastUndefine; ++entry) {
 		if ( entry->n_type() & N_EXT ) {
-			pint_t pbaddr = this->resolveUndefined(entry);
 			//fprintf(stderr, "doSetPreboundUndefines: r_sym=%s, pbaddr=0x%08X, in %s\n", 
 			//	&fStrings[entry->n_strx()], pbaddr, this->getDylibID());
+			pint_t pbaddr = this->resolveUndefined(entry);
 			entry->set_n_value(pbaddr);
 		}
 	}
@@ -469,6 +711,7 @@ void Binder<A>::doBindIndirectSymbols()
 	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)this->fHeader + sizeof(macho_header<P>));
 	const uint32_t cmd_count = this->fHeader->ncmds();
 	const macho_load_command<P>* cmd = cmds;
+	//fprintf(stderr, "doBindIndirectSymbols() %s\n", this->fLayout.getFilePath());
 	for (uint32_t i = 0; i < cmd_count; ++i) {
 		if ( cmd->cmd() == macho_segment_command<P>::CMD ) {
 			const macho_segment_command<P>* seg = (macho_segment_command<P>*)cmd;
@@ -501,6 +744,7 @@ void Binder<A>::doBindIndirectSymbols()
 								break;
 							default:
 								const macho_nlist<P>* undefinedSymbol = &fSymbolTable[symbolIndex];
+								//fprintf(stderr, " sect=%s, index=%d, symbolIndex=%d, sym=%s\n", sect->sectname(), j, symbolIndex, &fStrings[undefinedSymbol->n_strx()]);
 								pint_t symbolAddr = this->resolveUndefined(undefinedSymbol);
 								switch ( sectionType ) {
 									case S_NON_LAZY_SYMBOL_POINTERS:
@@ -557,31 +801,32 @@ typename A::P::uint_t Binder<A>::resolveUndefined(const macho_nlist<P>* undefine
 					throw "two-level ordinal out of range";
 				binder = fDependentDylibs[ordinal-1].binder;
 		}	
-		const macho_nlist<P>* sym = binder->findExportedSymbol(symbolName);
-		if ( sym == NULL ) 
-			throwf("could not resolve %s from %s", symbolName, this->getDylibID());
-		return sym->n_value();
+		pint_t addr;
+		if ( ! binder->findExportedSymbolAddress(symbolName, &addr) )
+			throwf("could not resolve %s expected in %s", symbolName, binder->getDylibID());
+		return addr;
 	}
 }
 
 template <typename A>
-const macho_nlist<typename A::P>* Binder<A>::findExportedSymbol(const char* name)
+bool Binder<A>::findExportedSymbolAddress(const char* name, pint_t* result)
 {
-	//fprintf(stderr, "findExportedSymbol(%s) in %s\n", name, this->getDylibID());
-	const macho_nlist<P>* sym = NULL;
-	typename NameToSymbolMap::iterator pos = fHashTable.find(name);
-	if ( pos != fHashTable.end() ) 
-		return pos->second;
+	typename NameToAddrMap::iterator pos = fHashTable.find(name);
+	if ( pos != fHashTable.end() ) {
+		*result = pos->second;
+		//fprintf(stderr, "findExportedSymbolAddress(%s) => 0x%08llX in %s\n", name, (uint64_t)*result, this->getDylibID());
+		return true;
+	}
 
 	// search re-exports
 	for (typename std::vector<BinderAndReExportFlag>::iterator it = fDependentDylibs.begin(); it != fDependentDylibs.end(); ++it) {
 		if ( it->reExport ) {
-			sym = it->binder->findExportedSymbol(name);
-			if ( sym != NULL )
-				return sym;
+			if ( it->binder->findExportedSymbolAddress(name, result) )
+				return true;
 		}
 	}
-	return NULL;
+	//fprintf(stderr, "findExportedSymbolAddress(%s) => not found in %s\n", name, this->getDylibID());
+	return false;
 }
 
 

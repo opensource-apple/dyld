@@ -23,7 +23,9 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+all-check: all check
+
+check:
 	./main foo.bundle bar.bundle
 	./main foo.dylib bar.bundle
 

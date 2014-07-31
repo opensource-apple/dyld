@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1999-2008 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -63,8 +63,20 @@
  *	Where arg[i] and env[i] point into the STRING AREA
  */
 
-	.globl __dyld_start
 
+
+	// Hack to make _offset_to_dyld_all_image_infos work
+	// Without this local symbol, assembler will error out about in subtraction expression
+	// The real _dyld_all_image_infos (non-weak) _dyld_all_image_infos is defined in dyld_gdb.o
+	// and the linker with throw this one away and use the real one instead.
+	.section __DATA,__datacoal_nt,coalesced
+	.globl _dyld_all_image_infos
+	.weak_definition _dyld_all_image_infos
+_dyld_all_image_infos:	.long 0
+
+
+
+	.globl __dyld_start
 
 #ifdef __i386__
 	.data
@@ -84,7 +96,17 @@ _stub_binding_helper:
 	.globl	_dyld_func_lookup
 _dyld_func_lookup:
 	jmp	__Z18lookupDyldFunctionPKcPm
+	nop
+	nop
+	nop
+_offset_to_dyld_all_image_infos:
+	.long	_dyld_all_image_infos - . + 0x1010 
+	.long	0
+	# space for future stable entry points
+	.space	16
 
+	
+	
 	.text
 	.align	4, 0x90
 	.globl __dyld_start
@@ -106,7 +128,7 @@ L__dyld_start_picbase:
 	pushl   %ebx		# param2 = argc
 	movl	4(%ebp),%ebx	
 	pushl   %ebx		# param1 = mh
-	call	__ZN13dyldbootstrap5startEPK11mach_headeriPPKcl	
+	call	__ZN13dyldbootstrap5startEPK12macho_headeriPPKcl	
 
     	# clean up stack and jump to result
 	movl	%ebp,%esp	# restore the unaligned stack pointer
@@ -121,6 +143,7 @@ dyld_stub_binding_helper:
 	hlt
 L_end:
 #endif /* __i386__ */
+
 
 
 #if __x86_64__
@@ -141,6 +164,15 @@ _stub_binding_helper:
 	.globl	_dyld_func_lookup
 _dyld_func_lookup:
 	jmp	__Z18lookupDyldFunctionPKcPm
+	nop
+	nop
+	nop
+_offset_to_dyld_all_image_infos:
+	.long	_dyld_all_image_infos - . + 0x1010 
+	.long	0
+	# space for future stable entry points
+	.space	16
+
 
 	.text
 	.align 2,0x90
@@ -157,7 +189,7 @@ __dyld_start:
 	movq	__dyld_start_static(%rip), %r8
 	leaq	__dyld_start(%rip), %rcx
 	subq	 %r8, %rcx	# param4 = slide into %rcx
-	call	__ZN13dyldbootstrap5startEPK11mach_headeriPPKcl	
+	call	__ZN13dyldbootstrap5startEPK12macho_headeriPPKcl	
 
     	# clean up stack and jump to result
 	movq	%rbp,%rsp	# restore the unaligned stack pointer
@@ -196,7 +228,12 @@ _stub_binding_helper:
 	.globl	_dyld_func_lookup
 _dyld_func_lookup:
 	b	__Z18lookupDyldFunctionPKcPm
-	
+	nop 
+_offset_to_dyld_all_image_infos:
+	.long	_dyld_all_image_infos - . + 0x1010 
+	.long	0
+	# space for future stable entry points
+	.space	16
 	
 	
 	.text
@@ -219,7 +256,7 @@ L__dyld_start_picbase:
 	addis   r6,r31,ha16(__dyld_start_static_picbase-L__dyld_start_picbase)
 	lg      r6,lo16(__dyld_start_static_picbase-L__dyld_start_picbase)(r6)
 	subf    r6,r6,r31       ; r6 = slide
-	bl	__ZN13dyldbootstrap5startEPK11mach_headeriPPKcl	
+	bl	__ZN13dyldbootstrap5startEPK12macho_headeriPPKcl	
 	
 	; clean up stack and jump to result
 	mtctr	r3		; Put entry point in count register
@@ -234,6 +271,81 @@ dyld_stub_binding_helper:
 L_end:
 #endif /* __ppc__ */
 
+#if __arm__
+	.data
+	.align 2
+__dyld_start_static_picbase: 
+	.long	L__dyld_start_picbase
+
+	.text
+	.align 2
+	.globl	_stub_binding_helper
+_stub_binding_helper:
+	b	_stub_binding_helper_interface
+	nop 
+	
+	.globl	_dyld_func_lookup
+_dyld_func_lookup:
+	b       _branch_to_lookupDyldFunction
+	nop
+	
+_offset_to_dyld_all_image_infos:
+	.long	_dyld_all_image_infos - . + 0x1010 
+	.long	0
+	# space for future stable entry points
+	.space	16
+    
+    
+	.text
+	.align 2
+__dyld_start:
+	// call dyldbootstrap::start(app_mh, argc, argv, slide)         
+
+	ldr	r3, L__dyld_start_picbase_ptr
+L__dyld_start_picbase:
+	sub	r0, pc, #8	// load actual PC
+	ldr	r3, [r0, r3]	// load expected PC
+	sub	r3, r0, r3	// r3 = slide
+
+	ldr	r0, [sp]	// r0 = mach_header
+	ldr	r1, [sp, #4]	// r1 = argc
+	add	r2, sp, #8	// r2 = argv
+
+	mov	r8, sp		// save stack pointer
+	bic     sp, sp, #7	// force 8-byte alignment
+       
+	bl	__ZN13dyldbootstrap5startEPK12macho_headeriPPKcl
+       
+	// clean up stack and jump to result
+	add	sp, r8, #4	// remove the mach_header argument.
+	bx	r0		// jump to the program's entry point
+
+	.align 2
+L__dyld_start_picbase_ptr:
+	.long	__dyld_start_static_picbase-L__dyld_start_picbase
+
+	
+	.text
+	.align 2
+_branch_to_lookupDyldFunction:
+	// arm has no "bx label" instruction, so need this island in case lookupDyldFunction() is in thumb
+	ldr ip, L2
+L1:	ldr pc, [pc, ip]
+L2:	.long   _lookupDyldFunction_ptr-8-L1
+       
+ 	.data
+	.align 2
+_lookupDyldFunction_ptr:
+	.long	__Z18lookupDyldFunctionPKcPm
+	
+      
+	.text
+	.globl dyld_stub_binding_helper
+dyld_stub_binding_helper:
+	trap
+
+L_end:
+#endif /* __arm__ */
 
 /*
  * dyld calls this function to terminate a process.
@@ -244,10 +356,12 @@ L_end:
 	.align 2
 	.globl	_dyld_fatal_error
 _dyld_fatal_error:
-#if __ppc__ || __ppc64__
+#if __ppc__ || __ppc64__ || __arm__
     trap
+    nop
 #elif __x86_64__ || __i386__
     int3
+    nop
 #else
     #error unknown architecture
 #endif

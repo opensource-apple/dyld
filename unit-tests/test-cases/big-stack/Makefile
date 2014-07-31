@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2006-2008 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -23,11 +23,28 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+# rosetta does not support very large stack sizes
+STACK_SIZE = 0x83000000
+ifeq "ppc" "$(ARCH)"
+	MACHINE =  $(shell arch)
+	ifeq "i386" "$(MACHINE)"
+		STACK_SIZE = 0x02100000
+	endif
+endif
+
+
+ifeq "armv6" "$(ARCH)"
+	STACK_SIZE = 0x20000000
+endif
+
+
+all-check: all check
+
+check:
 	${TESTROOT}/bin/exit-zero-pass.pl "big stack" "big stack failed" ./main
 
 all:
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c -Wl,-w -Wl,-stack_size -Wl,0x83000000
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c -Wl,-w -Wl,-stack_size -Wl,${STACK_SIZE} -DSTACK_SIZE=${STACK_SIZE}
 
 clean:
 	${RM} ${RMFLAGS} main

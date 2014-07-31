@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2008 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -26,6 +26,130 @@
 #include <string.h>
 #include <mach-o/loader.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <stdbool.h>
+#include <stdarg.h>
+#include <pthread.h>
+
+#include "mach-o/dyld_priv.h"
+#include "dyldLibSystemInterface.h"
+
+extern void _ZN4dyld3logEPKcz(const char*, ...);
+extern struct LibSystemHelpers* _ZN4dyld17gLibSystemHelpersE;
+
+
+#if __LP64__
+	#define LC_SEGMENT_COMMAND		LC_SEGMENT_64
+	#define macho_header			mach_header_64
+	#define macho_segment_command	segment_command_64
+	#define macho_section			section_64
+	#define getsectdatafromheader	getsectdatafromheader_64
+#else
+	#define LC_SEGMENT_COMMAND		LC_SEGMENT
+	#define macho_header			mach_header
+	#define macho_segment_command	segment_command
+	#define macho_section			section
+#endif
+
+
+#if __i386__ || __x86_64 || __ppc__
+
+static struct dyld_unwind_sections	sDyldInfo;
+static void*						sDyldTextEnd;
+static pthread_key_t				sCxaKey = 0;
+static char							sPreMainCxaGlobals[2*sizeof(long)];
+
+// called by dyldStartup.s very early
+void dyld_exceptions_init(struct mach_header* mh, intptr_t slide)
+{
+	// record location of unwind sections in dyld itself
+    sDyldInfo.mh = mh;    
+	const struct load_command* cmd;
+	unsigned long i;
+	cmd = (struct load_command*) ((char *)mh + sizeof(struct macho_header));
+	for(i = 0; i < mh->ncmds; i++) {
+	    if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
+			const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+			if ( strcmp(seg->segname, "__TEXT") == 0 ) {
+				const struct macho_section* sect = (struct macho_section*)( (char*)seg + sizeof(struct macho_segment_command) );
+				unsigned long j;
+				for (j = 0; j < seg->nsects; j++) {
+					if ( strcmp(sect[j].sectname, "__eh_frame") == 0 ) {
+						sDyldInfo.dwarf_section = (void*)(sect[j].addr + slide);
+						sDyldInfo.dwarf_section_length = sect[j].size;
+					}
+					else if ( strcmp(sect[j].sectname, "__unwind_info") == 0 ) {
+						sDyldInfo.compact_unwind_section = (void*)(sect[j].addr + slide);
+						sDyldInfo.compact_unwind_section_length = sect[j].size;
+					}
+				}
+				sDyldTextEnd = (void*)(seg->vmaddr + seg->vmsize + slide);
+		    }
+		}
+	    cmd = (struct load_command*)( (char*)cmd + cmd->cmdsize );
+	}
+}
+
+// called by libuwind code to find unwind information in dyld
+bool _dyld_find_unwind_sections(void* addr, struct dyld_unwind_sections* info)
+{
+	if ( ((void*)sDyldInfo.mh < addr) && (addr < sDyldTextEnd) ) { 
+		*info = sDyldInfo;
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
+
+
+// called by libstdc++.a 
+char* __cxa_get_globals() 
+{	
+	// if libSystem.dylib not yet initialized, or is old libSystem, use shared global
+	if ( (_ZN4dyld17gLibSystemHelpersE == NULL) || (_ZN4dyld17gLibSystemHelpersE->version < 5) )
+		return sPreMainCxaGlobals;
+
+	if ( sCxaKey == 0 ) {
+		// create key
+		// we don't need a lock because only one thread can be in dyld at a time
+		_ZN4dyld17gLibSystemHelpersE->pthread_key_create(&sCxaKey, &free);
+	}
+	char* data = (char*)pthread_getspecific(sCxaKey);
+	if ( data == NULL ) {
+		data = calloc(2,sizeof(void*));
+		_ZN4dyld17gLibSystemHelpersE->pthread_setspecific(sCxaKey, data);
+	}
+	return data; 
+}
+
+// called by libstdc++.a 
+char* __cxa_get_globals_fast() 
+{ 
+	// if libSystem.dylib not yet initialized, or is old libSystem, use shared global
+	if ( (_ZN4dyld17gLibSystemHelpersE == NULL) || (_ZN4dyld17gLibSystemHelpersE->version < 5) )
+		return sPreMainCxaGlobals;
+
+	return pthread_getspecific(sCxaKey); 
+}
+
+#if __ppc__
+	// the ppc version of _Znwm in libstdc++.a uses keymgr
+	// need to override that
+	void* _Znwm(size_t size) { return malloc(size); }
+#endif
+
+
+
+
+
+#else /*  __i386__ || __x86_64 || __ppc__ */
+
+
+
+
+
 
 //
 // BEGIN copy of code from libgcc.a source file unwind-dw2-fde-darwin.c
@@ -158,18 +282,6 @@ void _keymgr_set_per_thread_data(unsigned int key, void *keydata)
 	dyld_abort();
 }
 
-#if __LP64__
-	#define LC_SEGMENT_COMMAND		LC_SEGMENT_64
-	#define macho_header			mach_header_64
-	#define macho_segment_command	segment_command_64
-	#define macho_section			section_64
-	#define getsectdatafromheader	getsectdatafromheader_64
-#else
-	#define LC_SEGMENT_COMMAND		LC_SEGMENT
-	#define macho_header			mach_header
-	#define macho_segment_command	segment_command
-	#define macho_section			section
-#endif
 
 // needed by C++ exception handling code to find __eh_frame section
 const void* getsectdatafromheader(struct mach_header* mh, const char* segname, const char* sectname, unsigned long* size)
@@ -208,5 +320,8 @@ const void* getsectdatafromheader(struct mach_header* mh, const char* segname, c
 		return getsectdatafromheader_64(mh, segname, sectname, size);
 	}
 #endif
+
+#endif
+
 
 

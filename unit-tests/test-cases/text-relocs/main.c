@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -26,14 +26,21 @@
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
-extern bool testBar();
+extern int getx();
+extern void setx(int a);
 
 int main(int argc, const char* argv[])
 {
-	if ( testBar() )
-		PASS("text-reloc");
-	else
+	setx(20);
+	if ( getx() != 20 )
 		FAIL("text-reloc");
+	else {
+		setx(99);
+		if ( getx() == 99 )
+			PASS("text-reloc");
+		else
+			FAIL("text-reloc");
+	}
 	return EXIT_SUCCESS;
 }
 

@@ -34,7 +34,7 @@
 
 static int singleMappedCount = 0;
 static int batchMappedCount = 0;
-
+static int singleUnMappedCount = 0;
 
 
 static const char* batchMappedHandler(enum dyld_image_states state, uint32_t infoCount, const struct dyld_image_info info[])
@@ -64,6 +64,21 @@ static const char* singleMappedHandler(enum dyld_image_states state, uint32_t in
 	return NULL;
 }
 
+static const char* singleUnmappedHandler(enum dyld_image_states state, uint32_t infoCount, const struct dyld_image_info info[])
+{
+	printf("singleUnmappedHandler(%s)\n", info[0].imageFilePath);
+	if ( state != dyld_image_state_terminated ) {
+		FAIL("image-state-change: singleUnmappedHandler passed state %d", state);
+		exit(0);
+	}
+	if ( infoCount != 1 ) {
+		FAIL("image-state-change: singleUnmappedHandler given %d images", infoCount);
+		exit(0);
+	}
+	++singleUnMappedCount;
+	return NULL;
+}
+
 static void loadAndUnLoad()
 {
 	void* handle = dlopen("foo.bundle", RTLD_LAZY);
@@ -85,6 +100,7 @@ int main(int argc, const char* argv[])
 	// tell dyld we want to know when images are mapped
 	dyld_register_image_state_change_handler(dyld_image_state_dependents_mapped, true, batchMappedHandler);
 	dyld_register_image_state_change_handler(dyld_image_state_mapped, false, singleMappedHandler);
+	dyld_register_image_state_change_handler(dyld_image_state_terminated, false, singleUnmappedHandler);
 	// with batch mode we get notified of existing images, but not with single mode, so re-sync counts
 	batchMappedCount=0;
 	
@@ -92,7 +108,7 @@ int main(int argc, const char* argv[])
 
 	loadAndUnLoad();
 	
-	if ( singleMappedCount == batchMappedCount )
+	if ( (singleMappedCount == batchMappedCount) && (singleMappedCount == singleUnMappedCount) )
 		PASS("image-state-change");
 	else
 		FAIL("image-state-change: batch count=%d, single count=%d", batchMappedCount, singleMappedCount);

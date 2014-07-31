@@ -23,9 +23,13 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
-	./main "`pwd`/libfoo.dylib"
-	export DYLD_LIBRARY_PATH="`pwd`/alt" && ./main "`pwd`/libfoo.dylib"
+PWD = $(shell pwd)
+
+all-check: all check
+
+check:
+	./main "${PWD}/libfoo.dylib"
+	export DYLD_LIBRARY_PATH="${PWD}/alt" && ./main "${PWD}/libfoo.dylib"
 
 all: main alt/libfoo.dylib
 
@@ -35,10 +39,10 @@ main : main.c libfoo.dylib
 
 alt/libfoo.dylib : foo.c
 	mkdir -p alt
-	${CC} ${CCFLAGS} -dynamiclib foo.c -o "`pwd`/alt/libfoo.dylib" -DALT 
+	${CC} ${CCFLAGS} -dynamiclib foo.c -o "${PWD}/alt/libfoo.dylib" -DALT 
 
 libfoo.dylib : foo.c
-	${CC} ${CCFLAGS} -dynamiclib foo.c -o "`pwd`/libfoo.dylib"
+	${CC} ${CCFLAGS} -dynamiclib foo.c -o "${PWD}/libfoo.dylib"
 
 
 

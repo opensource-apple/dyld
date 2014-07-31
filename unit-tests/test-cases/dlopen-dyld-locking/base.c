@@ -41,6 +41,7 @@ static void __attribute__((constructor)) myinit()
 
 void waitForState(int value)
 {
+	//fprintf(stderr, "waitForState(%d), currently %d\n", value, sValue);
 	pthread_mutex_lock(&sBarrierMutex);
 	while ( sValue < value ) {
 		struct timeval        tvNow;
@@ -49,7 +50,7 @@ void waitForState(int value)
 		TIMEVAL_TO_TIMESPEC(&tvNow, &tsTimeout);
 		tsTimeout.tv_sec += 2;	  // fail if block for 2 seconds
 		if ( pthread_cond_timedwait(&sBarrierFree, &sBarrierMutex, &tsTimeout) == ETIMEDOUT ) {
-			FAIL("dlsym-dyld-locking");
+			FAIL("dlopen-dyld-locking: lock timed out");
 			exit(0);
 		}
 	}
@@ -60,6 +61,7 @@ void waitForState(int value)
 void setState(int value)
 {
 	pthread_mutex_lock(&sBarrierMutex);
+	//fprintf(stderr, "setState(%d)\n", value);
 	sValue = value;	
 	pthread_cond_broadcast(&sBarrierFree);
 	pthread_mutex_unlock(&sBarrierMutex);

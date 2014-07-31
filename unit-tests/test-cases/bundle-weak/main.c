@@ -33,7 +33,7 @@ int main()
 {
 	void* handle = dlopen("test.bundle", RTLD_LAZY);
 	if ( handle == NULL ) {
-		FAIL("dlopen(\test.bundle\") failed");
+		FAIL("dlopen(\"test.bundle\") failed: %s", dlerror());
 		return 0;
 	}
 	

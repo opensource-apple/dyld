@@ -28,7 +28,9 @@ include ${TESTROOT}/include/common.makefile
 # have the entry point called before initializers are run
 #
 
-run: all
+all-check: all check
+
+check:
 	./main-10.4
 	./main-10.5
 

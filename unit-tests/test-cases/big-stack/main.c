@@ -31,6 +31,7 @@
 // This builds an executable that needs > 2GB of stack
 //
 
+
 char* keepAlive;	// to keep compiler from optimizing away stack variable
 
 // keep recursing until desired stack size achieved
@@ -38,7 +39,10 @@ void foo(unsigned long long stackSize, char* stackStart)
 {
 	char buffer[32*1024*1024];
 	keepAlive = buffer;
-	if ( (stackStart - buffer) > stackSize )
+	// only recursive if there is enough room for next buffer
+	intptr_t freeStackSpace = (buffer - sizeof(buffer)) - (stackStart - stackSize);
+	//fprintf(stderr, "&buffer=%p, stackStart=%p, freeStackSpace=0x%lx\n", buffer, stackStart, freeStackSpace); 
+	if ( freeStackSpace < sizeof(buffer) )
 		return;
 	else
 		foo(stackSize, stackStart);
@@ -69,7 +73,7 @@ main()
 		foo(0x02000000, &start);	
 	else
 #endif	
-		foo(0x81000000, &start);	// 2.1 GB stack
+		foo(STACK_SIZE, &start);	
 	return EXIT_SUCCESS;
 }
 

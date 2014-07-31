@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -24,12 +24,8 @@
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <stdbool.h>
 
-extern int* foo;
+static int x = 0;
 
-bool testBar()
-{
-	return (*foo == 10);
-}
-
-int bar = 10;
+int getx() { return x; }
+void setx(int a) { x = a; }
 

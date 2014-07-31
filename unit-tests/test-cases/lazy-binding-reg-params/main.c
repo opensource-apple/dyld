@@ -48,13 +48,14 @@ static bool floattest()
 {
 #if __ppc__ || __ppc64__
 	return dofloattest(1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0,11.0,12.0,13.0);
-#elif __i386__ || __x86_64__ 
+#elif __i386__ || __x86_64__ || __arm__
 	return true;
 #else
-	#error unknown architecture
+	#error unknown arch
 #endif
 }
 
+#if __i386__ || __x86_64__ || __ppc__ || __ppc64__
 static bool vectorSupport()
 {
 #if __ppc__
@@ -68,7 +69,6 @@ static bool vectorSupport()
 #endif
 }
 
-
 static bool vectortest()
 {
 	vFloat p1 = { 1.1, 1.2, 1.3, 1.4 };
@@ -78,6 +78,7 @@ static bool vectortest()
 	vFloat p5 = { 5.1, 5.2, 5.3, 5.4 };
 	return dovectortest(p1, p2, p3, p4, p5);
 }
+#endif
 
 int main()
 {
@@ -91,11 +92,13 @@ int main()
 		return EXIT_SUCCESS;
 	}
 
+#if __i386__ || __x86_64__ || __ppc__ || __ppc64__
 	if ( vectorSupport() && ! vectortest() ) {
 		FAIL("lazy-binding-reg-params vector parameters");
 		return EXIT_SUCCESS;
 	}
-		
+#endif
+
 	PASS("lazy-binding-reg-params");
 	return EXIT_SUCCESS;
 }

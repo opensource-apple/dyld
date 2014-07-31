@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2004-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -24,7 +24,10 @@
 
 #include <stddef.h>
 #include <string.h>
+#include <malloc/malloc.h>
+
 #include <crt_externs.h>
+#include <Availability.h>
 
 #include "mach-o/dyld.h"
 #include "mach-o/dyld_priv.h"
@@ -33,6 +36,14 @@
 
 extern "C" int __cxa_atexit(void (*func)(void *), void *arg, void *dso);
 
+#define DYLD_SHARED_CACHE_SUPPORT (__ppc__ || __i386__ || __ppc64__ || __x86_64__)
+
+// deprecated APIs are still availble on Mac OS X, but not on iPhone OS
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+	#define DEPRECATED_APIS_SUPPORTED 0
+#else
+	#define DEPRECATED_APIS_SUPPORTED 1
+#endif
 
 /*
  * names_match() takes an install_name from an LC_LOAD_DYLIB command and a
@@ -86,6 +97,8 @@ const char* libraryName)
 	}
 	return(FALSE);
 }
+
+#if DEPRECATED_APIS_SUPPORTED
 
 void NSInstallLinkEditErrorHandlers(
 const NSLinkEditErrorHandlers* handlers)
@@ -294,6 +307,7 @@ uint32_t options)
 	    _dyld_func_lookup("__dyld_NSAddImage", (void**)&p);
 	return(p(image_name, options));
 }
+#endif // DEPRECATED_APIS_SUPPORTED
 
 /*
  * This routine returns the current version of the named shared library the
@@ -385,6 +399,7 @@ const char* libraryName)
 	return(-1);
 }
 
+#if DEPRECATED_APIS_SUPPORTED
 /*
  * NSCreateObjectFileImageFromFile() creates an NSObjectFileImage for the
  * specified file name if the file is a correct Mach-O file that can be loaded
@@ -477,31 +492,6 @@ uint32_t options)
 }
 
 
-/*
- * NSFindSectionAndOffsetInObjectFileImage() takes the specified imageOffset
- * into the specified ObjectFileImage and returns the segment/section name and
- * offset into that section of that imageOffset.  Returns FALSE if the
- * imageOffset is not in any section.  You can used the resulting sectionOffset
- * to index into the data returned by NSGetSectionDataInObjectFileImage.
- * 
- * SPI: currently only used by ZeroLink to detect +load methods
- */
-bool 
-NSFindSectionAndOffsetInObjectFileImage(
-NSObjectFileImage objectFileImage, 
-unsigned long imageOffset,
-const char** segmentName, 	/* can be NULL */
-const char** sectionName, 	/* can be NULL */
-unsigned long* sectionOffset)	/* can be NULL */
-{
-	DYLD_LOCK_THIS_BLOCK;
-    static bool (*p)(NSObjectFileImage, unsigned long, const char**, const char**, unsigned long*) = NULL;
-
-	if(p == NULL)
-	    _dyld_func_lookup("__dyld_NSFindSectionAndOffsetInObjectFileImage", (void**)&p);
-		
-	return p(objectFileImage, imageOffset, segmentName, sectionName, sectionOffset);
-}
 
 
 /*
@@ -620,24 +610,6 @@ unsigned long *size) /* can be NULL */
 	return p(objectFileImage, segmentName, sectionName, size);
 }
 
-/*
- * NSHasModInitObjectFileImage() returns TRUE if the NSObjectFileImage has any
- * module initialization sections and FALSE it it does not.
- *
- * SPI: currently only used by ZeroLink to detect C++ initializers
- */
-bool
-NSHasModInitObjectFileImage(
-NSObjectFileImage objectFileImage)
-{
-	DYLD_LOCK_THIS_BLOCK;
-    static bool (*p)(NSObjectFileImage) = NULL;
-
-	if(p == NULL)
-	    _dyld_func_lookup("__dyld_NSHasModInitObjectFileImage", (void**)&p);
-		
-	return p(objectFileImage);
-}
 
 void
 NSLinkEditError(
@@ -683,6 +655,9 @@ uint32_t options)
 }
 #endif
 
+
+#endif // DEPRECATED_APIS_SUPPORTED
+
 /*
  *_NSGetExecutablePath copies the path of the executable into the buffer and
  * returns 0 if the path was successfully copied in the provided buffer. If the
@@ -705,6 +680,7 @@ uint32_t *bufsize)
 	return(p(buf, bufsize));
 }
 
+#if DEPRECATED_APIS_SUPPORTED
 void
 _dyld_lookup_and_bind(
 const char* symbol_name,
@@ -775,6 +751,7 @@ const void* address)
 	    _dyld_func_lookup("__dyld_bind_fully_image_containing_address", (void**)&p);
 	return p(address);
 }
+#endif // DEPRECATED_APIS_SUPPORTED
 
 
 /*
@@ -903,12 +880,14 @@ _dyld_bind_objc_module(const void* objc_module)
 }
 #endif
 
+#if DEPRECATED_APIS_SUPPORTED
 bool
 _dyld_present(void)
 {
 	// this function exists for compatiblity only
 	return true;
 }
+#endif
 
 uint32_t
 _dyld_image_count(void)
@@ -954,6 +933,18 @@ _dyld_get_image_name(uint32_t image_index)
 	return(p(image_index));
 }
 
+// SPI in Mac OS X 10.6
+intptr_t _dyld_get_image_slide(const struct mach_header* mh)
+{
+	DYLD_NO_LOCK_THIS_BLOCK;
+    static intptr_t (*p)(const struct mach_header*) = NULL;
+
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_get_image_slide", (void**)&p);
+	return(p(mh));
+}
+
+
 bool
 _dyld_image_containing_address(const void* address)
 {
@@ -988,6 +979,7 @@ void (*monaddition)(char *lowpc, char *highpc))
 	p(monaddition);
 }
 
+#if DEPRECATED_APIS_SUPPORTED
 bool _dyld_launched_prebound(void)
 {
 	DYLD_LOCK_THIS_BLOCK;
@@ -1007,6 +999,7 @@ bool _dyld_all_twolevel_modules_prebound(void)
 	    _dyld_func_lookup("__dyld_all_twolevel_modules_prebound", (void**)&p);
 	return(p());
 }
+#endif // DEPRECATED_APIS_SUPPORTED
 
 
 #include <dlfcn.h>
@@ -1016,7 +1009,6 @@ bool _dyld_all_twolevel_modules_prebound(void)
 #include <mach-o/dyld.h>
 #include <servers/bootstrap.h>
 #include "dyldLibSystemInterface.h"
-#include "dyld_shared_cache_user.h"
 
 
 // pthread key used to access per-thread dlerror message
@@ -1061,54 +1053,30 @@ static char* getPerThreadBufferFor_dlerror(uint32_t sizeRequired)
 }
 
 
-
-static bool get_update_dyld_shared_cache_bootstrap_port(mach_port_t& mp)
-{
-	static bool found = false;
-	static mach_port_t port;
-	if ( found ) {
-		mp = port;
-		return true;
-	}
-	if ( bootstrap_look_up(bootstrap_port, "com.apple.dyld", &port) == KERN_SUCCESS ) {
-		found = true;
-		mp = port;
-		return true;
-	}
-	return false;
-}
-
-#if __ppc__
-	#define CUR_ARCH	CPU_TYPE_POWERPC
-#elif __ppc64__
-	#define CUR_ARCH	CPU_TYPE_POWERPC64
-#elif __i386__
-	#define CUR_ARCH	CPU_TYPE_I386
-#elif __x86_64__
-	#define CUR_ARCH	CPU_TYPE_X86_64
-#endif
-
+#if DYLD_SHARED_CACHE_SUPPORT
 static void shared_cache_missing()
 {
-	mach_port_t mp;
-	if ( get_update_dyld_shared_cache_bootstrap_port(mp) )
-		dyld_shared_cache_missing(mp, CUR_ARCH, 0);
+	// leave until dyld's that might call this are rare
 }
 
 static void shared_cache_out_of_date()
 {
-	mach_port_t mp;
-	if ( get_update_dyld_shared_cache_bootstrap_port(mp) )
-		dyld_shared_cache_out_of_date(mp, CUR_ARCH, 0);
+	// leave until dyld's that might call this are rare
 }
+#endif // DYLD_SHARED_CACHE_SUPPORT
 
 
-
-// that table passed to dyld containing thread helpers
-static dyld::LibSystemHelpers sHelpers = { 4, &dyldGlobalLockAcquire, &dyldGlobalLockRelease,  
+// the table passed to dyld containing thread helpers
+static dyld::LibSystemHelpers sHelpers = { 6, &dyldGlobalLockAcquire, &dyldGlobalLockRelease,  
 									&getPerThreadBufferFor_dlerror, &malloc, &free, &__cxa_atexit,
+						#if DYLD_SHARED_CACHE_SUPPORT
 									&shared_cache_missing, &shared_cache_out_of_date,
-									NULL, NULL };
+						#else
+									NULL, NULL,
+						#endif
+									NULL, NULL,
+									&pthread_key_create, &pthread_setspecific,
+									&malloc_size };
 
 
 //
@@ -1208,6 +1176,52 @@ void dyld_register_image_state_change_handler(dyld_image_states state,
 }
 
 
+const struct dyld_all_image_infos* _dyld_get_all_image_infos()
+{
+	DYLD_NO_LOCK_THIS_BLOCK;
+    static struct dyld_all_image_infos* (*p)() = NULL;
 
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_get_all_image_infos", (void**)&p);
+	return p();
+}
+
+#if !__arm__
+__attribute__((visibility("hidden"))) 
+bool _dyld_find_unwind_sections(void* addr, dyld_unwind_sections* info)
+{
+	DYLD_NO_LOCK_THIS_BLOCK;
+    static void* (*p)(void*, dyld_unwind_sections*) = NULL;
+
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_find_unwind_sections", (void**)&p);
+	return p(addr, info);
+}
+#endif
+
+
+#if __i386__ || __x86_64__
+__attribute__((visibility("hidden"))) 
+void* _dyld_fast_stub_entry(void* loadercache, long lazyinfo)
+{
+	DYLD_NO_LOCK_THIS_BLOCK;
+    static void* (*p)(void*, long) = NULL;
+
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_fast_stub_entry", (void**)&p);
+	return p(loadercache, lazyinfo);
+}
+#endif
+
+
+const char* dyld_image_path_containing_address(const void* addr)
+{
+	DYLD_NO_LOCK_THIS_BLOCK;
+    static const char* (*p)(const void*) = NULL;
+
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_image_path_containing_address", (void**)&p);
+	return p(addr);
+}
 
 

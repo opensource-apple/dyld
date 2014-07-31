@@ -23,41 +23,46 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run :  check1 check2 check3 check4 check5 check6 check7 check8  
+PWD = $(shell pwd)
 
-all :  main1 main2 main3 main4 main5 main6 main7 main8  
+
+all-check: all check
+
+check:  check1 check2 check3 check4 check5 check6 check7 check8  
+
+all:  main1 main2 main3 main4 main5 main6 main7 main8  
 
 main : main.c libfoo.dylib
 	${CC} -Wno-deprecated-declarations -I${TESTROOT}/include main.c -o main libfoo.dylib
 
 libfoo.dylib : foo.c
-	${CC} -I${TESTROOT}/include  foo.c -dynamiclib -o $$PWD/libfoo.dylib
+	${CC} -I${TESTROOT}/include  foo.c -dynamiclib -o $(PWD)/libfoo.dylib
 
 libfoo_debug.dylib : foo.c
-	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -DDEBUG -o $$PWD/libfoo_debug.dylib -install_name $$PWD/libfoo.dylib
+	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -DDEBUG -o libfoo_debug.dylib -install_name $(PWD)/libfoo.dylib
 
 hide/libfoo.dylib : foo.c
-	mkdir -p $$PWD/hide
-	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -o $$PWD/hide/libfoo.dylib -install_name $$PWD/libfoo.dylib
+	mkdir -p $(PWD)/hide
+	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -o hide/libfoo.dylib -install_name $(PWD)/libfoo.dylib
 
 hide/libfoo_debug.dylib : foo.c
-	mkdir -p $$PWD/hide
-	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -o $$PWD/hide/libfoo_debug.dylib -install_name $$PWD/libfoo.dylib
+	mkdir -p $(PWD)/hide
+	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -o hide/libfoo_debug.dylib -install_name $(PWD)/libfoo.dylib
 
 # bar_debug has bar_debug as install name
 libbar.dylib : foo.c
-	${CC} -I${TESTROOT}/include  foo.c -dynamiclib -o $$PWD/libbar.dylib
+	${CC} -I${TESTROOT}/include  foo.c -dynamiclib -o libbar.dylib
 
 libbar_debug.dylib : foo.c
-	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -DDEBUG -o $$PWD/libbar_debug.dylib 
+	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -DDEBUG -o libbar_debug.dylib 
 
 hide/libbar.dylib : foo.c
-	mkdir -p $$PWD/hide
-	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -o $$PWD/hide/libbar.dylib -install_name $$PWD/libbar.dylib
+	mkdir -p $(PWD)/hide
+	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -o hide/libbar.dylib -install_name $(PWD)/libbar.dylib
 
 hide/libbar_debug.dylib : foo.c
-	mkdir -p $$PWD/hide
-	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -o $$PWD/hide/libbar_debug.dylib -install_name $$PWD/libbar_debug.dylib
+	mkdir -p $(PWD)/hide
+	${CC} -I${TESTROOT}/include  foo.c -dynamiclib  -o hide/libbar_debug.dylib -install_name $(PWD)/libbar_debug.dylib
 
 clean:
 	rm -rf libfoo.dylib libfoo_debug.dylib hide libbar.dylib libbar_debug.dylib main1 main2 main3 main4 main5 main6 main7 main8
@@ -70,9 +75,9 @@ clean:
 main1 : main.c libfoo.dylib
 	${CC} -Wno-deprecated-declarations -I${TESTROOT}/include  main.c -o main1 libfoo.dylib
 
-check1:	main1
+check1:	
 	DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main1 libfoo.dylib
-	DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main1 $$PWD/libfoo.dylib
+	DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main1 $(PWD)/libfoo.dylib
 
 
 #
@@ -81,11 +86,11 @@ check1:	main1
 main2 : main.c libfoo_debug.dylib
 	${CC} -Wno-deprecated-declarations -I${TESTROOT}/include  main.c -o main2 libfoo_debug.dylib
 
-check2:	main2
+check2:	
 	echo "pwd-1 is ${PWD}"
-	echo "pwd-2 is $$PWD"
+	echo "pwd-2 is $(PWD)"
 	pwd
-	./main2 $$PWD/libfoo.dylib
+	./main2 $(PWD)/libfoo.dylib
 
 
 #
@@ -94,8 +99,8 @@ check2:	main2
 main3 : main.c libfoo.dylib
 	${CC} -Wno-deprecated-declarations -Wno-deprecated-declarations -I${TESTROOT}/include  main.c -o main3 libfoo.dylib
 
-check3:	main3
-	DYLD_LIBRARY_PATH=$$PWD/hide && export DYLD_LIBRARY_PATH && ./main3 $$PWD/libfoo.dylib
+check3:	
+	DYLD_LIBRARY_PATH=$(PWD)/hide && export DYLD_LIBRARY_PATH && ./main3 $(PWD)/libfoo.dylib
 
 
 #
@@ -105,8 +110,8 @@ check3:	main3
 main4 : main.c libfoo.dylib
 	${CC} -Wno-deprecated-declarations -I${TESTROOT}/include  main.c -o main4 libfoo.dylib
 
-check4:	main4
-	DYLD_LIBRARY_PATH=$$PWD/hide && export DYLD_LIBRARY_PATH && DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main4 $$PWD/libfoo.dylib
+check4:	
+	DYLD_LIBRARY_PATH=$(PWD)/hide && export DYLD_LIBRARY_PATH && DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main4 $(PWD)/libfoo.dylib
 
 
 #
@@ -116,8 +121,8 @@ check4:	main4
 main5 : main.c libbar.dylib libbar_debug.dylib
 	${CC} -Wno-deprecated-declarations -I${TESTROOT}/include  main.c -o main5 libbar.dylib
 
-check5:	main5
-	DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main5 $$PWD/libbar.dylib
+check5:	
+	DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main5 $(PWD)/libbar.dylib
 
 
 #
@@ -127,8 +132,8 @@ check5:	main5
 main6 : main.c libbar_debug.dylib
 	${CC} -Wno-deprecated-declarations -I${TESTROOT}/include  main.c -o main6 libbar_debug.dylib
 
-check6:	main6
-	 DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main6 $$PWD/libbar.dylib
+check6:	
+	 DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main6 $(PWD)/libbar.dylib
 
 
 #
@@ -137,8 +142,8 @@ check6:	main6
 main7 : main.c libbar.dylib
 	${CC} -Wno-deprecated-declarations -I${TESTROOT}/include  main.c -o main7 libbar.dylib
 
-check7:	main7
-	DYLD_LIBRARY_PATH=$$PWD/hide && export DYLD_LIBRARY_PATH && ./main7 $$PWD/libbar.dylib
+check7:	
+	DYLD_LIBRARY_PATH=$(PWD)/hide && export DYLD_LIBRARY_PATH && ./main7 $(PWD)/libbar.dylib
 
 
 #
@@ -148,5 +153,5 @@ check7:	main7
 main8 : main.c libbar.dylib
 	${CC} -Wno-deprecated-declarations -I${TESTROOT}/include  main.c -o main8 libbar.dylib
 
-check8:	main8
-	DYLD_LIBRARY_PATH=$$PWD/hide && export DYLD_LIBRARY_PATH && DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main8 $$PWD/libbar.dylib
+check8:	
+	DYLD_LIBRARY_PATH=$(PWD)/hide && export DYLD_LIBRARY_PATH && DYLD_IMAGE_SUFFIX=_debug && export DYLD_IMAGE_SUFFIX && ./main8 $(PWD)/libbar.dylib

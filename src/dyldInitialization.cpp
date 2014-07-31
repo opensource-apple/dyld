@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2008 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -45,13 +45,11 @@
 
 
 #if __LP64__
-	#define macho_header			mach_header_64
 	#define LC_SEGMENT_COMMAND		LC_SEGMENT_64
 	#define macho_segment_command	segment_command_64
 	#define macho_section			section_64
 	#define RELOC_SIZE				3
 #else
-	#define macho_header			mach_header
 	#define LC_SEGMENT_COMMAND		LC_SEGMENT
 	#define macho_segment_command	segment_command
 	#define macho_section			section
@@ -219,13 +217,19 @@ static void segmentProtectDyld(const struct macho_header* mh, intptr_t slide)
 //
 // re-map the main executable to a new random address
 //
-static const struct mach_header* randomizeExecutableLoadAddress(const struct mach_header* orgMH, uintptr_t* appsSlide)
+static const struct macho_header* randomizeExecutableLoadAddress(const struct macho_header* orgMH, const char* envp[], uintptr_t* appsSlide)
 {
 #if __ppc__
 	// don't slide PIE programs running under rosetta
 	if ( dyld::isRosetta() )
 		return orgMH;
 #endif
+	// environment variable DYLD_NO_PIE can disable PIE
+	for(const char** p = envp; *p != NULL; p++) {
+		if ( strncmp(*p, "DYLD_NO_PIE=", 12) == 0 )
+			return orgMH;
+	}
+	
 	// count segments
 	uint32_t segCount = 0;
 	const uint32_t cmd_count = orgMH->ncmds;
@@ -267,6 +271,8 @@ static const struct mach_header* randomizeExecutableLoadAddress(const struct mac
 	// choose a random new base address
 #if __LP64__
 	uintptr_t highestAddressPossible = highestAddressUsed + 0x100000000ULL;
+#elif __arm__
+	uintptr_t highestAddressPossible = 0x2fe00000;
 #else
 	uintptr_t highestAddressPossible = 0x80000000;
 #endif
@@ -287,11 +293,13 @@ static const struct mach_header* randomizeExecutableLoadAddress(const struct mac
 		for (uint32_t i = 0; i < segCount; ++i) {
 			uintptr_t newSegAddress = segs[i].vmaddr - lowestAddressUsed + newBaseAddress;
 			if ( (vm_copy(mach_task_self(), segs[i].vmaddr, segs[i].vmsize, newSegAddress) != KERN_SUCCESS)
+		#if !__arm__  // work around for <rdar://problem/5736393>
 				|| (vm_protect(mach_task_self(), newSegAddress, segs[i].vmsize, true, segs[i].maxprot) != KERN_SUCCESS) 
+		#endif
 				|| (vm_protect(mach_task_self(), newSegAddress, segs[i].vmsize, false, segs[i].initprot) != KERN_SUCCESS) ) {
 				// can't copy so dealloc new region and run with original base address
 				vm_deallocate(mach_task_self(), newBaseAddress, sizeNeeded);
-				dyld::warn("could not relocate position independent exectable\n");
+				dyld::warn("could not relocate position independent executable\n");
 				return orgMH;
 			}
 		}
@@ -300,7 +308,7 @@ static const struct mach_header* randomizeExecutableLoadAddress(const struct mac
 	
 		// run with newly mapped executable
 		*appsSlide = newBaseAddress - lowestAddressUsed;
-		return (const struct mach_header*)newBaseAddress;
+		return (const struct macho_header*)newBaseAddress;
 	}
 	
 	// can't get new range, so don't slide to random address
@@ -327,7 +335,7 @@ extern "C" {
 //  This is code to bootstrap dyld.  This work in normally done for a program by dyld and crt.
 //  In dyld we have to do this manually.
 //
-uintptr_t start(const struct mach_header* appsMachHeader, int argc, const char* argv[], intptr_t slide)
+uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char* argv[], intptr_t slide)
 {
 	// _mh_dylinker_header is magic symbol defined by static linker (ld), see <mach-o/ldsyms.h>
 	const struct macho_header* dyldsMachHeader =  (const struct macho_header*)(((char*)&_mh_dylinker_header)+slide);
@@ -339,11 +347,7 @@ uintptr_t start(const struct mach_header* appsMachHeader, int argc, const char* 
 	}
 	
 	uintptr_t appsSlide = 0;
-	
-	// set pthread keys to dyld range
-	__pthread_tsd_first = 1;
-	_pthread_keys_init();
-	
+		
 	// enable C++ exceptions to work inside dyld
 	dyld_exceptions_init(dyldsMachHeader, slide);
 	
@@ -366,7 +370,7 @@ uintptr_t start(const struct mach_header* appsMachHeader, int argc, const char* 
 	
 	// if main executable was linked -pie, then randomize its load address
 	if ( appsMachHeader->flags & MH_PIE )
-		appsMachHeader = randomizeExecutableLoadAddress(appsMachHeader, &appsSlide);
+		appsMachHeader = randomizeExecutableLoadAddress(appsMachHeader, envp, &appsSlide);
 	
 	// now that we are done bootstrapping dyld, call dyld's main
 	return dyld::_main(appsMachHeader, appsSlide, argc, argv, envp, apple);

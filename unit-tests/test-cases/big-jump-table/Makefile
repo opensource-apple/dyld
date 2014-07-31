@@ -23,7 +23,9 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+all-check: all check
+
+check:
 	./main
 
 all: main
@@ -32,7 +34,7 @@ all: main
 ### The point of this test is to check an edge case for i386 architecture
 ### with "fast stubs".  We want to verify that a fast stub that ends
 ### near the page boundary for the __IMPORT segment does not cause an
-### accidental read beyou the __IMPORT segment
+### accidental read beyond the __IMPORT segment
 ###  rdar://problem/4653725 
 ###
 
@@ -43,13 +45,13 @@ libtest1.dylib: pointers.c funcs.c libfoo.dylib
 	${CC} ${CCFLAGS}  -dynamiclib pointers.c funcs.c -DCASE=1 -o libtest1.dylib libfoo.dylib
 
 libtest2.dylib: pointers.c funcs.c libfoo.dylib
-	${CC} ${CCFLAGS}  -dynamiclib pointers.c funcs.c -DCASE=2  -o libtest2.dylib libfoo.dylib
+	${CC} ${CCFLAGS}  -dynamiclib pointers.c funcs.c -DCASE=2 -o libtest2.dylib libfoo.dylib 
 
 libtest3.dylib: pointers.c funcs.c libfoo.dylib
-	${CC} ${CCFLAGS}  -dynamiclib pointers.c funcs.c -DCASE=3  -o libtest3.dylib libfoo.dylib
+	${CC} ${CCFLAGS}  -dynamiclib pointers.c funcs.c -DCASE=3 -o libtest3.dylib libfoo.dylib 
 
 libtest4.dylib: pointers.c funcs.c libfoo.dylib
-	${CC} ${CCFLAGS}  -dynamiclib pointers.c funcs.c -DCASE=4  -o libtest4.dylib libfoo.dylib
+	${CC} ${CCFLAGS}  -dynamiclib pointers.c funcs.c -DCASE=4 -o libtest4.dylib libfoo.dylib 
 
 libfoo.dylib: foo.c 
 	${CC} ${CCFLAGS} -dynamiclib foo.c -o libfoo.dylib

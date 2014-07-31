@@ -23,13 +23,16 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+
+all-check: all check
+
+check:
 	export DYLD_IMAGE_SUFFIX=_missing && ${TESTROOT}/bin/exit-zero-pass.pl "weak-symbol" "weak-symbol" ./main
 
 all: foo.c main.c
 	${CC} foo.c -dynamiclib -o libfoo.dylib  -DSYMBOL_PRESENT 
 	${CC} foo.c -dynamiclib -o libfoo_missing.dylib -install_name libfoo.dylib
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} -I${TESTROOT}/include -L. -lfoo main.c -o main  
+	${CC} -I${TESTROOT}/include -L. -lfoo main.c -o main  
 
 clean:
 	${RM} ${RMFLAGS} *~ libfoo.dylib libfoo_missing.dylib main

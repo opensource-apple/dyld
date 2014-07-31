@@ -24,11 +24,12 @@ TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
 
-run: all
+all-check: all check
+
+check:
 	./dynamic-test
 
 all: dynamic-test  static-test
-
 
 static-test: a1.o a2.o main.o
 	$(CXX) -I${TESTROOT}/include a1.o a2.o main.o -o static-test

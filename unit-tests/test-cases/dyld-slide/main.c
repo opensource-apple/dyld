@@ -28,10 +28,13 @@
 //
 // This builds an executable that is just big enough to force dyld to slide a bit
 //
+#if __arm__
+	#define ARRAY_SIZE  66582528
+#else
+	#define ARRAY_SIZE 335400000
+#endif
 
-#define ARRAY_SIZE 335400000
-
-int bigarray1[ARRAY_SIZE];
+//int bigarray1[ARRAY_SIZE];
 
 int
 main()

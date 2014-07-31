@@ -23,27 +23,27 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+all-check: all check
 
-run: all
+check:
 	./main
 
 all: main
 
-
 main: main.c libfoo1.dylib libbase.dylib
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c libfoo1.dylib libbase.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c libfoo1.dylib libbase.dylib 
 
 libfoo1.dylib: foo1.c libfoo2.dylib libbase.dylib
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib -single_module -o libfoo1.dylib foo1.c libfoo2.dylib libbase.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib -single_module -o libfoo1.dylib foo1.c libfoo2.dylib libbase.dylib 
 
 libfoo2.dylib: foo2.c libfoo3.dylib libbase.dylib
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib -single_module -o libfoo2.dylib foo2.c libfoo3.dylib libbase.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib -single_module -o libfoo2.dylib foo2.c libfoo3.dylib libbase.dylib 
 
 libfoo3.dylib: foo3.c libbase.dylib
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib -single_module -o libfoo3.dylib foo3.c libbase.dylib -prebind -seg1addr 20000
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib -single_module -o libfoo3.dylib foo3.c libbase.dylib -prebind -seg1addr 20000 
 
 libbase.dylib: base.c
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib -single_module -o libbase.dylib base.c -prebind -seg1addr 10000
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib -single_module -o libbase.dylib base.c -prebind -seg1addr 10000 
 
 
 

@@ -30,31 +30,33 @@ PWD = `pwd`
 # Test that the 10.4 and 10.5 ways to re-export a dylib work
 #
 
-run : all
+all-check: all check
+
+check:
 	./main4
 	./main5
 
-all : main4 main5
+all: main4 main5
 
 libbar4.dylib : bar.c
-	gcc bar.c -dynamiclib -o $(PWD)/libbar4.dylib -mmacosx-version-min=10.4
+	${CC} bar.c -dynamiclib -o $(PWD)/libbar4.dylib -mmacosx-version-min=10.4
 
 libfoo4.dylib : foo.c libbar4.dylib
-	gcc foo.c -dynamiclib libbar4.dylib -sub_library libbar4 -o $(PWD)/libfoo4.dylib -mmacosx-version-min=10.4
+	${CC} foo.c -dynamiclib libbar4.dylib -sub_library libbar4 -install_name $(PWD)/libfoo4.dylib -o libfoo4.dylib -mmacosx-version-min=10.4
 
 main4 : main.c libfoo4.dylib
-	gcc main.c -I${TESTROOT}/include -o main4 libfoo4.dylib -mmacosx-version-min=10.4
+	${CC} main.c -I${TESTROOT}/include -o main4 libfoo4.dylib -mmacosx-version-min=10.4
 
 
 
 libbar5.dylib : bar.c
-	gcc bar.c -dynamiclib -o $(PWD)/libbar5.dylib -mmacosx-version-min=10.5
+	${CC} bar.c -dynamiclib -o $(PWD)/libbar5.dylib -mmacosx-version-min=10.5
 
 libfoo5.dylib : foo.c libbar5.dylib
-	gcc foo.c -dynamiclib libbar5.dylib -sub_library libbar5 -o $(PWD)/libfoo5.dylib -mmacosx-version-min=10.5
+	${CC} foo.c -dynamiclib libbar5.dylib -sub_library libbar5 -install_name $(PWD)/libfoo5.dylib -o libfoo5.dylib -mmacosx-version-min=10.5
 
 main5 : main.c libfoo5.dylib
-	gcc main.c -I${TESTROOT}/include -o main5 libfoo5.dylib -mmacosx-version-min=10.5
+	${CC} main.c -I${TESTROOT}/include -o main5 libfoo5.dylib -mmacosx-version-min=10.5
 
 	
 clean:

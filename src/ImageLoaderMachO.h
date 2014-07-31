@@ -27,27 +27,25 @@
 #define __IMAGELOADERMACHO__
 
 #include <stdint.h> 
+#include <mach-o/loader.h> 
+#include <mach-o/nlist.h> 
 
 #include "ImageLoader.h"
 #include "mach-o/dyld_images.h"
 
-struct sf_mapping;
-struct _shared_region_mapping_np;
-
 
 //
-// ImageLoaderMachO is the concrete subclass of ImageLoader which loads mach-o format files.
-// The class is written to be 64-bit clean and support both 32-bit and 64-bit executables in
-// mach-o.
+// ImageLoaderMachO is a subclass of ImageLoader which loads mach-o format files.
 //
 //
 class ImageLoaderMachO : public ImageLoader {
 public:
-										ImageLoaderMachO(const char* path, int fd, const uint8_t firstPage[4096], uint64_t offset, uint64_t len, const struct stat& info, const LinkContext& context);
-										ImageLoaderMachO(const char* moduleName, const struct mach_header* mh, uint64_t len, const LinkContext& context);
-										ImageLoaderMachO(const struct mach_header* mh, const char* path, const struct stat& info, const LinkContext& context);
-										ImageLoaderMachO(const struct mach_header* executableHeader, uintptr_t executableSlide, const char* path, const LinkContext& context);
-	virtual								~ImageLoaderMachO();
+	static ImageLoader*					instantiateMainExecutable(const macho_header* mh, uintptr_t slide, const char* path, const LinkContext& context);
+	static ImageLoader*					instantiateFromFile(const char* path, int fd, const uint8_t firstPage[4096], uint64_t offsetInFat, 
+															uint64_t lenInFat, const struct stat& info, const LinkContext& context);
+	static ImageLoader*					instantiateFromCache(const macho_header* mh, const char* path, const struct stat& info, const LinkContext& context);
+	static ImageLoader*					instantiateFromMemory(const char* moduleName, const macho_header* mh, uint64_t len, const LinkContext& context);
+
 
 	const char*							getInstallPath() const;
 	virtual void*						getMain() const;
@@ -55,7 +53,7 @@ public:
 	virtual uintptr_t					getSlide() const;
 	virtual const void*					getEnd() const;
 	virtual bool						hasCoalescedExports() const;
-	virtual const Symbol*				findExportedSymbol(const char* name, const void* hint, bool searchReExports, const ImageLoader** foundIn) const;
+	virtual const Symbol*				findExportedSymbol(const char* name, bool searchReExports, const ImageLoader** foundIn) const;
 	virtual uintptr_t					getExportedSymbolAddress(const Symbol* sym, const LinkContext& context, const ImageLoader* requestor) const;
 	virtual DefinitionFlags				getExportedSymbolInfo(const Symbol* sym) const;
 	virtual const char*					getExportedSymbolName(const Symbol* sym) const;
@@ -63,122 +61,148 @@ public:
 	virtual const Symbol*				getIndexedExportedSymbol(uint32_t index) const;
 	virtual uint32_t					getImportedSymbolCount() const;
 	virtual const Symbol*				getIndexedImportedSymbol(uint32_t index) const;
-	virtual ReferenceFlags				geImportedSymbolInfo(const Symbol* sym) const;
+	virtual ReferenceFlags				getImportedSymbolInfo(const Symbol* sym) const;
 	virtual const char*					getImportedSymbolName(const Symbol* sym) const;
 	virtual bool						isBundle() const;
 	virtual bool						isDylib() const;
+	virtual bool						isExecutable() const;
+	virtual bool						isPositionIndependentExecutable() const;
 	virtual bool						forceFlat() const;
-	virtual uintptr_t					doBindLazySymbol(uintptr_t* lazyPointer, const LinkContext& context);
+	virtual bool						participatesInCoalescing() const;
+	virtual const char*					findClosestSymbol(const void* addr, const void** closestAddr) const = 0;
+	virtual	void						initializeCoalIterator(CoalIterator&, unsigned int loadOrder) = 0;
+	virtual	bool						incrementCoalIterator(CoalIterator&) = 0;
+	virtual	uintptr_t					getAddressCoalIterator(CoalIterator&, const LinkContext& contex) = 0;
+	virtual	void						updateUsesCoalIterator(CoalIterator&, uintptr_t newAddr, ImageLoader* target, const LinkContext& context) = 0;
+	virtual uintptr_t					doBindLazySymbol(uintptr_t* lazyPointer, const LinkContext& context) = 0;
+	virtual uintptr_t					doBindFastLazySymbol(uint32_t lazyBindingInfoOffset, const LinkContext& context) = 0;
 	virtual void						doTermination(const LinkContext& context);
-#if IMAGE_NOTIFY_SUPPORT
-	virtual void						doNotification(enum dyld_image_mode mode, uint32_t infoCount, const struct dyld_image_info info[]);
-#endif
 	virtual bool						needsInitialization();
-#if IMAGE_NOTIFY_SUPPORT
-	virtual bool						hasImageNotification();
-#endif
 	virtual bool						getSectionContent(const char* segmentName, const char* sectionName, void** start, size_t* length);
+	virtual void						getUnwindInfo(dyld_unwind_sections* info);
 	virtual bool						findSection(const void* imageInterior, const char** segmentName, const char** sectionName, size_t* sectionOffset);
 	virtual bool						usablePrebinding(const LinkContext& context) const;
+	virtual unsigned int				segmentCount() const;
+	virtual const char*					segName(unsigned int) const;
+	virtual uintptr_t					segSize(unsigned int) const;
+	virtual uintptr_t					segFileSize(unsigned int) const;
+	virtual bool						segHasTrailingZeroFill(unsigned int);
+	virtual uintptr_t					segFileOffset(unsigned int) const;
+	virtual bool						segReadable(unsigned int) const;
+	virtual bool						segWriteable(unsigned int) const;
+	virtual bool						segExecutable(unsigned int) const;
+	virtual bool						segUnaccessible(unsigned int) const;
+	virtual bool						segHasPreferredLoadAddress(unsigned int) const;
+	virtual uintptr_t					segActualLoadAddress(unsigned int) const;
+	virtual uintptr_t					segPreferredLoadAddress(unsigned int) const;
+	virtual uintptr_t					segActualEndAddress(unsigned int) const;
 			
 	
 	static void							printStatistics(unsigned int imageCount);
 	
 protected:
 						ImageLoaderMachO(const ImageLoaderMachO&);
+						ImageLoaderMachO(const macho_header* mh, const char* path, unsigned int segCount,
+																	uint32_t segOffsets[], unsigned int libCount);
+	virtual				~ImageLoaderMachO() {}
+
 	void				operator=(const ImageLoaderMachO&);
 
-	virtual uint32_t	doGetDependentLibraryCount();
+	virtual void						setDyldInfo(const dyld_info_command*) = 0;
+	virtual void						setSymbolTableInfo(const macho_nlist*, const char*, const dysymtab_command*) = 0;
+	virtual	bool						isSubframeworkOf(const LinkContext& context, const ImageLoader* image) const = 0;
+	virtual	bool						hasSubLibrary(const LinkContext& context, const ImageLoader* child) const = 0;
+	virtual uint32_t*					segmentCommandOffsets() const = 0;
+	virtual	void						rebase(const LinkContext& context) = 0;
+	virtual const ImageLoader::Symbol*	findExportedSymbol(const char* name, const ImageLoader** foundIn) const = 0;
+	virtual bool						containsSymbol(const void* addr) const = 0;
+	virtual uintptr_t					exportedSymbolAddress(const Symbol* symbol) const = 0;
+	virtual bool						exportedSymbolIsWeakDefintion(const Symbol* symbol) const = 0;
+	virtual const char*					exportedSymbolName(const Symbol* symbol) const = 0;
+	virtual unsigned int				exportedSymbolCount() const = 0;
+	virtual const ImageLoader::Symbol*	exportedSymbolIndexed(unsigned int) const = 0;
+	virtual unsigned int				importedSymbolCount() const = 0;
+	virtual const ImageLoader::Symbol*	importedSymbolIndexed(unsigned int) const = 0;
+	virtual const char*					importedSymbolName(const Symbol* symbol) const = 0;
+#if PREBOUND_IMAGE_SUPPORT
+	virtual void						resetPreboundLazyPointers(const LinkContext& context) = 0;
+#endif
+	
+
 	virtual void		doGetDependentLibraries(DependentLibraryInfo libs[]);
 	virtual LibraryInfo doGetLibraryInfo();
 	virtual	void		getRPaths(const LinkContext& context, std::vector<const char*>&) const;
+	virtual	bool		getUUID(uuid_t) const;
 	virtual void		doRebase(const LinkContext& context);
-	virtual void		doBind(const LinkContext& context, bool forceLazysBound);
-	virtual void		doBindJustLazies(const LinkContext& context);
-	virtual void		doUpdateMappingPermissions(const LinkContext& context);
+	virtual void		doBind(const LinkContext& context, bool forceLazysBound) = 0;
+	virtual void		doBindJustLazies(const LinkContext& context) = 0;
 	virtual void		doInitialization(const LinkContext& context);
 	virtual void		doGetDOFSections(const LinkContext& context, std::vector<ImageLoader::DOFInfo>& dofs);
 	virtual bool		needsTermination();
-	virtual void		instantiateSegments(const uint8_t* fileData);
 	virtual bool		segmentsMustSlideTogether() const;	
 	virtual bool		segmentsCanSlide() const;			
 	virtual void		setSlide(intptr_t slide);		
 	virtual bool		usesTwoLevelNameSpace() const;
-	virtual	bool		isSubframeworkOf(const LinkContext& context, const ImageLoader* image) const;
-	virtual	bool		hasSubLibrary(const LinkContext& context, const ImageLoader* child) const;
 	virtual bool		isPrebindable() const;
-	virtual SegmentIterator	beginSegments() const;
-	virtual SegmentIterator	endSegments() const;
 
-#if SPLIT_SEG_DYLIB_SUPPORT
-	virtual void		mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
-#endif 
 		
-private:
-	friend class SegmentMachO;
+protected:
 
-			void		init();
+			void		destroy();
+	static void			sniffLoadCommands(const macho_header* mh, const char* path, bool* compressed,
+											unsigned int* segCount, unsigned int* libCount);
+	static bool			needsAddedLibSystemDepency(unsigned int libCount, const macho_header* mh);
+#if CODESIGNING_SUPPORT
+			void		loadCodeSignature(const uint8_t* fileData, int fd, uint64_t offsetInFatFile);
+#endif
+			const struct macho_segment_command* segLoadCommand(unsigned int segIndex) const;
 			void		parseLoadCmds();
-			uintptr_t	bindIndirectSymbol(uintptr_t* ptrToBind, const struct macho_section* sect, const char* symbolName, uintptr_t targetAddr, const ImageLoader* targetImage, const LinkContext& context);
-			void		doBindIndirectSymbolPointers(const LinkContext& context, bool bindNonLazys, bool bindLazys, bool onlyCoalescedSymbols);
-			void		doBindExternalRelocations(const LinkContext& context, bool onlyCoalescedSymbols);
-			uintptr_t	resolveUndefined(const LinkContext& context, const struct macho_nlist* symbol, bool twoLevel, const ImageLoader **foundIn);
-			uintptr_t	getRelocBase();
-			uintptr_t	getFirstWritableSegmentAddress();
-			void		resetPreboundLazyPointers(const LinkContext& context, uintptr_t relocBase);
+			bool		segHasRebaseFixUps(unsigned int) const;
+			bool		segHasBindFixUps(unsigned int) const;
+			void		segProtect(unsigned int segIndex, const ImageLoader::LinkContext& context);
+			void		segMakeWritable(unsigned int segIndex, const ImageLoader::LinkContext& context);
+#if __i386__
+			bool		segIsReadOnlyImport(unsigned int) const;
+#endif
+			intptr_t	assignSegmentAddresses(const LinkContext& context);
+			uintptr_t	reserveAnAddressRange(size_t length, const ImageLoader::LinkContext& context);
+			bool		reserveAddressRange(uintptr_t start, size_t length);
+			void		mapSegments(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
+			void		mapSegments(const void* memoryImage, uint64_t imageLen, const LinkContext& context);
+			void		UnmapSegments();
+			void		__attribute__((noreturn)) throwSymbolNotFound(const char* symbol, const char* referencedFrom, const char* expectedIn);
 			void		doImageInit(const LinkContext& context);
 			void		doModInitFunctions(const LinkContext& context);
 			void		setupLazyPointerHandler(const LinkContext& context);
 			void		lookupProgramVars(const LinkContext& context) const;
-#if SPLIT_SEG_DYLIB_SUPPORT	
-			unsigned int getExtraZeroFillEntriesCount();
-			void		initMappingTable(uint64_t offsetInFat, _shared_region_mapping_np *mappingTable);
-			int			sharedRegionMapFilePrivateOutside(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
-#endif
-#if SPLIT_SEG_SHARED_REGION_SUPPORT
-			int			sharedRegionLoadFile(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
-			int			sharedRegionMapFile(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context);
-			int			sharedRegionMakePrivate(const LinkContext& context);
-			int			sharedRegionMapFilePrivate(int fd, uint64_t offsetInFat, uint64_t lenInFat, uint64_t fileLen, const LinkContext& context, bool usemmap);
-			void		initMappingTable(uint64_t offsetInFat, sf_mapping *mappingTable, uintptr_t baseAddress);
-#endif
-			bool		needsCoalescing() const;
-			bool		isAddrInSection(uintptr_t addr, uint8_t sectionIndex);
-			void		adjustSegments();
-			uintptr_t	getSymbolAddress(const struct macho_nlist* sym, const ImageLoader* requestor, const LinkContext& context) const;
-			void		preFetch(int fd, uint64_t offsetInFat, const LinkContext& context);
-#if __i386__
-			void		makeImportSegmentWritable(const LinkContext& context);
-			void		makeImportSegmentReadOnly(const LinkContext& context);
-#endif
+			uintptr_t	bindLocation(const LinkContext& context, uintptr_t location, uintptr_t value, 
+										const ImageLoader* targetImage, uint8_t type, const char* symbolName, 
+										intptr_t addend, const char* msg);
 			
-	static	bool				symbolRequiresCoalescing(const struct macho_nlist* symbol); 
+			void		makeTextSegmentWritable(const LinkContext& context, bool writeable);
+			void		preFetchDATA(int fd, uint64_t offsetInFat, const LinkContext& context);
+
+
+			bool		hasReferencesToWeakSymbols() const;
+			uintptr_t	getSymbolAddress(const Symbol* sym, const ImageLoader* requestor, const LinkContext& context) const;
+			
 	static uintptr_t			bindLazySymbol(const mach_header*, uintptr_t* lazyPointer);
-	const struct macho_nlist*  binarySearch(const char* key, const char stringPool[], const struct macho_nlist symbols[], uint32_t symbolCount) const;
-	const struct macho_nlist*  binarySearchWithToc(const char* key, const char stringPool[], const struct macho_nlist symbols[], 
-												const struct dylib_table_of_contents toc[], uint32_t symbolCount, uint32_t hintIndex) const;
-			
+protected:			
 	const uint8_t*							fMachOData;
-	const uint8_t*							fLinkEditBase; // add any internal "offset" to this to get actual address
-	const struct macho_nlist*				fSymbolTable;
-	const char*								fStrings;
-	const struct dysymtab_command*			fDynamicInfo;
+	const uint8_t*							fLinkEditBase; // add any internal "offset" to this to get mapped address
 	uintptr_t								fSlide;
-	const struct twolevel_hints_command*	fTwoLevelHints;
-	const struct dylib_command*				fDylibID;
-	class SegmentMachO*						fSegmentsArray;
-#if TEXT_RELOC_SUPPORT
-	class SegmentMachO*						fTextSegmentWithFixups; // NULL unless __TEXT segment has fixups
-#endif
-#if __i386__
-	class SegmentMachO*						fReadOnlyImportSegment; // NULL unless __IMPORT segment built with -read_only_stubs
-	static uint32_t							fgReadOnlyImportSpinLock;
-#endif
-	uint32_t								fSegmentsArrayCount : 8,
+	uint32_t								fEHFrameSectionOffset;
+	uint32_t								fUnwindInfoSectionOffset;
+	uint32_t								fDylibIDOffset;
+	uint32_t								fSegmentsCount : 8,
 											fIsSplitSeg : 1,
 											fInSharedCache : 1,
-#if __ppc64__
-											f4GBWritable : 1,
+#if TEXT_RELOC_SUPPORT
+											fTextSegmentRebases : 1, 
+											fTextSegmentBinds : 1, 
+#endif
+#if __i386__
+											fReadOnlyImportSegment : 1,
 #endif
 											fHasSubLibraries : 1,
 											fHasSubUmbrella : 1,
@@ -186,51 +210,11 @@ private:
 											fHasDOFSections : 1,
 											fHasDashInit : 1,
 											fHasInitializers : 1,
-#if IMAGE_NOTIFY_SUPPORT
-											fHasImageNotifySection : 1,
-#endif
 											fHasTerminators : 1;
-	static uint32_t					fgHintedBinaryTreeSearchs;
-	static uint32_t					fgUnhintedBinaryTreeSearchs;
-	static uint32_t					fgCountOfImagesWithWeakExports;
-};
-
-
-class SegmentMachO : public Segment
-{
-public:	
-								SegmentMachO(const struct macho_segment_command* cmd);
-	virtual						~SegmentMachO();
-								
-	virtual const char*			getName();
-	virtual uintptr_t			getSize();
-	virtual uintptr_t			getFileSize();
-	virtual uintptr_t			getFileOffset();
-	virtual bool				readable();
-	virtual bool				writeable();
-	virtual bool				executable();
-	virtual bool				unaccessible();
-	virtual uintptr_t			getActualLoadAddress(const ImageLoader*);
-	virtual uintptr_t			getPreferredLoadAddress();
-	virtual void				unmap(const ImageLoader*);
-	virtual Segment*			next(Segment*);
-#if TEXT_RELOC_SUPPORT
-	virtual bool				hasFixUps();
-#endif
-#if __i386__
-	virtual bool				readOnlyImportStubs();
-#endif
-protected:
-	virtual bool				hasPreferredLoadAddress();
-	
-private:
-						SegmentMachO(const SegmentMachO&);
-	void				operator=(const SegmentMachO&);
-	void				adjust(const struct macho_segment_command* cmd);
-
-	friend class ImageLoaderMachO;
-	
-	const struct macho_segment_command*		fSegmentLoadCommand;
+											
+											
+	static uint32_t					fgSymbolTableBinarySearchs;
+	static uint32_t					fgSymbolTrieSearchs;
 };
 
 

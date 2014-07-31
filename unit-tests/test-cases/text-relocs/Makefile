@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2005-2007 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -24,13 +24,26 @@ TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
 ### 
-### This test case is to verify __TEXT reliocations work
+### This test case is to verify __TEXT reliocations work in dylibs
 ### 
 ### 
 
 
+TEXT_RELOC_FLAGS = -mdynamic-no-pic -read_only_relocs suppress -Wl,-w
 
-run: all
+ifeq "ppc64" "$(ARCH)"
+	# ppc64 does not support text relocs
+	TEXT_RELOC_FLAGS = 
+endif 
+ifeq "armv6" "$(ARCH)"
+	# arm does not support text relocs
+	TEXT_RELOC_FLAGS = 
+endif 
+
+
+all-check: all check
+
+check:
 	./main
 
 all: main 
@@ -38,8 +51,8 @@ all: main
 main: main.c libbar.dylib
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c libbar.dylib
 
-libbar.dylib: foo.s bar.c
-	${CC} ${CCFLAGS} -dynamiclib -o libbar.dylib bar.c foo.s -read_only_relocs suppress -Os
+libbar.dylib: bar.c
+	${CC} ${CCFLAGS} -dynamiclib -o libbar.dylib bar.c -Os ${TEXT_RELOC_FLAGS}
 	
 clean:
 	${RM} ${RMFLAGS} *~ main libbar.dylib

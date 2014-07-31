@@ -25,7 +25,9 @@ include ${TESTROOT}/include/common.makefile
 
 FATFLAGS = `lipo -detailed_info /usr/lib/libSystem.B.dylib | grep architecture | sed -e 's/architecture/-arch/'`
 
-run: all
+all-check: all check
+
+check:
 	./main
 
 all: main test.bundle

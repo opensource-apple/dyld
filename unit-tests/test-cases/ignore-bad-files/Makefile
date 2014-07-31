@@ -30,7 +30,9 @@ include ${TESTROOT}/include/common.makefile
 #
 
 
-run: all
+all-check: all check
+
+check:
 	export DYLD_LIBRARY_PATH=locations/datafile:locations/exec:locations/dir && ${TESTROOT}/bin/exit-non-zero-pass.pl "ignore-bad-files intended failure" "ignore-bad-files intended failure" ./main
 	export DYLD_LIBRARY_PATH=locations/datafile:locations/exec:locations/dir:locations/real && ${TESTROOT}/bin/exit-zero-pass.pl "ignore-bad-files intended success" "ignore-bad-files intended success" ./main
 

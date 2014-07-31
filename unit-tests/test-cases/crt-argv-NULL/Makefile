@@ -27,7 +27,9 @@ include ${TESTROOT}/include/common.makefile
 # verifies that crt glue can handle  argv[0] = NULL
 #
 
-run: all
+all-check: all check
+
+check:
 	${TESTROOT}/bin/exit-zero-pass.pl "crt-argv-NULL main-10.4" "crt-argv-NULL main-10.4"    ./main-10.4
 	${TESTROOT}/bin/exit-zero-pass.pl "crt-argv-NULL main-10.5" "crt-argv-NULL main-10.5"    ./main-10.5
 

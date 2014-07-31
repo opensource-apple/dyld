@@ -70,6 +70,8 @@ static void* getStubAddr()
 	return getsectdata("__TEXT", "__picsymbolstub1", &size);
 #elif __x86_64__
 	return getsectdata("__TEXT", "__symbol_stub1", &size);
+#elif __arm__
+	return getsectdata("__TEXT", "__symbol_stub4", &size);
 #else
 	#error unknown arch
 #endif
@@ -89,10 +91,15 @@ static void checkStubs(void* addr)
 int main()
 {
 	void* stubAddr = getStubAddr();	
+#if __i386__
+	if ( stubAddr != NULL )
+#endif
+	{
 	checkStubs(stubAddr);
 	fooData = 1;
 	foo();
 	checkStubs(stubAddr);
+	}
 	PASS("read-only-stubs");
 	return EXIT_SUCCESS;
 }

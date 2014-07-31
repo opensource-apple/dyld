@@ -1,5 +1,5 @@
 #
-#  Copyright (c) 2004-2006 Apple Computer, Inc. All rights reserved.
+#  Copyright (c) 2004-2008 Apple Computer, Inc. All rights reserved.
 # 
 #  @APPLE_LICENSE_HEADER_START@
 #  
@@ -23,10 +23,10 @@
 
 #
 #  Only the following symbols should be "global". 
-#  gdb and vmutils lookup these symbols in dyld in order to determine what images the process is using 
+#  gdb and Symbolication lookup these symbols in dyld in order to determine what images the process is using 
 #
 
-# Mac OS X 10.4 way to discover a process's images
+# gdb and Symbolication look at these to discover a process's loaded images
 _dyld_all_image_infos
 _dyld_shared_cache_ranges
 
@@ -38,17 +38,3 @@ _dyld_fatal_error
 _dyldVersionString
 _dyldVersionNumber
 
-# Entry points into dyld needed by loaded every image
-_stub_binding_helper
-_dyld_func_lookup
-
-# Old symbols left for compatibility
-_gdb_dyld_version
-_gdb_dyld_state_changed
-_gdb_nobject_images
-_gdb_object_image_size
-_gdb_nlibrary_images
-_gdb_library_image_size
-_object_images
-_library_images
-_send_event

@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -33,6 +33,7 @@
 #include <string.h>
 #include <sys/param.h>
 #include <sys/mount.h>
+#include <Availability.h>
 
 
 #include <vector>
@@ -42,13 +43,12 @@
 #include <mach/mach.h>
 #include <sys/time.h>
 #include <sys/sysctl.h>
+#include <mach/mach_traps.h> // for task_self_trap()
 
-extern "C" mach_port_name_t	task_self_trap(void);  // can't include <System/mach/mach_traps.h> because it is missing extern C
 
 #include "mach-o/dyld_images.h"
 #include "mach-o/dyld.h"
 #include "mach-o/dyld_priv.h"
-#include "mach-o/dyld-update-prebinding.h"
 
 #include "ImageLoader.h"
 #include "dyld.h"
@@ -58,14 +58,19 @@ extern "C" mach_port_name_t	task_self_trap(void);  // can't include <System/mach
 #include "dlfcn.h"
 
 
-#ifndef RTLD_DLL
-	#define RTLD_DLL	0x200	/* Mac OS X 10.5 and later */
+// deprecated APIs are still availble on Mac OS X, but not on iPhone OS
+#if __IPHONE_OS_VERSION_MIN_REQUIRED	
+	#define DEPRECATED_APIS_SUPPORTED 0
+#else
+	#define DEPRECATED_APIS_SUPPORTED 1
 #endif
 
+
+#if DEPRECATED_APIS_SUPPORTED
 static char sLastErrorFilePath[1024];
 static NSLinkEditErrors sLastErrorFileCode;
 static int sLastErrorNo;
-
+#endif
 
 // In 10.3.x and earlier all the NSObjectFileImage API's were implemeneted in libSystem.dylib
 // Beginning in 10.4 the NSObjectFileImage API's are implemented in dyld and libSystem just forwards
@@ -75,23 +80,24 @@ static int sLastErrorNo;
 
 // The following functions have no prototype in any header.  They are special cases
 // where _dyld_func_lookup() is used directly.
+static void _dyld_fork_child();
+static void _dyld_make_delayed_module_initializer_calls();
+static void registerThreadHelpers(const dyld::LibSystemHelpers*);
+#if DEPRECATED_APIS_SUPPORTED
 static void _dyld_install_handlers(void* undefined, void* multiple, void* linkEdit);
 #if OLD_LIBSYSTEM_SUPPORT
 static NSModule _dyld_link_module(NSObjectFileImage object_addr, size_t object_size, const char* moduleName, uint32_t options);
 #endif
 static void _dyld_register_binding_handler(void * (*)(const char *, const char *, void *), ImageLoader::BindingOptions);
-static void _dyld_fork_child();
-static void _dyld_make_delayed_module_initializer_calls();
 static bool NSMakePrivateModulePublic(NSModule module);
 static void _dyld_call_module_initializers_for_dylib(const struct mach_header* mh_dylib_header);
-static void registerThreadHelpers(const dyld::LibSystemHelpers*);
-static const struct dyld_all_image_infos* _dyld_get_all_image_infos();
 
 // The following functions are dyld API's, but since dyld links with a static copy of libc.a
 // the public name cannot be used.
 static void		client_dyld_lookup_and_bind(const char* symbolName, void** address, NSModule* module);
 static bool		client_NSIsSymbolNameDefined(const char* symbolName);
-
+#endif // DEPRECATED_APIS_SUPPORTED
+static bool client_dyld_find_unwind_sections(void* addr, dyld_unwind_sections* info);
 
 static void unimplemented()
 {
@@ -104,12 +110,8 @@ struct dyld_func {
 };
 
 static struct dyld_func dyld_funcs[] = {
- 	{"__dyld_register_thread_helpers",					(void*)registerThreadHelpers },
     {"__dyld_register_func_for_add_image",				(void*)_dyld_register_func_for_add_image },
     {"__dyld_register_func_for_remove_image",			(void*)_dyld_register_func_for_remove_image },
-    {"__dyld_make_delayed_module_initializer_calls",	(void*)_dyld_make_delayed_module_initializer_calls },
-    {"__dyld_fork_child",								(void*)_dyld_fork_child },
-	{"__dyld_dyld_register_image_state_change_handler",	(void*)dyld_register_image_state_change_handler },
     {"__dyld_dladdr",									(void*)dladdr },
     {"__dyld_dlclose",									(void*)dlclose },
     {"__dyld_dlerror",									(void*)dlerror },
@@ -121,9 +123,26 @@ static struct dyld_func dyld_funcs[] = {
     {"__dyld_get_image_header",							(void*)_dyld_get_image_header },
     {"__dyld_get_image_vmaddr_slide",					(void*)_dyld_get_image_vmaddr_slide },
     {"__dyld_get_image_name",							(void*)_dyld_get_image_name },
+    {"__dyld_get_image_slide",							(void*)_dyld_get_image_slide },
     {"__dyld__NSGetExecutablePath",						(void*)_NSGetExecutablePath },
-	
-	// the rest of these are either deprecated or SPIs
+
+	// SPIs
+	{"__dyld_dyld_register_image_state_change_handler",	(void*)dyld_register_image_state_change_handler },
+  	{"__dyld_register_thread_helpers",					(void*)registerThreadHelpers },
+	{"__dyld_fork_child",								(void*)_dyld_fork_child },
+    {"__dyld_moninit",									(void*)_dyld_moninit },
+    {"__dyld_make_delayed_module_initializer_calls",	(void*)_dyld_make_delayed_module_initializer_calls },
+	{"__dyld_get_all_image_infos",						(void*)_dyld_get_all_image_infos },
+#if !__arm__
+	{"__dyld_find_unwind_sections",						(void*)client_dyld_find_unwind_sections },
+#endif
+#if __i386__ || __x86_64__
+	{"__dyld_fast_stub_entry",							(void*)dyld::fastBindLazySymbol },
+#endif
+	{"__dyld_image_path_containing_address",			(void*)dyld_image_path_containing_address },
+
+	// deprecated
+#if DEPRECATED_APIS_SUPPORTED
     {"__dyld_lookup_and_bind",						(void*)client_dyld_lookup_and_bind },
     {"__dyld_lookup_and_bind_with_hint",			(void*)_dyld_lookup_and_bind_with_hint },
     {"__dyld_lookup_and_bind_fully",				(void*)_dyld_lookup_and_bind_fully },
@@ -133,7 +152,6 @@ static struct dyld_func dyld_funcs[] = {
     {"__dyld_bind_objc_module",						(void*)_dyld_bind_objc_module },
     {"__dyld_bind_fully_image_containing_address",  (void*)_dyld_bind_fully_image_containing_address },
     {"__dyld_image_containing_address",				(void*)_dyld_image_containing_address },
-    {"__dyld_moninit",								(void*)_dyld_moninit },
     {"__dyld_register_binding_handler",				(void*)_dyld_register_binding_handler },
     {"__dyld_NSNameOfSymbol",						(void*)NSNameOfSymbol },
     {"__dyld_NSAddressOfSymbol",					(void*)NSAddressOfSymbol },
@@ -154,7 +172,6 @@ static struct dyld_func dyld_funcs[] = {
     {"__dyld_launched_prebound",					(void*)_dyld_launched_prebound },
     {"__dyld_all_twolevel_modules_prebound",		(void*)_dyld_all_twolevel_modules_prebound },
     {"__dyld_call_module_initializers_for_dylib",   (void*)_dyld_call_module_initializers_for_dylib },
-    {"__dyld_install_link_edit_symbol_handlers",	(void*)dyld::registerZeroLinkHandlers },
     {"__dyld_NSCreateObjectFileImageFromFile",			(void*)NSCreateObjectFileImageFromFile },
     {"__dyld_NSCreateObjectFileImageFromMemory",		(void*)NSCreateObjectFileImageFromMemory },
     {"__dyld_NSDestroyObjectFileImage",					(void*)NSDestroyObjectFileImage },
@@ -166,16 +183,23 @@ static struct dyld_func dyld_funcs[] = {
     {"__dyld_NSSymbolReferenceNameInObjectFileImage",	(void*)NSSymbolReferenceNameInObjectFileImage },
     {"__dyld_NSSymbolReferenceCountInObjectFileImage",	(void*)NSSymbolReferenceCountInObjectFileImage },
     {"__dyld_NSGetSectionDataInObjectFileImage",		(void*)NSGetSectionDataInObjectFileImage },
-    {"__dyld_NSFindSectionAndOffsetInObjectFileImage",  (void*)NSFindSectionAndOffsetInObjectFileImage },
 #if OLD_LIBSYSTEM_SUPPORT
     {"__dyld_link_module",							(void*)_dyld_link_module },
 #endif
-	{"__dyld_dlord",									(void*)dlord },
-	{"__dyld_get_all_image_infos",						(void*)_dyld_get_all_image_infos },
+#endif //DEPRECATED_APIS_SUPPORTED
+
     {NULL, 0}
 };
 
 
+
+#if DEPRECATED_APIS_SUPPORTED
+
+static void dyldAPIhalt(const char* apiName, const char* errorMsg)
+{
+	dyld::log("dyld: %s() error\n", apiName);
+	dyld::halt(errorMsg);
+}
 
 // dyld's abstract type NSSymbol is implemented as const ImageLoader::Symbol*
 inline NSSymbol SymbolToNSSymbol(const ImageLoader::Symbol* sym)
@@ -219,13 +243,6 @@ static std::vector<NSObjectFileImage> sObjectFileImages;
 //
 
 
-static void dyldAPIhalt(const char* apiName, const char* errorMsg)
-{
-	dyld::log("dyld: %s() error\n", apiName);
-	dyld::halt(errorMsg);
-}
-
-
 
 static void setLastError(NSLinkEditErrors code, int errnum, const char* file, const char* message)
 {
@@ -236,6 +253,7 @@ static void setLastError(NSLinkEditErrors code, int errnum, const char* file, co
 	sLastErrorNo = errnum;
 }
 
+#endif // DEPRECATED_APIS_SUPPORTED
 
 /*
  *_dyld_NSGetExecutablePath is the dyld side of _NSGetExecutablePath which
@@ -260,6 +278,100 @@ int _NSGetExecutablePath(char* buf, uint32_t *bufsize)
 	return 0;
 }
 
+uint32_t _dyld_image_count(void)
+{
+	if ( dyld::gLogAPIs )
+		dyld::log("%s()\n", __func__);
+	return dyld::getImageCount();
+}
+
+const struct mach_header* _dyld_get_image_header(uint32_t image_index)
+{
+	if ( dyld::gLogAPIs )
+		dyld::log("%s(%u)\n", __func__, image_index);
+	ImageLoader* image = dyld::getIndexedImage(image_index);
+	if ( image != NULL )
+		return (struct mach_header*)image->machHeader();
+	else
+		return NULL;
+}
+
+intptr_t _dyld_get_image_vmaddr_slide(uint32_t image_index)
+{
+	if ( dyld::gLogAPIs )
+		dyld::log("%s(%u)\n", __func__, image_index);
+	ImageLoader* image = dyld::getIndexedImage(image_index);
+	if ( image != NULL )
+		return image->getSlide();
+	else
+		return 0;
+}
+
+intptr_t _dyld_get_image_slide(const struct mach_header* mh)
+{
+	if ( dyld::gLogAPIs )
+		dyld::log("%s(%p)\n", __func__, mh);
+	ImageLoader* image = dyld::findImageByMachHeader(mh);
+	if ( image != NULL )
+		return image->getSlide();
+	else
+		return 0;
+}
+
+
+const char* _dyld_get_image_name(uint32_t image_index)
+{
+	if ( dyld::gLogAPIs )
+		dyld::log("%s(%u)\n", __func__, image_index);
+	ImageLoader* image = dyld::getIndexedImage(image_index);
+	if ( image != NULL )
+		return image->getPath();
+	else
+		return NULL;
+}
+
+const struct mach_header * _dyld_get_image_header_containing_address(const void* address)
+{
+	if ( dyld::gLogAPIs )
+		dyld::log("%s(%p)\n", __func__, address);
+	ImageLoader* image = dyld::findImageContainingAddress(address);
+	if ( image != NULL ) 
+		return image->machHeader();
+	return NULL;
+}
+
+
+void _dyld_register_func_for_add_image(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide))
+{
+	if ( dyld::gLogAPIs )
+		dyld::log("%s(%p)\n", __func__, (void *)func);
+	dyld::registerAddCallback(func);
+}
+
+void _dyld_register_func_for_remove_image(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide))
+{
+	if ( dyld::gLogAPIs )
+		dyld::log("%s(%p)\n", __func__, (void *)func);
+	dyld::registerRemoveCallback(func);
+}
+
+
+
+// called by crt before main() by programs linked with 10.4 or earlier crt1.o
+static void _dyld_make_delayed_module_initializer_calls()
+{
+	if ( dyld::gLogAPIs )
+		dyld::log("%s()\n", __func__);
+		
+#if SUPPORT_OLD_CRT_INITIALIZATION
+	if ( dyld::gRunInitializersOldWay )
+		dyld::initializeMainExecutable();
+#endif
+}
+
+
+
+#if DEPRECATED_APIS_SUPPORTED
 
 //
 // _dyld_call_module_initializers_for_dylib() is the dyld side of
@@ -387,23 +499,7 @@ NSSymbol NSLookupAndBindSymbolWithHint(const char* symbolName, const char* libra
 	return NULL;
 }
 
-uint32_t _dyld_image_count(void)
-{
-	if ( dyld::gLogAPIs )
-		dyld::log("%s()\n", __func__);
-	return dyld::getImageCount();
-}
 
-const struct mach_header* _dyld_get_image_header(uint32_t image_index)
-{
-	if ( dyld::gLogAPIs )
-		dyld::log("%s(%u)\n", __func__, image_index);
-	ImageLoader* image = dyld::getIndexedImage(image_index);
-	if ( image != NULL )
-		return (struct mach_header*)image->machHeader();
-	else
-		return NULL;
-}
 
 
 static __attribute__((noinline)) 
@@ -423,13 +519,14 @@ const struct mach_header* addImage(void* callerAddress, const char* path, bool s
 		}
 		dyld::LoadContext context;
 		context.useSearchPaths		= search;
+		context.useFallbackPaths	= search;
 		context.useLdLibraryPath	= false;
 		context.implicitRPath		= false;
 		context.matchByInstallName	= matchInstallName;
 		context.dontLoad			= dontLoad;
 		context.mustBeBundle		= false;
 		context.mustBeDylib			= true;
-		context.findDLL				= false;
+		context.canBePIE			= false;
 		context.origin				= callerImage != NULL ? callerImage->getPath() : NULL; // caller's image's path
 		context.rpath				= &callersRPaths; 	// rpaths from caller and main executable
 				
@@ -509,11 +606,12 @@ bool NSIsSymbolNameDefinedInImage(const struct mach_header* mh, const char* symb
 		dyld::log("%s(%p, \"%s\")\n", __func__, (void *)mh, symbolName);
 	ImageLoader* image = dyld::findImageByMachHeader(mh);
 	if ( image != NULL ) {
-		if ( image->findExportedSymbol(symbolName, NULL, true, NULL) != NULL)
+		if ( image->findExportedSymbol(symbolName, true, NULL) != NULL)
 			return true;
 	}
 	return false;
 }
+
 
 NSSymbol NSLookupSymbolInImage(const struct mach_header* mh, const char* symbolName, uint32_t options)
 {
@@ -536,7 +634,7 @@ NSSymbol NSLookupSymbolInImage(const struct mach_header* mh, const char* symbolN
 				dyldAPIhalt(__func__, msg);
 			}
 		}
-		symbol = image->findExportedSymbol(symbolName, NULL, true, NULL);
+		symbol = image->findExportedSymbol(symbolName, true, NULL);
 	}
 	if ( dyld::gLogAPIs && (symbol == NULL) )
 		dyld::log("%s(%p, \"%s\", 0x%08X) ==> NULL\n", __func__, mh, symbolName, options);
@@ -576,7 +674,7 @@ const char* NSNameOfSymbol(NSSymbol symbol)
 	if ( dyld::gLogAPIs )
 		dyld::log("%s(%p)\n", __func__, (void *)symbol);
 	const char* result = NULL;
-	ImageLoader* image = dyld::findImageContainingAddress(symbol);
+	ImageLoader* image = dyld::findImageContainingSymbol(symbol);
 	if ( image != NULL ) 
 		result = image->getExportedSymbolName(NSSymbolToSymbol(symbol));
 	return result;
@@ -586,8 +684,10 @@ void* NSAddressOfSymbol(NSSymbol symbol)
 {
 	if ( dyld::gLogAPIs )
 		dyld::log("%s(%p)\n", __func__, (void *)symbol);
+	if ( symbol == NULL )
+		return NULL;
 	void* result = NULL;
-	ImageLoader* image = dyld::findImageContainingAddress(symbol);
+	ImageLoader* image = dyld::findImageContainingSymbol(symbol);
 	if ( image != NULL ) 
 		result = (void*)image->getExportedSymbolAddress(NSSymbolToSymbol(symbol), dyld::gLinkContext);
 	return result;
@@ -598,34 +698,12 @@ NSModule NSModuleForSymbol(NSSymbol symbol)
 	if ( dyld::gLogAPIs )
 		dyld::log("%s(%p)\n", __func__, (void *)symbol);
 	NSModule result = NULL;
-	ImageLoader* image = dyld::findImageContainingAddress(symbol);
+	ImageLoader* image = dyld::findImageContainingSymbol(symbol);
 	if ( image != NULL ) 
 		result = ImageLoaderToNSModule(image);
 	return result;
 }
 
-
-intptr_t _dyld_get_image_vmaddr_slide(uint32_t image_index)
-{
-	if ( dyld::gLogAPIs )
-		dyld::log("%s(%u)\n", __func__, image_index);
-	ImageLoader* image = dyld::getIndexedImage(image_index);
-	if ( image != NULL )
-		return image->getSlide();
-	else
-		return 0;
-}
-
-const char* _dyld_get_image_name(uint32_t image_index)
-{
-	if ( dyld::gLogAPIs )
-		dyld::log("%s(%u)\n", __func__, image_index);
-	ImageLoader* image = dyld::getIndexedImage(image_index);
-	if ( image != NULL )
-		return image->getLogicalPath();
-	else
-		return NULL;
-}
 
 
 
@@ -633,7 +711,7 @@ bool _dyld_all_twolevel_modules_prebound(void)
 {
 	if ( dyld::gLogAPIs )
 		dyld::log("%s()\n", __func__);
-	return FALSE; // fixme
+	return FALSE; 
 }
 
 void _dyld_bind_objc_module(const void *objc_module)
@@ -690,13 +768,14 @@ NSObjectFileImageReturnCode NSCreateObjectFileImageFromFile(const char* pathName
 
 		dyld::LoadContext context;
 		context.useSearchPaths		= false;
+		context.useFallbackPaths	= false;
 		context.useLdLibraryPath	= false;
 		context.implicitRPath		= false;
 		context.matchByInstallName	= false;
 		context.dontLoad			= false;
 		context.mustBeBundle		= true;
 		context.mustBeDylib			= false;
-		context.findDLL				= false;
+		context.canBePIE			= false;
 		context.origin				= callerImage != NULL ? callerImage->getPath() : NULL; // caller's image's path
 		context.rpath				= NULL; // support not yet implemented
 
@@ -769,7 +848,7 @@ bool NSDestroyObjectFileImage(NSObjectFileImage objectFileImage)
 			// and we should delete it
 			bool linkedImage = dyld::validImage(objectFileImage->image);
 			if ( ! linkedImage )  {
-				delete objectFileImage->image;
+				ImageLoader::deleteImage(objectFileImage->image);
 				objectFileImage->image = NULL;
 			}
 		}
@@ -785,7 +864,16 @@ bool NSDestroyObjectFileImage(NSObjectFileImage objectFileImage)
 		// if object was created from a memory, release that memory
 		// NOTE: this is the way dyld has always done this. NSCreateObjectFileImageFromMemory() hands over ownership of the memory to dyld
 		if ( objectFileImage->imageBaseAddress != NULL ) {
-			vm_deallocate(mach_task_self(), (vm_address_t)objectFileImage->imageBaseAddress, objectFileImage->imageLength);
+			bool freed = false;
+			if ( (dyld::gLibSystemHelpers != NULL) && (dyld::gLibSystemHelpers->version >= 6) ) {
+				size_t sz = (*dyld::gLibSystemHelpers->malloc_size)(objectFileImage->imageBaseAddress);
+				if ( sz != 0 ) {
+					(*dyld::gLibSystemHelpers->free)((void*)(objectFileImage->imageBaseAddress));
+					freed = true;
+				}
+			}
+			if ( ! freed )
+				vm_deallocate(mach_task_self(), (vm_address_t)objectFileImage->imageBaseAddress, objectFileImage->imageLength);
 		}
 		
 		// free ofi object
@@ -832,7 +920,7 @@ const char * NSSymbolReferenceNameInObjectFileImage(NSObjectFileImage objectFile
 		dyld::log("%s(%p,%d)\n", __func__, objectFileImage, ordinal);
 	const ImageLoader::Symbol* sym = objectFileImage->image->getIndexedImportedSymbol(ordinal);
 	if ( tentative_definition != NULL ) {
-		ImageLoader::ReferenceFlags flags = objectFileImage->image->geImportedSymbolInfo(sym);
+		ImageLoader::ReferenceFlags flags = objectFileImage->image->getImportedSymbolInfo(sym);
 		if ( (flags & ImageLoader::kTentativeDefinition) != 0 )
 			*tentative_definition = true;
 		else
@@ -863,32 +951,8 @@ bool NSIsSymbolDefinedInObjectFileImage(NSObjectFileImage objectFileImage, const
 {
 	if ( dyld::gLogAPIs )
 		dyld::log("%s(%p,%s)\n", __func__, objectFileImage, symbolName);
-	const ImageLoader::Symbol* sym = objectFileImage->image->findExportedSymbol(symbolName, NULL, true, NULL);
+	const ImageLoader::Symbol* sym = objectFileImage->image->findExportedSymbol(symbolName, true, NULL);
 	return ( sym != NULL );
-}
-
-/*
- * Given an imageOffset into an ObjectFileImage, returns 
- * the segment/section name and offset into that section of
- * that imageOffset.  Returns FALSE if the imageOffset is not 
- * in any section.  You can used the resulting sectionOffset to
- * index into the data returned by NSGetSectionDataInObjectFileImage.
- * 
- * First appeared in Mac OS X 10.3 
- *
- * SPI: currently only used by ZeroLink to detect +load methods
- */
-bool 
-NSFindSectionAndOffsetInObjectFileImage(NSObjectFileImage objectFileImage, 
-										unsigned long imageOffset,
-										const char** segmentName, 	/* can be NULL */
-										const char** sectionName, 	/* can be NULL */
-										unsigned long* sectionOffset)	/* can be NULL */
-{
-	if ( dyld::gLogAPIs )
-		dyld::log("%s(%p)\n", __func__, objectFileImage);
-	
-	return objectFileImage->image->findSection(((char*)(objectFileImage->image->machHeader()))+imageOffset, segmentName, sectionName, sectionOffset);
 }
 
 
@@ -904,24 +968,12 @@ NSModule NSLinkModule(NSObjectFileImage objectFileImage, const char* moduleName,
 		// each link causes the bundle to be copied to a new address
 		if ( objectFileImage->image->isLinked() ) {
 			// already linked, so clone a new one and link it
-#if 0
-			dyld::warn("%s(0x%08X, \"%s\", 0x%08X) called more than once for 0x%08X\n",
-					__func__, objectFileImage, moduleName, options, objectFileImage); 
-#endif
 			objectFileImage->image = dyld::cloneImage(objectFileImage->image);
 		}
-		
-		// if this ofi was made with NSCreateObjectFileImageFromFile() then physical path is already set
-		// if this ofi was create with NSCreateObjectFileImageFromMemory() then the phyiscal path should be set if supplied 
-		if ( (options & NSLINKMODULE_OPTION_TRAILING_PHYS_NAME) != 0 ) {
-			if ( objectFileImage->imageBaseAddress != NULL ) {
-				const char* physEnd = &moduleName[strlen(moduleName)+1];
-				objectFileImage->image->setPath(physEnd);
-			}
-		}
-	
-		// set moduleName as the name anyone calling _dyld_get_image_name() will see
-		objectFileImage->image->setLogicalPath(moduleName);
+			
+		// for memory based images, set moduleName as the name anyone calling _dyld_get_image_name() will see
+		if ( objectFileImage->image->getPath() == NULL )
+			objectFileImage->image->setPath(moduleName);
 
 		// support private bundles
 		if ( (options & NSLINKMODULE_OPTION_PRIVATE) != 0 )
@@ -933,12 +985,12 @@ NSModule NSLinkModule(NSObjectFileImage objectFileImage, const char* moduleName,
 		// load libraries, rebase, bind, to make this image usable
 		dyld::link(objectFileImage->image, forceLazysBound, ImageLoader::RPathChain(NULL,NULL));
 		
+		// bump reference count to keep this bundle from being garbage collected
+		objectFileImage->image->incrementDlopenReferenceCount();
+
 		// run initializers unless magic flag says not to
 		if ( (options & NSLINKMODULE_OPTION_DONT_CALL_MOD_INIT_ROUTINES) == 0 )
 			dyld::runInitializers(objectFileImage->image);
-
-		// bump reference count to keep this bundle from being garbage collected
-		objectFileImage->image->incrementDlopenReferenceCount();
 
 		return ImageLoaderToNSModule(objectFileImage->image);
 	}
@@ -965,15 +1017,9 @@ static NSModule _dyld_link_module(NSObjectFileImage object_addr, size_t object_s
 	ImageLoader* image = NULL;
 	dyld::clearErrorMessage();
 	try {
-		const char* imageName = moduleName;
-		if ( (options & NSLINKMODULE_OPTION_TRAILING_PHYS_NAME) != 0 )
-			imageName = &moduleName[strlen(moduleName)+1];
-			
+		const char* imageName = moduleName;			
 		image = dyld::loadFromMemory((const uint8_t*)object_addr, object_size, imageName); 
 		
-		if ( (options & NSLINKMODULE_OPTION_TRAILING_PHYS_NAME) != 0 )
-			image->setLogicalPath(moduleName);
-			
 		if ( image != NULL ) {		
 			// support private bundles
 			if ( (options & NSLINKMODULE_OPTION_PRIVATE) != 0 )
@@ -998,7 +1044,7 @@ static NSModule _dyld_link_module(NSObjectFileImage object_addr, size_t object_s
 		// if image was created for this bundle, destroy it
 		if ( image != NULL ) {
 			dyld::removeImage(image);
-			delete image;
+			ImageLoader::deleteImage(image);
 		}
 		image = NULL;
 		free((void*)msg);
@@ -1014,7 +1060,7 @@ NSSymbol NSLookupSymbolInModule(NSModule module, const char* symbolName)
 	ImageLoader* image = NSModuleToImageLoader(module);
 	if ( image == NULL ) 
 		return NULL;
-	return SymbolToNSSymbol(image->findExportedSymbol(symbolName, NULL, false, NULL));
+	return SymbolToNSSymbol(image->findExportedSymbol(symbolName, false, NULL));
 }
 
 const char* NSNameOfModule(NSModule module)
@@ -1063,7 +1109,7 @@ bool NSUnLinkModule(NSModule module, uint32_t options)
 			found = true;
 	}
 	if ( !found )
-		delete image;
+		ImageLoader::deleteImage(image);
 	
 	return true;
 }
@@ -1078,43 +1124,7 @@ static void _dyld_install_handlers(void* undefined, void* multiple, void* linkEd
 	// no support for multiple or linkedit handlers
 }
 
-const struct mach_header * _dyld_get_image_header_containing_address(const void* address)
-{
-	if ( dyld::gLogAPIs )
-		dyld::log("%s(%p)\n", __func__, address);
-	ImageLoader* image = dyld::findImageContainingAddress(address);
-	if ( image != NULL ) 
-		return image->machHeader();
-	return NULL;
-}
 
-
-void _dyld_register_func_for_add_image(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide))
-{
-	if ( dyld::gLogAPIs )
-		dyld::log("%s(%p)\n", __func__, (void *)func);
-	dyld::registerAddCallback(func);
-}
-
-void _dyld_register_func_for_remove_image(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide))
-{
-	if ( dyld::gLogAPIs )
-		dyld::log("%s(%p)\n", __func__, (void *)func);
-	dyld::registerRemoveCallback(func);
-}
-
-
-// called by crt before main
-static void _dyld_make_delayed_module_initializer_calls()
-{
-	if ( dyld::gLogAPIs )
-		dyld::log("%s()\n", __func__);
-		
-#if SUPPORT_OLD_CRT_INITIALIZATION
-	if ( dyld::gRunInitializersOldWay )
-		dyld::initializeMainExecutable();
-#endif
-}
 
 
 void NSLinkEditError(NSLinkEditErrors* c, int* errorNumber, const char** fileName, const char** errorString)
@@ -1126,6 +1136,8 @@ void NSLinkEditError(NSLinkEditErrors* c, int* errorNumber, const char** fileNam
 	*errorString = dyld::getErrorMessage();
 }
 
+
+
 static void _dyld_register_binding_handler(void * (*bindingHandler)(const char *, const char *, void *), ImageLoader::BindingOptions bindingOptions)
 {
 	if ( dyld::gLogAPIs )
@@ -1133,6 +1145,8 @@ static void _dyld_register_binding_handler(void * (*bindingHandler)(const char *
 	dyld::gLinkContext.bindingHandler = bindingHandler;
 	dyld::gLinkContext.bindingOptions = bindingOptions;
 }
+
+#endif //DEPRECATED_APIS_SUPPORTED
 
 
 // Call by fork() in libSystem after the kernel trap is done on the child side
@@ -1149,6 +1163,13 @@ static void _dyld_fork_child()
 	//
 	extern mach_port_t	mach_task_self_;
 	mach_task_self_ = task_self_trap();
+ 	
+	// If dyld is sending load/unload notices to CoreSymbolication, the shared memory
+	// page is not copied on fork. <rdar://problem/6797342>
+ 	// NULL the CoreSymbolication shared memory pointer to prevent a crash.
+ 	dyld_all_image_infos.coreSymbolicationShmPage = NULL;
+	// for safety, make sure child starts with clean systemOrderFlag
+	dyld_all_image_infos.systemOrderFlag = 0;
 }
 
 
@@ -1175,6 +1196,7 @@ void _dyld_moninit(MonitorProc proc)
 	dyld::forEachImageDo(&monInitCallback, (void*)proc);
 }
 
+#if DEPRECATED_APIS_SUPPORTED
 // returns true if prebinding was used in main executable
 bool _dyld_launched_prebound()
 {
@@ -1205,7 +1227,7 @@ static bool NSMakePrivateModulePublic(NSModule module)
 	return false;
 }
 
-
+#endif // DEPRECATED_APIS_SUPPORTED
 
 bool lookupDyldFunction(const char* name, uintptr_t* address)
 {
@@ -1221,59 +1243,12 @@ bool lookupDyldFunction(const char* name, uintptr_t* address)
 	return false;
 }
 
-static bool readOnlyBootVolume()
-{
-	struct statfs sfs;
-	if ( statfs("/", &sfs) == 0 ) {
-		return ( sfs.f_flags & MNT_RDONLY );
-	}
-	// if statfs() fails, something is wrong, so don't rebuild dyld cache
-	return true;
-}
-
-
 static void registerThreadHelpers(const dyld::LibSystemHelpers* helpers)
 {
 	dyld::gLibSystemHelpers = helpers;
 	
-#if DYLD_SHARED_CACHE_SUPPORT
-	// notify dyld server if something is wrong with the shared cache
-	//dyld::log("helpers->version=%lu, gSharedCacheDontNotify=%d, gSharedCacheNotFound=%d, gSharedCacheNeedsUpdating=%d, readOnlyBootVolume()=%d\n",
-	//	helpers->version, dyld::gSharedCacheDontNotify, dyld::gSharedCacheNotFound, dyld::gSharedCacheNeedsUpdating, readOnlyBootVolume());
-	if ( (helpers != NULL) && (helpers->version >= 3) && !dyld::gSharedCacheDontNotify ) {
-		if ( dyld::gSharedCacheNotFound || dyld::gSharedCacheNeedsUpdating ) {
-			if ( ! readOnlyBootVolume() ) {
-				if ( dyld::gSharedCacheNotFound )
-					(*helpers->dyld_shared_cache_missing)();
-				else if ( dyld::imMemorySharedCacheHeader() == NULL ) {
-					// since shared cache is not mapped and not missing, it must be 
-					// corrupt.  Don't need to test contents, just
-					// ping launchd to start update_dyld_shared_cache
-					// rdar://problem/5694507 
-					(*helpers->dyld_shared_cache_out_of_date)();
-				}
-				else if ( dyld::gSharedCacheNeedsUpdating ) {
-					// To reduce the storm of messages to update_dyld_shared_cache
-					// don't message if the cache file is missing (which means the cache is in
-					// the process of being regenerated) or if the contents of the cache file
-					// don't match what is already in memory (which means the cache has
-					// already be regenerated).
-					int fd = dyld::openSharedCacheFile();
-					if ( fd != -1 ) {
-						uint8_t onDiskCache[4096];
-						if ( ::read(fd, onDiskCache, 4096) == 4096 ) {
-							if ( ::memcmp(onDiskCache, dyld::imMemorySharedCacheHeader(), 4096) == 0 ) {
-								// ping launchd to start update_dyld_shared_cache
-								(*helpers->dyld_shared_cache_out_of_date)();
-							}
-						}
-						::close(fd);
-					}
-				}
-			}
-		}
-	}
-#endif
+	// let gdb know it is safe to run code in inferior that might call malloc()
+	dyld_all_image_infos.libSystemInitialized = true;	
 }
 
 
@@ -1305,6 +1280,13 @@ bool dlopen_preflight(const char* path)
 
 	dlerrorClear();
 	
+#if DYLD_SHARED_CACHE_SUPPORT
+	// <rdar://problem/5910137> dlopen_preflight() on image in shared cache leaves it loaded but not objc initialized
+	// if requested path is to something in the dyld shared cache, always succeed
+	if ( dyld::inSharedCache(path) )
+		return true;
+#endif
+	
 	bool result = false;
 	std::vector<const char*> rpathsFromCallerImage;
 	try {
@@ -1319,15 +1301,18 @@ bool dlopen_preflight(const char* path)
 		}
 
 		ImageLoader*	image = NULL;
+		const bool leafName = (strchr(path, '/') == NULL);
+		const bool absolutePath = (path[0] == '/');
 		dyld::LoadContext context;
 		context.useSearchPaths	= true;
-		context.useLdLibraryPath= (strchr(path, '/') == NULL);	// a leafname implies should search 
-		context.implicitRPath = (path[0] != '/');				// a non-absolute path implies try rpath searching 
+		context.useFallbackPaths= leafName;					// a partial path implies don't use fallback paths
+		context.useLdLibraryPath= leafName;					// a leafname implies should search 
+		context.implicitRPath	= !absolutePath;			// a non-absolute path implies try rpath searching 
 		context.matchByInstallName = true;
 		context.dontLoad		= false;
 		context.mustBeBundle	= false;
 		context.mustBeDylib		= false;
-		context.findDLL			= false;
+		context.canBePIE		= true;
 		context.origin			= callerImage != NULL ? callerImage->getPath() : NULL; // caller's image's path
 		context.rpath			= &callersRPaths;	// rpaths from caller and main executable
 		
@@ -1389,15 +1374,18 @@ void* dlopen(const char* path, int mode)
 			dyld::mainExecutable()->getRPaths(dyld::gLinkContext, rpathsFromCallerImage);
 		}
  
+		const bool leafName = (strchr(path, '/') == NULL);
+		const bool absolutePath = (path[0] == '/');
 		dyld::LoadContext context;
 		context.useSearchPaths	= true;
-		context.useLdLibraryPath= (strchr(path, '/') == NULL);	// a leafname implies should search 
-		context.implicitRPath = (path[0] != '/');				// a non-absolute path implies try rpath searching 
+		context.useFallbackPaths= leafName;				// a partial path means no fallback paths
+		context.useLdLibraryPath= leafName;				// a leafname implies should search 
+		context.implicitRPath   = !absolutePath;		// a non-absolute path implies try rpath searching 
 		context.matchByInstallName = true;
 		context.dontLoad		= ( (mode & RTLD_NOLOAD) != 0 );
 		context.mustBeBundle	= false;
 		context.mustBeDylib		= false;
-		context.findDLL			= ( (mode & RTLD_DLL) != 0 );
+		context.canBePIE		= true;
 		context.origin			= callerImage != NULL ? callerImage->getPath() : NULL; // caller's image's path
 		context.rpath			= &callersRPaths;				// rpaths from caller and main executable
 		
@@ -1469,6 +1457,11 @@ void* dlopen(const char* path, int mode)
 		free((void*)str);
 	}
 	
+	// when context.dontLoad is set, load() returns NULL instead of throwing an exception 
+	if ( (mode & RTLD_NOLOAD) && (result == NULL) ) {
+		dlerrorSet("image not already loaded");
+	}
+	
 	if ( lockHeld ) 
 		dyld::gLibSystemHelpers->releaseGlobalDyldLock();
 	return result;
@@ -1514,30 +1507,24 @@ int dladdr(const void* address, Dl_info* info)
 
 	ImageLoader* image = dyld::findImageContainingAddress(address);
 	if ( image != NULL ) {
-		info->dli_fname = image->getLogicalPath();
-		info->dli_fbase = (void*)image->machHeader();	
-		// find closest exported symbol in the image
-		const uint32_t exportCount = image->getExportedSymbolCount();
-		const ImageLoader::Symbol* bestSym = NULL;
-		const void* bestAddr = 0;
-		for(uint32_t i=0; i < exportCount; ++i) {
-			const ImageLoader::Symbol* sym = image->getIndexedExportedSymbol(i);
-			const void* symAddr = (void*)image->getExportedSymbolAddress(sym, dyld::gLinkContext);
-			if ( (symAddr <= address) && (bestAddr < symAddr) ) {
-				bestSym = sym;
-				bestAddr = symAddr;
-			}
+		info->dli_fname = image->getPath();
+		info->dli_fbase = (void*)image->machHeader();
+		if ( address == info->dli_fbase ) {
+			// special case lookup of header
+			info->dli_sname = "__dso_handle";
+			info->dli_saddr = info->dli_fbase;
+			return 1; // success
 		}
-		if ( bestSym != NULL ) {
-			info->dli_sname = image->getExportedSymbolName(bestSym);
+		// find closest symbol in the image
+		info->dli_sname = image->findClosestSymbol(address, (const void**)&info->dli_saddr);
+		if ( info->dli_sname != NULL ) {
 			if ( info->dli_sname[0] == '_' )
 				info->dli_sname = info->dli_sname +1; // strip off leading underscore
-			info->dli_saddr = (void*)bestAddr;
+			//dyld::log("dladdr(%p) => %p %s\n", address, info->dli_saddr, info->dli_sname);
+			return 1; // success
 		}
-		else {
-			info->dli_sname = NULL;
-			info->dli_saddr = NULL;
-		}
+		info->dli_sname = NULL;
+		info->dli_saddr = NULL;
 		return 1; // success
 	}
 	return 0;  // failure
@@ -1590,7 +1577,7 @@ void* dlsym(void* handle, const char* symbolName)
 	// magic "search only main executable" handle
 	if ( handle == RTLD_MAIN_ONLY ) {
 		image = dyld::mainExecutable();
-		sym = image->findExportedSymbol(underscoredName, NULL, true, &image); // search RTLD_FIRST way
+		sym = image->findExportedSymbol(underscoredName, true, &image); // search RTLD_FIRST way
 		if ( sym != NULL ) {
 			return (void*)image->getExportedSymbolAddress(sym, dyld::gLinkContext);
 		}
@@ -1630,7 +1617,7 @@ void* dlsym(void* handle, const char* symbolName)
 	image = (ImageLoader*)(((uintptr_t)handle) & (-4));	// clear mode bits
 	if ( dyld::validImage(image) ) {
 		if ( (((uintptr_t)handle) & 1) != 0 )
-			sym = image->findExportedSymbol(underscoredName, NULL, true, &image); // search RTLD_FIRST way
+			sym = image->findExportedSymbol(underscoredName, true, &image); // search RTLD_FIRST way
 		else
 			sym = image->findExportedSymbolInImageOrDependentImages(underscoredName, dyld::gLinkContext, &image); // search image and what it links against
 		
@@ -1649,61 +1636,6 @@ void* dlsym(void* handle, const char* symbolName)
 
 
 
-void* dlord(void* handle, uint32_t ordinal)
-{
-	if ( dyld::gLogAPIs )
-		dyld::log("%s(%p, %u)\n", __func__, handle, ordinal);
-
-	dlerrorClear();
-
-	
-	// magic "search all" handle
-	if ( handle == RTLD_DEFAULT ) {
-		const char* str = dyld::mkstringf("dlord(RTLD_DEFAULT, %u): not supported", ordinal);
-		dlerrorSet(str);
-		free((void*)str);
-		return NULL;
-	}
-	// magic "search only main executable" handle
-	if ( handle == RTLD_MAIN_ONLY ) {
-		const char* str = dyld::mkstringf("dlord(RTLD_MAIN_ONLY, %u): not supported", ordinal);
-		dlerrorSet(str);
-		free((void*)str);
-		return NULL;
-	}
-	// magic "search what I would see" handle
-	if ( handle == RTLD_NEXT ) {
-		const char* str = dyld::mkstringf("dlord(RTLD_NEXT, %u): not supported", ordinal);
-		dlerrorSet(str);
-		free((void*)str);
-		return NULL;
-	}
-	// magic "search me, then what I would see" handle
-	if ( handle == RTLD_SELF ) {
-		const char* str = dyld::mkstringf("dlord(RTLD_SELF, %u): not supported", ordinal);
-		dlerrorSet(str);
-		free((void*)str);
-		return NULL;
-	}
-	
-	// real handle
-	const ImageLoader* image = (ImageLoader*)(((uintptr_t)handle) & (-4));	// clear mode bits
-	if ( dyld::validImage(image) ) {
-		const ImageLoader::Symbol* sym;
-		sym = image->getIndexedExportedSymbol(ordinal-1); // map ordinals to mach-o zero based index
-		
-		if ( sym != NULL ) {
-			return (void*)image->getExportedSymbolAddress(sym, dyld::gLinkContext);
-		}
-		const char* str = dyld::mkstringf("dlord(%p, %u): ordinal not found", handle, ordinal);
-		dlerrorSet(str);
-		free((void*)str);
-	}
-	else {
-		dlerrorSet("invalid handle passed to dlord()");
-	}
-	return NULL;
-}
 
 
 
@@ -1711,14 +1643,25 @@ void* dlord(void* handle, uint32_t ordinal)
 
 
 
-
-
-
-static const struct dyld_all_image_infos* _dyld_get_all_image_infos()
+const struct dyld_all_image_infos* _dyld_get_all_image_infos()
 {
 	return &dyld_all_image_infos;
 }
 
+#if !__arm__
+static bool client_dyld_find_unwind_sections(void* addr, dyld_unwind_sections* info)
+{
+	//if ( dyld::gLogAPIs )
+	//	dyld::log("%s(%p, %p)\n", __func__, addr, info);
+	
+	ImageLoader* image = dyld::findImageContainingAddress(addr);
+	if ( image != NULL ) {
+		image->getUnwindInfo(info);
+		return true;
+	}
+	return false;
+}
+#endif
 
 
 void dyld_register_image_state_change_handler(dyld_image_states state, bool batch, 
@@ -1733,9 +1676,15 @@ void dyld_register_image_state_change_handler(dyld_image_states state, bool batc
 }
 
 
+const char* dyld_image_path_containing_address(const void* address)
+{
+	if ( dyld::gLogAPIs )
+		dyld::log("%s(%p)\n", __func__, address);
 
-
-
-
+	ImageLoader* image = dyld::findImageContainingAddress(address);
+	if ( image != NULL )
+		return image->getPath();
+	return NULL;
+}
 
 

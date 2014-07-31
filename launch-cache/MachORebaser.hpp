@@ -40,12 +40,14 @@
 #include <mach-o/reloc.h>
 #include <mach-o/ppc/reloc.h>
 #include <mach-o/x86_64/reloc.h>
+#include <mach-o/arm/reloc.h>
 #include <vector>
 #include <set>
 
 #include "MachOFileAbstraction.hpp"
 #include "Architectures.hpp"
 #include "MachOLayout.hpp"
+#include "MachOTrie.hpp"
 
 
 
@@ -80,11 +82,14 @@ protected:
 	pint_t										getSlideForNewAddress(pint_t newAddress);
 	
 private:
-	pint_t										calculateRelocBase();
+	void										calculateRelocBase();
 	void										adjustLoadCommands();
 	void										adjustSymbolTable();
 	void										adjustDATA();
 	void										adjustCode();
+	void										applyRebaseInfo();
+	void										adjustExportInfo();
+	void										doRebase(int segIndex, uint64_t segOffset, uint8_t type);
 	void										adjustSegmentLoadCommand(macho_segment_command<P>* seg);
 	pint_t										getSlideForVMAddress(pint_t vmaddress);
 	pint_t*										mappedAddressForVMAddress(pint_t vmaddress);
@@ -101,14 +106,19 @@ protected:
 	const MachOLayoutAbstraction&				fLayout;
 private:
 	pint_t										fOrignalVMRelocBaseAddress; // add reloc address to this to get original address reloc referred to
+	const macho_symtab_command<P>*				fSymbolTable;
+	const macho_dysymtab_command<P>*			fDynamicSymbolTable;
+	const macho_dyld_info_command<P>*			fDyldInfo;
 	bool										fSplittingSegments;
+	bool										fOrignalVMRelocBaseAddressValid;
 };
 
 
 
 template <typename A>
 Rebaser<A>::Rebaser(const MachOLayoutAbstraction& layout)
- : 	fLayout(layout), fOrignalVMRelocBaseAddress(NULL), fLinkEditBase(NULL), fSplittingSegments(false)
+ : 	fLayout(layout), fOrignalVMRelocBaseAddress(NULL), fLinkEditBase(NULL), 
+	fSymbolTable(NULL), fDynamicSymbolTable(NULL), fDyldInfo(NULL), fSplittingSegments(false), fOrignalVMRelocBaseAddressValid(false)
 {
 	fHeader = (const macho_header<P>*)fLayout.getSegments()[0].mappedAddress();
 	switch ( fHeader->filetype() ) {
@@ -130,15 +140,35 @@ Rebaser<A>::Rebaser(const MachOLayoutAbstraction& layout)
 	if ( fLinkEditBase == NULL )	
 		throw "no __LINKEDIT segment";
 		
-	fOrignalVMRelocBaseAddress = calculateRelocBase();
+	// get symbol table info
+	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)fHeader + sizeof(macho_header<P>));
+	const uint32_t cmd_count = fHeader->ncmds();
+	const macho_load_command<P>* cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		switch (cmd->cmd()) {
+			case LC_SYMTAB:
+				fSymbolTable = (macho_symtab_command<P>*)cmd;
+				break;
+			case LC_DYSYMTAB:
+				fDynamicSymbolTable = (macho_dysymtab_command<P>*)cmd;
+				break;
+			case LC_DYLD_INFO:
+			case LC_DYLD_INFO_ONLY:
+				fDyldInfo = (macho_dyld_info_command<P>*)cmd;
+				break;
+		}
+		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
+	}	
+
+	calculateRelocBase();
 	
 	fSplittingSegments = layout.hasSplitSegInfo() && this->unequalSlides();
 }
 
 template <> cpu_type_t Rebaser<ppc>::getArchitecture()    const { return CPU_TYPE_POWERPC; }
-template <> cpu_type_t Rebaser<ppc64>::getArchitecture()  const { return CPU_TYPE_POWERPC64; }
 template <> cpu_type_t Rebaser<x86>::getArchitecture()    const { return CPU_TYPE_I386; }
 template <> cpu_type_t Rebaser<x86_64>::getArchitecture() const { return CPU_TYPE_X86_64; }
+template <> cpu_type_t Rebaser<arm>::getArchitecture() const { return CPU_TYPE_ARM; }
 
 template <typename A>
 bool Rebaser<A>::unequalSlides() const
@@ -178,7 +208,10 @@ template <typename A>
 void Rebaser<A>::rebase()
 {		
 	// update writable segments that have internal pointers
-	this->adjustDATA();
+	if ( fDyldInfo != NULL )
+		this->applyRebaseInfo();
+	else
+		this->adjustDATA();
 
 	// if splitting segments, update code-to-data references
 	this->adjustCode();
@@ -191,6 +224,10 @@ void Rebaser<A>::rebase()
 	
 	// update symbol table  
 	this->adjustSymbolTable();
+	
+	// update export info
+	if ( fDyldInfo != NULL )
+		this->adjustExportInfo();
 }
 
 template <>
@@ -315,50 +352,103 @@ typename A::P::uint_t Rebaser<A>::getSlideForNewAddress(pint_t newAddress)
 template <typename A>
 typename A::P::uint_t* Rebaser<A>::mappedAddressForRelocAddress(pint_t r_address)
 {
-	return this->mappedAddressForVMAddress(r_address + fOrignalVMRelocBaseAddress);
+	if ( fOrignalVMRelocBaseAddressValid )
+		return this->mappedAddressForVMAddress(r_address + fOrignalVMRelocBaseAddress);
+	else
+		throw "can't apply relocation.  Relocation base not known";
 }
 
 
 template <typename A>
 void Rebaser<A>::adjustSymbolTable()
 {
-	const macho_dysymtab_command<P>* dysymtab = NULL;
-	macho_nlist<P>* symbolTable = NULL;
-
-	// get symbol table info
-	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)fHeader + sizeof(macho_header<P>));
-	const uint32_t cmd_count = fHeader->ncmds();
-	const macho_load_command<P>* cmd = cmds;
-	for (uint32_t i = 0; i < cmd_count; ++i) {
-		switch (cmd->cmd()) {
-			case LC_SYMTAB:
-				{
-					const macho_symtab_command<P>* symtab = (macho_symtab_command<P>*)cmd;
-					symbolTable = (macho_nlist<P>*)(&fLinkEditBase[symtab->symoff()]);
-				}
-				break;
-			case LC_DYSYMTAB:
-				dysymtab = (macho_dysymtab_command<P>*)cmd;
-				break;
-		}
-		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
-	}	
+	macho_nlist<P>* symbolTable = (macho_nlist<P>*)(&fLinkEditBase[fSymbolTable->symoff()]);
 
 	// walk all exports and slide their n_value
-	macho_nlist<P>* lastExport = &symbolTable[dysymtab->iextdefsym()+dysymtab->nextdefsym()];
-	for (macho_nlist<P>* entry = &symbolTable[dysymtab->iextdefsym()]; entry < lastExport; ++entry) {
+	macho_nlist<P>* lastExport = &symbolTable[fDynamicSymbolTable->iextdefsym()+fDynamicSymbolTable->nextdefsym()];
+	for (macho_nlist<P>* entry = &symbolTable[fDynamicSymbolTable->iextdefsym()]; entry < lastExport; ++entry) {
 		if ( (entry->n_type() & N_TYPE) == N_SECT )
 			entry->set_n_value(entry->n_value() + this->getSlideForVMAddress(entry->n_value()));
 	}
 
-	// walk all local symbols and slide their n_value (don't adjust and stabs)
-	macho_nlist<P>*  lastLocal = &symbolTable[dysymtab->ilocalsym()+dysymtab->nlocalsym()];
-	for (macho_nlist<P>* entry = &symbolTable[dysymtab->ilocalsym()]; entry < lastLocal; ++entry) {
+	// walk all local symbols and slide their n_value (don't adjust any stabs)
+	macho_nlist<P>*  lastLocal = &symbolTable[fDynamicSymbolTable->ilocalsym()+fDynamicSymbolTable->nlocalsym()];
+	for (macho_nlist<P>* entry = &symbolTable[fDynamicSymbolTable->ilocalsym()]; entry < lastLocal; ++entry) {
 		if ( (entry->n_sect() != NO_SECT) && ((entry->n_type() & N_STAB) == 0) )
 			entry->set_n_value(entry->n_value() + this->getSlideForVMAddress(entry->n_value()));
 	}
 }
 
+template <typename A>
+void Rebaser<A>::adjustExportInfo()
+{
+	// if no export info, nothing to adjust
+	if ( fDyldInfo->export_size() == 0 )
+		return;
+
+	// since export info addresses are offsets from mach_header, everything in __TEXT is fine
+	// only __DATA addresses need to be updated
+	const uint8_t* start = &fLinkEditBase[fDyldInfo->export_off()];
+	const uint8_t* end = &start[fDyldInfo->export_size()];
+	std::vector<mach_o::trie::Entry> originalExports;
+	try {
+		parseTrie(start, end, originalExports);
+	}
+	catch (const char* msg) {
+		throwf("%s in %s", msg, fLayout.getFilePath());
+	}
+	
+	std::vector<mach_o::trie::Entry> newExports;
+	newExports.reserve(originalExports.size());
+	pint_t baseAddress = this->getBaseAddress();
+	pint_t baseAddressSlide = this->getSlideForVMAddress(baseAddress);
+	for (std::vector<mach_o::trie::Entry>::iterator it=originalExports.begin(); it != originalExports.end(); ++it) {
+		// remove symbols used by the static linker only
+		if (	   (strncmp(it->name, "$ld$", 4) == 0) 
+				|| (strncmp(it->name, ".objc_class_name",16) == 0) 
+				|| (strncmp(it->name, ".objc_category_name",19) == 0) ) {
+			//fprintf(stderr, "ignoring symbol %s\n", it->name);
+			continue;
+		}
+		// adjust symbols in slid segments
+		//uint32_t oldOffset = it->address;
+		it->address += (this->getSlideForVMAddress(it->address + baseAddress) - baseAddressSlide);
+		//fprintf(stderr, "orig=0x%08X, new=0x%08llX, sym=%s\n", oldOffset, it->address, it->name);
+		newExports.push_back(*it);
+	}
+	
+	// rebuild export trie
+	std::vector<uint8_t> newExportTrieBytes;
+	newExportTrieBytes.reserve(fDyldInfo->export_size());
+	mach_o::trie::makeTrie(newExports, newExportTrieBytes);
+	// align
+	while ( (newExportTrieBytes.size() % sizeof(pint_t)) != 0 )
+		newExportTrieBytes.push_back(0);
+	
+	// copy into place, zero pad
+	uint32_t newExportsSize = newExportTrieBytes.size();
+	if ( newExportsSize > fDyldInfo->export_size() ) {
+		// it is possible that the new export trie is larger than the old one
+		// for those cases will malloc a block on the side and set up
+		// export_off to point to it.
+		uint8_t* sideTrie = new uint8_t[newExportsSize];
+		memcpy(sideTrie, &newExportTrieBytes[0], newExportsSize);
+		//fprintf(stderr, "set_export_off()=%ld, fLinkEditBase=%p, sideTrie=%p\n", (long)(sideTrie - fLinkEditBase), fLinkEditBase, sideTrie);
+		// warning, export_off is only 32-bits so if the trie grows it must be allocated with 32-bits of fLinkeditBase
+		int64_t offset = sideTrie - fLinkEditBase;
+		int32_t offset32 = (int32_t)offset;
+		if ( offset != offset32 )
+			throw "internal error, new trie allocated to far from fLinkeditBase";
+		((macho_dyld_info_command<P>*)fDyldInfo)->set_export_off(offset32);
+		((macho_dyld_info_command<P>*)fDyldInfo)->set_export_size(newExportsSize);
+	}
+	else {
+		uint8_t* trie = (uint8_t*)&fLinkEditBase[fDyldInfo->export_off()];
+		memcpy(trie, &newExportTrieBytes[0], newExportsSize);
+		bzero(trie+newExportsSize, fDyldInfo->export_size() - newExportsSize);
+		((macho_dyld_info_command<P>*)fDyldInfo)->set_export_size(newExportsSize);
+	}
+}
 
 
 
@@ -383,7 +473,7 @@ void Rebaser<A>::doCodeUpdate(uint8_t kind, uint64_t address, int64_t codeToData
 			value64 += codeToDataDelta;
 			 A::P::E::set64(*(uint64_t*)p, value64);
 			break;
-		case 3: // used only for ppc/ppc64, an instruction that sets the hi16 of a register
+		case 3: // used only for ppc, an instruction that sets the hi16 of a register
 			// adjust low 16 bits of instruction which contain hi16 of distance to something in DATA
 			if ( (codeToDataDelta & 0xFFFF) != 0 )
 				throwf("codeToDataDelta=0x%0llX is not a multiple of 64K", codeToDataDelta);
@@ -476,41 +566,130 @@ void Rebaser<A>::adjustCode()
 	}
 }
 
+template <typename A>
+void Rebaser<A>::doRebase(int segIndex, uint64_t segOffset, uint8_t type)
+{
+	const std::vector<MachOLayoutAbstraction::Segment>& segments = fLayout.getSegments();
+	if ( segIndex > segments.size() )
+		throw "bad segment index in rebase info";
+	const MachOLayoutAbstraction::Segment& seg = segments[segIndex];
+	uint8_t*  mappedAddr = (uint8_t*)seg.mappedAddress() + segOffset;
+	pint_t*   mappedAddrP = (pint_t*)mappedAddr;
+	uint32_t* mappedAddr32 = (uint32_t*)mappedAddr;
+	pint_t valueP;
+	pint_t valuePnew;
+	uint32_t value32;
+	int32_t svalue32;
+	int32_t svalue32new;
+	switch ( type ) {
+		case REBASE_TYPE_POINTER:
+			valueP= P::getP(*mappedAddrP);
+			P::setP(*mappedAddrP, valueP + this->getSlideForVMAddress(valueP));
+			break;
+		
+		case REBASE_TYPE_TEXT_ABSOLUTE32:
+			value32 = E::get32(*mappedAddr32);
+			E::set32(*mappedAddr32, value32 + this->getSlideForVMAddress(value32));
+			break;
+			
+		case REBASE_TYPE_TEXT_PCREL32:
+			svalue32 = E::get32(*mappedAddr32);
+			valueP = seg.address() + segOffset + 4 + svalue32;
+			valuePnew = valueP + this->getSlideForVMAddress(valueP);
+			svalue32new = seg.address() + segOffset + 4 - valuePnew;
+			E::set32(*mappedAddr32, svalue32new);
+			break;
+		
+		default:
+			throw "bad rebase type";
+	}
+}
+
+
+template <typename A>
+void Rebaser<A>::applyRebaseInfo()
+{
+	const uint8_t* p = &fLinkEditBase[fDyldInfo->rebase_off()];
+	const uint8_t* end = &p[fDyldInfo->rebase_size()];
+	
+	uint8_t type = 0;
+	int segIndex;
+	uint64_t segOffset = 0;
+	uint32_t count;
+	uint32_t skip;
+	bool done = false;
+	while ( !done && (p < end) ) {
+		uint8_t immediate = *p & REBASE_IMMEDIATE_MASK;
+		uint8_t opcode = *p & REBASE_OPCODE_MASK;
+		++p;
+		switch (opcode) {
+			case REBASE_OPCODE_DONE:
+				done = true;
+				break;
+			case REBASE_OPCODE_SET_TYPE_IMM:
+				type = immediate;
+				break;
+			case REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+				segIndex = immediate;
+				segOffset = read_uleb128(p, end);
+				break;
+			case REBASE_OPCODE_ADD_ADDR_ULEB:
+				segOffset += read_uleb128(p, end);
+				break;
+			case REBASE_OPCODE_ADD_ADDR_IMM_SCALED:
+				segOffset += immediate*sizeof(pint_t);
+				break;
+			case REBASE_OPCODE_DO_REBASE_IMM_TIMES:
+				for (int i=0; i < immediate; ++i) {
+					doRebase(segIndex, segOffset, type);
+					segOffset += sizeof(pint_t);
+				}
+				break;
+			case REBASE_OPCODE_DO_REBASE_ULEB_TIMES:
+				count = read_uleb128(p, end);
+				for (uint32_t i=0; i < count; ++i) {
+					doRebase(segIndex, segOffset, type);
+					segOffset += sizeof(pint_t);
+				}
+				break;
+			case REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB:
+				doRebase(segIndex, segOffset, type);
+				segOffset += read_uleb128(p, end) + sizeof(pint_t);
+				break;
+			case REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_ULEB:
+				count = read_uleb128(p, end);
+				skip = read_uleb128(p, end);
+				for (uint32_t i=0; i < count; ++i) {
+					doRebase(segIndex, segOffset, type);
+					segOffset += skip + sizeof(pint_t);
+				}
+				break;
+			default:
+				throwf("bad rebase opcode %d", *p);
+		}
+	}	
+}
 
 template <typename A>
 void Rebaser<A>::adjustDATA()
 {
-	const macho_dysymtab_command<P>* dysymtab = NULL;
-
-	// get symbol table info
-	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)fHeader + sizeof(macho_header<P>));
-	const uint32_t cmd_count = fHeader->ncmds();
-	const macho_load_command<P>* cmd = cmds;
-	for (uint32_t i = 0; i < cmd_count; ++i) {
-		switch (cmd->cmd()) {
-			case LC_DYSYMTAB:
-				dysymtab = (macho_dysymtab_command<P>*)cmd;
-				break;
-		}
-		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
-	}	
-
-
 	// walk all local relocations and slide every pointer
-	const macho_relocation_info<P>* const relocsStart = (macho_relocation_info<P>*)(&fLinkEditBase[dysymtab->locreloff()]);
-	const macho_relocation_info<P>* const relocsEnd = &relocsStart[dysymtab->nlocrel()];
+	const macho_relocation_info<P>* const relocsStart = (macho_relocation_info<P>*)(&fLinkEditBase[fDynamicSymbolTable->locreloff()]);
+	const macho_relocation_info<P>* const relocsEnd = &relocsStart[fDynamicSymbolTable->nlocrel()];
 	for (const macho_relocation_info<P>* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
 		this->doLocalRelocation(reloc);
 	}
 	
 	// walk non-lazy-pointers and slide the ones that are LOCAL
-	cmd = cmds;
+	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)fHeader + sizeof(macho_header<P>));
+	const uint32_t cmd_count = fHeader->ncmds();
+	const macho_load_command<P>* cmd = cmds;
 	for (uint32_t i = 0; i < cmd_count; ++i) {
 		if ( cmd->cmd() == macho_segment_command<P>::CMD ) {
 			const macho_segment_command<P>* seg = (macho_segment_command<P>*)cmd;
 			const macho_section<P>* const sectionsStart = (macho_section<P>*)((char*)seg + sizeof(macho_segment_command<P>));
 			const macho_section<P>* const sectionsEnd = &sectionsStart[seg->nsects()];
-			const uint32_t* const indirectTable = (uint32_t*)(&fLinkEditBase[dysymtab->indirectsymoff()]);
+			const uint32_t* const indirectTable = (uint32_t*)(&fLinkEditBase[fDynamicSymbolTable->indirectsymoff()]);
 			for(const macho_section<P>* sect = sectionsStart; sect < sectionsEnd; ++sect) {
 				if ( (sect->flags() & SECTION_TYPE) == S_NON_LAZY_SYMBOL_POINTERS ) {
 					const uint32_t indirectTableOffset = sect->reserved1();
@@ -533,23 +712,8 @@ void Rebaser<A>::adjustDATA()
 template <typename A>
 void Rebaser<A>::adjustRelocBaseAddresses()
 {
-	// split seg file alreday have reloc base of first writable segment
-	// only non-split-segs that are being split need this adjusted
-	if ( (fHeader->flags() & MH_SPLIT_SEGS) == 0  ) {
-
-		// get symbol table to find relocation records
-		const macho_dysymtab_command<P>* dysymtab = NULL;
-		const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)fHeader + sizeof(macho_header<P>));
-		const uint32_t cmd_count = fHeader->ncmds();
-		const macho_load_command<P>* cmd = cmds;
-		for (uint32_t i = 0; i < cmd_count; ++i) {
-			switch (cmd->cmd()) {
-				case LC_DYSYMTAB:
-					dysymtab = (macho_dysymtab_command<P>*)cmd;
-					break;
-			}
-			cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
-		}	
+	// split seg file need reloc base to be first writable segment
+	if ( fSplittingSegments && ((fHeader->flags() & MH_SPLIT_SEGS) == 0) ) {
 
 		// get amount to adjust reloc address
 		int32_t relocAddressAdjust = 0;
@@ -563,15 +727,15 @@ void Rebaser<A>::adjustRelocBaseAddresses()
 		}
 
 		// walk all local relocations and adjust every address 
-		macho_relocation_info<P>* const relocsStart = (macho_relocation_info<P>*)(&fLinkEditBase[dysymtab->locreloff()]);
-		macho_relocation_info<P>* const relocsEnd = &relocsStart[dysymtab->nlocrel()];
+		macho_relocation_info<P>* const relocsStart = (macho_relocation_info<P>*)(&fLinkEditBase[fDynamicSymbolTable->locreloff()]);
+		macho_relocation_info<P>* const relocsEnd = &relocsStart[fDynamicSymbolTable->nlocrel()];
 		for (macho_relocation_info<P>* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
 			reloc->set_r_address(reloc->r_address()-relocAddressAdjust);
 		}
 		
 		// walk all external relocations and adjust every address 
-		macho_relocation_info<P>* const externRelocsStart = (macho_relocation_info<P>*)(&fLinkEditBase[dysymtab->extreloff()]);
-		macho_relocation_info<P>* const externRelocsEnd = &externRelocsStart[dysymtab->nextrel()];
+		macho_relocation_info<P>* const externRelocsStart = (macho_relocation_info<P>*)(&fLinkEditBase[fDynamicSymbolTable->extreloff()]);
+		macho_relocation_info<P>* const externRelocsEnd = &externRelocsStart[fDynamicSymbolTable->nextrel()];
 		for (macho_relocation_info<P>* reloc=externRelocsStart; reloc < externRelocsEnd; ++reloc) {
 			reloc->set_r_address(reloc->r_address()-relocAddressAdjust);
 		}
@@ -657,7 +821,7 @@ void Rebaser<A>::doLocalRelocation(const macho_relocation_info<P>* reloc)
 
 
 template <typename A>
-typename A::P::uint_t Rebaser<A>::calculateRelocBase()
+void Rebaser<A>::calculateRelocBase()
 {
 	const std::vector<MachOLayoutAbstraction::Segment>& segments = fLayout.getSegments();
 	if ( fHeader->flags() & MH_SPLIT_SEGS ) {
@@ -666,38 +830,21 @@ typename A::P::uint_t Rebaser<A>::calculateRelocBase()
 			const MachOLayoutAbstraction::Segment& seg = *it;
 			if ( seg.writable() ) {
 				// found first writable segment
-				return seg.address();
+				fOrignalVMRelocBaseAddress = seg.address();
+				fOrignalVMRelocBaseAddressValid = true;
 			}
 		}
-		throw "no writable segment";
 	}
 	else {
 		// reloc addresses are from the start of the mapped file (base address)
-		return segments[0].address();
+		fOrignalVMRelocBaseAddress = segments[0].address();
+		fOrignalVMRelocBaseAddressValid = true;
 	}
 }
 
-template <>
-ppc64::P::uint_t Rebaser<ppc64>::calculateRelocBase()
-{
-	// reloc addresses either:
-	// 1) from the first segment vmaddr if no writable segment is > 4GB from first segment vmaddr
-	// 2) from start of first writable segment
-	const std::vector<MachOLayoutAbstraction::Segment>& segments = fLayout.getSegments();
-	uint64_t threshold = segments[0].address() + 0x100000000ULL;
-	for(std::vector<MachOLayoutAbstraction::Segment>::const_iterator it = segments.begin(); it != segments.end(); ++it) {
-		const MachOLayoutAbstraction::Segment& seg = *it;
-		if ( seg.writable() && (seg.address()+seg.size()) > threshold ) {
-			// found writable segment with address > 4GB past base address
-			return seg.address();
-		}
-	}
-	// just use base address
-	return segments[0].address();
-}
 
 template <>
-x86_64::P::uint_t Rebaser<x86_64>::calculateRelocBase()
+void Rebaser<x86_64>::calculateRelocBase()
 {
 	// reloc addresses are always based from the start of the first writable segment
 	const std::vector<MachOLayoutAbstraction::Segment>& segments = fLayout.getSegments();
@@ -705,10 +852,10 @@ x86_64::P::uint_t Rebaser<x86_64>::calculateRelocBase()
 		const MachOLayoutAbstraction::Segment& seg = *it;
 		if ( seg.writable() ) {
 			// found first writable segment
-			return seg.address();
+			fOrignalVMRelocBaseAddress = seg.address();
+			fOrignalVMRelocBaseAddressValid = true;
 		}
 	}
-	throw "no writable segment";
 }
 
 
@@ -748,14 +895,14 @@ public:
 							case CPU_TYPE_POWERPC:
 								fRebasers.push_back(new Rebaser<ppc>(&p[fileOffset]));
 								break;
-							case CPU_TYPE_POWERPC64:
-								fRebasers.push_back(new Rebaser<ppc64>(&p[fileOffset]));
-								break;
 							case CPU_TYPE_I386:
 								fRebasers.push_back(new Rebaser<x86>(&p[fileOffset]));
 								break;
 							case CPU_TYPE_X86_64:
 								fRebasers.push_back(new Rebaser<x86_64>(&p[fileOffset]));
+								break;
+							case CPU_TYPE_ARM:
+								fRebasers.push_back(new Rebaser<arm>(&p[fileOffset]));
 								break;
 							default:
 								throw "unknown file format";
@@ -771,14 +918,14 @@ public:
 					if ( (OSSwapBigToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapBigToHostInt32(mh->cputype) == CPU_TYPE_POWERPC)) {
 						fRebasers.push_back(new Rebaser<ppc>(mh));
 					}
-					else if ( (OSSwapBigToHostInt32(mh->magic) == MH_MAGIC_64) && (OSSwapBigToHostInt32(mh->cputype) == CPU_TYPE_POWERPC64)) {
-						fRebasers.push_back(new Rebaser<ppc64>(mh));
-					}
 					else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_I386)) {
 						fRebasers.push_back(new Rebaser<x86>(mh));
 					}
 					else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC_64) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_X86_64)) {
 						fRebasers.push_back(new Rebaser<x86_64>(mh));
+					}
+					else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_ARM)) {
+						fRebasers.push_back(new Rebaser<arm>(mh));
 					}
 					else {
 						throw "unknown file format";

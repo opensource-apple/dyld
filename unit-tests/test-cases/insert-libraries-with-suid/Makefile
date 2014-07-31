@@ -23,7 +23,9 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+all-check: all check
+
+check:
 	export DYLD_INSERT_LIBRARIES="/usr/lib/libldap.dylib:/usr/lib/libpcap.dylib" && ./main
 
 all: main

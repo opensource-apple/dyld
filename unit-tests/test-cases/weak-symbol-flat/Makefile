@@ -1,4 +1,4 @@
-##
+#
 # Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
@@ -23,11 +23,13 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+all-check: all check
+
+check:
 	(export DYLD_IMAGE_SUFFIX=_missing  && ./main) || echo "FAIL \"weak-symbol-flat\""
 	 ./main 1
 
-all : main libfoo.dylib libfoo_missing.dylib
+all: main libfoo.dylib libfoo_missing.dylib
 
 libfoo.dylib : foo.c 
 	${CC} -dynamiclib -DSYMBOL_PRESENT -o libfoo.dylib foo.c
@@ -36,7 +38,7 @@ libfoo_missing.dylib : foo.c
 	${CC} -dynamiclib -o libfoo_missing.dylib foo.c -install_name libfoo.dylib
 
 main: main.c libfoo.dylib
-	${CC} -I${TESTROOT}/include -mmacosx-version-min=10.2 -L. -lfoo -o main  main.c -flat_namespace
+	${CC} -I${TESTROOT}/include -L. -lfoo -o main  main.c -flat_namespace
 
 clean:
 	${RM} ${RMFLAGS} *~ libfoo.dylib libfoo_missing.dylib main

@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2006-2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2006-2008 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -26,7 +26,7 @@
 
 #include <sys/types.h>
 #include <stdint.h>
-#include <mach/shared_memory_server.h>
+#include <mach/shared_region.h>
 
 
  struct dyld_cache_header

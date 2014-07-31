@@ -37,8 +37,9 @@ ifeq "ppc" "$(ARCH)"
 	endif
 endif
 
+all-check: all check
 
-run: all
+check:
 	if [ ${EMULATED} == 0 ]; \
 	then \
 		${TESTROOT}/bin/exit-zero-pass.pl "rpath-dlopen-leak" "rpath-dlopen-leak" "./main | grep '0 leaks for 0 total leaked bytes' > /dev/null"; \

@@ -23,7 +23,9 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+all-check: all check
+
+check:
 	./main
 
 all: main 
@@ -33,11 +35,11 @@ main : main.c libfoo.dylib
 
 
 libfoo.dylib : foo.c libbar.dylib
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} ${CCFLAGS} -dynamiclib foo.c -o libfoo.dylib libbar.dylib -flat_namespace -prebind -seg1addr 20000
+	${CC} ${CCFLAGS} -mmacosx-version-min=10.2 -dynamiclib foo.c -o libfoo.dylib libbar.dylib -flat_namespace -prebind -seg1addr 20000
 
 
 libbar.dylib : bar.c
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} ${CCFLAGS} -dynamiclib bar.c -o libbar.dylib -prebind -seg1addr 30000
+	${CC} ${CCFLAGS} -mmacosx-version-min=10.2 -dynamiclib bar.c -o libbar.dylib -prebind -seg1addr 30000
 
 
 

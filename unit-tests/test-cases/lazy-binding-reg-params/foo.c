@@ -77,6 +77,9 @@ bool dofloattest(double p1, double p2, double p3, double p4, double p5, double p
 #endif
 
 
+
+#if __i386__ || __x86_64__ || __ppc__ || __ppc64__
+
 static bool comparevFloat(vFloat p1, vFloat p2)
 {
 	return (memcmp(&p1, &p2, 16) == 0);
@@ -102,6 +105,8 @@ bool dovectortest(vFloat p1, vFloat p2, vFloat p3, vFloat p4, vFloat p5)
 		return false;
 	return true;
 }
+
+#endif
 
 
 

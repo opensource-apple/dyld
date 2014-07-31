@@ -23,13 +23,15 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+PWD = $(shell pwd)
 
 #
 # a main executable linked with -rpath and uses dlopen can find a dylib
 #
 
+all-check: all check
 
-run: all
+check:
 	./main
 
 all: main
@@ -40,7 +42,7 @@ hide/hole/libfoo.dylib : foo.c
 	
 
 main : main.c hide/hole/libfoo.dylib
-	${CC} -I${TESTROOT}/include main.c -o main -Wl,-rpath -Wl,`pwd`/hide/hole
+	${CC} -I${TESTROOT}/include main.c -o main -Wl,-rpath -Wl,${PWD}/hide/hole
 
 clean:
 	${RM} ${RMFLAGS} *~  main hide/hole/libfoo.dylib hide

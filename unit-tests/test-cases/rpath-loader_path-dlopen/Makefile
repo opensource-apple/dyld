@@ -30,8 +30,9 @@ include ${TESTROOT}/include/common.makefile
 # of the main executable during calls to dlopen()
 #
 
+all-check: all check
 
-run: all
+check:
 	./main
 
 all: main

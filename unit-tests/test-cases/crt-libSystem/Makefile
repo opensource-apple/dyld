@@ -28,13 +28,17 @@ include ${TESTROOT}/include/common.makefile
 # the mechanism for 10.4 and 10.5 is different 
 #
 
-run: all
+all-check: all check
+
+check:
 	./main-10.4
 	./main-10.5
+	./main-10.6
 	./main-10.4.stripped
 	./main-10.5.stripped
+	./main-10.6.stripped
 
-all: main-10.4 main-10.5 main-10.4.stripped main-10.5.stripped
+all: main-10.4 main-10.5 main-10.6 main-10.4.stripped main-10.5.stripped main-10.6.stripped
 
 main-10.4: main.c
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main-10.4 main.c -mmacosx-version-min=10.4
@@ -48,7 +52,13 @@ main-10.5: main.c
 main-10.5.stripped: main-10.5
 	strip main-10.5 -o main-10.5.stripped
 
+main-10.6: main.c
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main-10.6 main.c -mmacosx-version-min=10.6  -nostdlib -lcrt1.10.6.o -lSystem
+
+main-10.6.stripped: main-10.6
+	strip main-10.6 -o main-10.6.stripped
+
 clean:
-	${RM} ${RMFLAGS} *~ main-10.4 main-10.5 main-10.4.stripped main-10.5.stripped
+	${RM} ${RMFLAGS} *~ main-10.4 main-10.5 main-10.6 main-10.4.stripped main-10.5.stripped main-10.6.stripped
  
 

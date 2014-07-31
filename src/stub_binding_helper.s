@@ -245,6 +245,40 @@ _stub_binding_helper_interface:
 
 #endif /* __ppc__ */
 
+#if __arm__
+/*
+ * This is the interface for the stub_binding_helper for ARM:
+ * The caller has pushed the address of the a lazy pointer to be filled in with
+ * the value for the defined symbol and pushed the address of the the mach
+ * header this pointer comes from.
+ *
+ * sp+4        address of lazy pointer
+ * sp+0        address of mach header
+ * 
+ * After the symbol has been resolved and the pointer filled in this is to pop
+ * these arguments off the stack and jump to the address of the defined symbol.
+ */
+  
+	.text
+	.align 2
+	.globl	_stub_binding_helper_interface
+_stub_binding_helper_interface:
+	stmfd	sp!, {r0,r1,r2,r3,r7,lr}	// save registers
+	add	r7, sp, #16			// point FP to previous FP
+
+	ldr	r0, [sp, #24]			// move address of mach header to 1st parameter
+	ldr	r1, [sp, #28]			// move address of lazy pointer to 2nd parameter
+
+	// call dyld::bindLazySymbol(mh, lazy_symbol_pointer_address)
+	bl	__ZN4dyld14bindLazySymbolEPK11mach_headerPm
+	mov	ip, r0				// move the symbol`s address into ip
+
+	ldmfd	sp!, {r0,r1,r2,r3,r7,lr}	// restore registers
+	add	sp, sp, #8			// remove meta-parameters
+
+	bx	ip				// jump to the symbol`s address that was bound
+
+#endif /* __arm__ */
 
 
 

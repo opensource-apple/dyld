@@ -32,7 +32,9 @@ SHELL = bash # use bash shell so we can redirect just stderr
 # Use of relative paths in setuid binaries is not allowed
 #
 
-run: all
+all-check: all check
+
+check:
 	./main_exe "setuid-executable_path" || echo "FAIL setuid-executable_path @executable_path not setuid"
 	${TESTROOT}/bin/exit-non-zero-pass.pl "setuid-executable_path @executable_path" "setuid-executable_path @executable_path" ./main_exe-suid "setuid-executable_path"
 	./main_loader "setuid-executable_path" || echo "FAIL setuid-executable_path @loader_path not setuid" 

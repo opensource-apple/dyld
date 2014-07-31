@@ -26,7 +26,9 @@ include ${TESTROOT}/include/common.makefile
 
 ### verify inserted libraries override with flat namespace
 
-run: all
+all-check: all check
+
+check:
 	export DYLD_INSERT_LIBRARIES="libfoo.dylib" && ./main
 
 all:

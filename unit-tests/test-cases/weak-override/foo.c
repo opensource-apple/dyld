@@ -33,3 +33,10 @@ int __attribute__((weak)) foo()
 {
 	return myfunc();
 }
+
+int (*myfuncproc)() = &myfunc;
+
+int  bar()
+{
+	return (*myfuncproc)();
+}

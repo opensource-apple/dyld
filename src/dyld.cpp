@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2004-2008 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -39,6 +39,17 @@
 #include <sys/sysctl.h>
 #include <sys/mman.h>
 #include <sys/dtrace.h>
+#include <libkern/OSAtomic.h>
+
+#ifndef CPU_SUBTYPE_ARM_V5TEJ
+	#define CPU_SUBTYPE_ARM_V5TEJ		((cpu_subtype_t) 7)
+#endif
+#ifndef CPU_SUBTYPE_ARM_XSCALE
+	#define CPU_SUBTYPE_ARM_XSCALE		((cpu_subtype_t) 8)
+#endif
+#ifndef CPU_SUBTYPE_ARM_V7
+	#define CPU_SUBTYPE_ARM_V7			((cpu_subtype_t) 9)
+#endif
 
 #include <vector>
 #include <algorithm>
@@ -49,7 +60,12 @@
 #include "ImageLoader.h"
 #include "ImageLoaderMachO.h"
 #include "dyldLibSystemInterface.h"
+#if DYLD_SHARED_CACHE_SUPPORT
 #include "dyld_cache_format.h"
+#endif
+#if CORESYMBOLICATION_SUPPORT
+#include "coreSymbolicationDyldSupport.hpp"
+#endif
 
 // from _simple.h in libc
 typedef struct _SIMPLE*		_SIMPLE_STRING;
@@ -62,11 +78,9 @@ extern "C" char *			_simple_string(_SIMPLE_STRING __b);
 
 
 
-// 32-bit ppc is only architecture that uses cpu-sub-types
-#define CPU_SUBTYPES_SUPPORTED __ppc__ 
+// 32-bit ppc and ARM are the only architecture that use cpu-sub-types
+#define CPU_SUBTYPES_SUPPORTED __ppc__ || __arm__
 
-
-#define OLD_GDB_DYLD_INTERFACE __ppc__ || __i386__
 
 
 #define CPU_TYPE_MASK 0x00FFFFFF	/* complement of CPU_ARCH_MASK */
@@ -75,10 +89,7 @@ extern "C" char *			_simple_string(_SIMPLE_STRING __b);
 /* implemented in dyld_gdb.cpp */
 extern void addImagesToAllImages(uint32_t infoCount, const dyld_image_info info[]);
 extern void removeImageFromAllImages(const mach_header* mh);
-#if OLD_GDB_DYLD_INTERFACE
-extern void addImageForgdb(const mach_header* mh, uintptr_t slide, const char* physicalPath, const char* logicalPath);
-extern void removeImageForgdb(const struct mach_header* mh);
-#endif
+extern void setAlImageInfosHalt(const char* message, uintptr_t flags);
 
 // magic so CrashReporter logs message
 extern "C" {
@@ -110,7 +121,6 @@ struct EnvironmentVariables {
 	const char* const *			DYLD_FALLBACK_FRAMEWORK_PATH;
 	const char* const *			DYLD_LIBRARY_PATH;
 	const char* const *			DYLD_FALLBACK_LIBRARY_PATH;
-	const char*	const *			DYLD_ROOT_PATH;
 	const char* const *			DYLD_INSERT_LIBRARIES;
 	const char* const *			LD_LIBRARY_PATH;			// for unix conformance
 	bool						DYLD_PRINT_LIBRARIES;
@@ -120,6 +130,9 @@ struct EnvironmentVariables {
 	bool						DYLD_PRINT_OPTS;
 	bool						DYLD_PRINT_ENV;
 	bool						DYLD_DISABLE_DOFS;
+                            //  DYLD_SHARED_CACHE_DONT_VALIDATE ==> sSharedCacheIgnoreInodeAndTimeStamp
+                            //  DYLD_SHARED_CACHE_DIR           ==> sSharedCacheDir
+							//	DYLD_ROOT_PATH					==> gLinkContext.rootPaths
 							//	DYLD_IMAGE_SUFFIX				==> gLinkContext.imageSuffix
 							//	DYLD_PRINT_OPTS					==> gLinkContext.verboseOpts
 							//	DYLD_PRINT_ENV					==> gLinkContext.verboseEnv
@@ -127,6 +140,7 @@ struct EnvironmentVariables {
 							//	DYLD_PRINT_INITIALIZERS			==> gLinkContext.verboseInit
 							//	DYLD_PRINT_SEGMENTS				==> gLinkContext.verboseMapping
 							//	DYLD_PRINT_BINDINGS				==> gLinkContext.verboseBind
+							//  DYLD_PRINT_WEAK_BINDINGS		==> gLinkContext.verboseWeakBind
 							//	DYLD_PRINT_REBASINGS			==> gLinkContext.verboseRebase
 							//	DYLD_PRINT_DOFS					==> gLinkContext.verboseDOF
 							//	DYLD_PRINT_APIS					==> gLogAPIs
@@ -136,25 +150,22 @@ struct EnvironmentVariables {
 							//	DYLD_SHARED_REGION				==> gLinkContext.sharedRegionMode
 							//	DYLD_PRINT_WARNINGS				==> gLinkContext.verboseWarnings
 };
-
+        
 typedef std::vector<dyld_image_state_change_handler> StateHandlers;
 struct RegisteredDOF { const mach_header* mh; int registrationID; };
 
 // all global state
 static const char*					sExecPath = NULL;
-static const struct mach_header*	sMainExecutableMachHeader = NULL;
+static const macho_header*			sMainExecutableMachHeader = NULL;
 static cpu_type_t					sHostCPU;
 static cpu_subtype_t				sHostCPUsubtype;
 static ImageLoader*					sMainExecutable = NULL;
-static bool							sMainExecutableIsSetuid = false;
+static bool							sProcessIsRestricted = false;
 static unsigned int					sInsertedDylibCount = 0;
 static std::vector<ImageLoader*>	sAllImages;
 static std::vector<ImageLoader*>	sImageRoots;
 static std::vector<ImageLoader*>	sImageFilesNeedingTermination;
 static std::vector<RegisteredDOF>	sImageFilesNeedingDOFUnregistration;
-#if IMAGE_NOTIFY_SUPPORT
-static std::vector<ImageLoader*>	sImagesToNotifyAboutOtherImages;
-#endif
 static std::vector<ImageCallback>   sAddImageCallbacks;
 static std::vector<ImageCallback>   sRemoveImageCallbacks;
 static StateHandlers				sSingleHandlers[7];
@@ -163,15 +174,12 @@ static ImageLoader*					sLastImageByAddressCache;
 static EnvironmentVariables			sEnv;
 static const char*					sFrameworkFallbackPaths[] = { "$HOME/Library/Frameworks", "/Library/Frameworks", "/Network/Library/Frameworks", "/System/Library/Frameworks", NULL };
 static const char*					sLibraryFallbackPaths[] = { "$HOME/lib", "/usr/local/lib", "/usr/lib", NULL };
-static BundleNotificationCallBack   sBundleNotifier = NULL;
-static BundleLocatorCallBack		sBundleLocation = NULL;
 static UndefinedHandler				sUndefinedHandler = NULL;
 static ImageLoader*					sBundleBeingLoaded = NULL;	// hack until OFI is reworked
 #if DYLD_SHARED_CACHE_SUPPORT
 static const dyld_cache_header*		sSharedCache = NULL;
-bool								gSharedCacheNotFound = false;
-bool								gSharedCacheNeedsUpdating = false;
-bool								gSharedCacheDontNotify = false;
+static bool							sSharedCacheIgnoreInodeAndTimeStamp = false;
+static const char*					sSharedCacheDir = DYLD_SHARED_CACHE_DIR;
 #endif
 ImageLoader::LinkContext			gLinkContext;
 bool								gLogAPIs = false;
@@ -179,52 +187,139 @@ const struct LibSystemHelpers*		gLibSystemHelpers = NULL;
 #if SUPPORT_OLD_CRT_INITIALIZATION
 bool								gRunInitializersOldWay = false;
 #endif
-#if __i386__
-static uint32_t						sImportSegmentsStart = 0;
-static uint32_t						sImportSegmentsSize = 0;
-#endif
+
+
+//
+// The MappedRanges structure is used for fast address->image lookups.
+// The table is only updated when the dyld lock is held, so we don't
+// need to worry about multiple writers.  But readers may look at this
+// data without holding the lock. Therefore, all updates must be done
+// in an order that will never cause readers to see inconsistent data.
+// The general rule is that if the image field is non-NULL then
+// the other fields are valid.
+//
+struct MappedRanges
+{
+	enum { count=400 };
+	struct {
+		ImageLoader*	image;
+		uintptr_t		start;
+		uintptr_t		end;
+	} array[count];
+	MappedRanges*		next;
+};
+
+static MappedRanges			sMappedRangesStart;
+
+void addMappedRange(ImageLoader* image, uintptr_t start, uintptr_t end)
+{
+	//dyld::log("addMappedRange(0x%lX->0x%lX) for %s\n", start, end, image->getShortName());
+	for (MappedRanges* p = &sMappedRangesStart; p != NULL; p = p->next) {
+		for (int i=0; i < MappedRanges::count; ++i) {
+			if ( p->array[i].image == NULL ) {
+				p->array[i].start = start;
+				p->array[i].end = end;
+				// add image field last with a barrier so that any reader will see consistent records
+				OSMemoryBarrier();
+				p->array[i].image = image;
+				return;
+			}
+		}
+	}
+	// table must be full, chain another
+	MappedRanges* newRanges = (MappedRanges*)malloc(sizeof(MappedRanges));
+	bzero(newRanges, sizeof(MappedRanges));
+	newRanges->array[0].start = start;
+	newRanges->array[0].end = end;
+	newRanges->array[0].image = image;
+	for (MappedRanges* p = &sMappedRangesStart; p != NULL; p = p->next) {
+		if ( p->next == NULL ) {
+			OSMemoryBarrier();
+			p->next = newRanges;
+			break;
+		}
+	}
+}
+
+void removedMappedRanges(ImageLoader* image)
+{
+	for (MappedRanges* p = &sMappedRangesStart; p != NULL; p = p->next) {
+		for (int i=0; i < MappedRanges::count; ++i) {
+			if ( p->array[i].image == image ) {
+				// clear with a barrier so that any reader will see consistent records
+				OSMemoryBarrier();
+				p->array[i].image = NULL;
+			}
+		}
+	}
+}
+
+ImageLoader* findMappedRange(uintptr_t target)
+{
+	for (MappedRanges* p = &sMappedRangesStart; p != NULL; p = p->next) {
+		for (int i=0; i < MappedRanges::count; ++i) {
+			if ( p->array[i].image != NULL ) {
+				if ( (p->array[i].start <= target) && (target < p->array[i].end) )
+					return p->array[i].image;
+			}
+		}
+	}
+	return NULL;
+}
 
 
 
 const char* mkstringf(const char* format, ...)
 {
-	va_list	list;
-	va_start(list, format);
 	_SIMPLE_STRING buf = _simple_salloc();
-	_simple_vsprintf(buf, format, list);
-	va_end(list);
-	const char*	t = strdup(_simple_string(buf));
-	_simple_sfree(buf);
-	return t;
+	if ( buf != NULL ) {
+		va_list	list;
+		va_start(list, format);
+		_simple_vsprintf(buf, format, list);
+		va_end(list);
+		const char*	t = strdup(_simple_string(buf));
+		_simple_sfree(buf);
+		if ( t != NULL )
+			return t;
+	}
+	return "mkstringf, out of memory error";
 }
 
 
 void throwf(const char* format, ...) 
 {
-	va_list	list;
-	va_start(list, format);
 	_SIMPLE_STRING buf = _simple_salloc();
-	_simple_vsprintf(buf, format, list);
-	va_end(list);
-	const char*	t = strdup(_simple_string(buf));
-	_simple_sfree(buf);
-	throw t;
+	if ( buf != NULL ) {
+		va_list	list;
+		va_start(list, format);
+		_simple_vsprintf(buf, format, list);
+		va_end(list);
+		const char*	t = strdup(_simple_string(buf));
+		_simple_sfree(buf);
+		if ( t != NULL )
+			throw t;
+	}
+	throw "throwf, out of memory error";
 }
+
+
+//#define ALTERNATIVE_LOGFILE "/dev/console"
+static int sLogfile = STDERR_FILENO;
 
 void log(const char* format, ...) 
 {
 	va_list	list;
 	va_start(list, format);
-	_simple_vdprintf(STDERR_FILENO, format, list);
+	_simple_vdprintf(sLogfile, format, list);
 	va_end(list);
 }
 
 void warn(const char* format, ...) 
 {
-	_simple_dprintf(STDERR_FILENO, "dyld: warning, ");
+	_simple_dprintf(sLogfile, "dyld: warning, ");
 	va_list	list;
 	va_start(list, format);
-	_simple_vdprintf(STDERR_FILENO, format, list);
+	_simple_vdprintf(sLogfile, format, list);
 	va_end(list);
 }
 
@@ -344,29 +439,6 @@ static const char* notifyGDB(enum dyld_image_states state, uint32_t infoCount, c
 	return NULL;
 }
 
-#if IMAGE_NOTIFY_SUPPORT
-// notify objc about these new images
-static void notifyAdding(const ImageLoader* const * images, unsigned int count)
-{
-	// build array
-	if ( count != 0 ) {
-		dyld_image_info	infos[count];
-		for (unsigned int i=0; i < count; ++i) {
-			dyld_image_info* p = &infos[i];
-			const ImageLoader* image = images[i];
-			p->imageLoadAddress = image->machHeader();
-			p->imageFilePath = image->getPath();
-			p->imageFileModDate = image->lastModified();
-			//dyld::log("notifying objc about %s\n", image->getPath());
-		}
-		
-		// tell all interested images (after gdb, so you can debug anything the notification does)
-		for (std::vector<ImageLoader*>::iterator it=sImagesToNotifyAboutOtherImages.begin(); it != sImagesToNotifyAboutOtherImages.end(); it++) {
-			(*it)->doNotification(dyld_image_adding, count, infos);
-		}
-	}
-}
-#endif
 
 static StateHandlers* stateToHandlers(dyld_image_states state, StateHandlers handlersArray[8]) 
 {
@@ -395,14 +467,16 @@ static StateHandlers* stateToHandlers(dyld_image_states state, StateHandlers han
 	return NULL;
 }
 
-static void notifySingle(dyld_image_states state, const struct mach_header* mh, const char* path, time_t modDate)
+
+static void notifySingle(dyld_image_states state, const ImageLoader* image)
 {
+	//dyld::log("notifySingle(state=%d, image=%s)\n", state, image->getPath());
 	std::vector<dyld_image_state_change_handler>* handlers = stateToHandlers(state, sSingleHandlers);
 	if ( handlers != NULL ) {
 		dyld_image_info info;
-		info.imageLoadAddress	= mh;
-		info.imageFilePath		= path;
-		info.imageFileModDate	= modDate;
+		info.imageLoadAddress	= image->machHeader();
+		info.imageFilePath		= image->getPath();
+		info.imageFileModDate	= image->lastModified();
 		for (std::vector<dyld_image_state_change_handler>::iterator it = handlers->begin(); it != handlers->end(); ++it) {
 			const char* result = (*it)(state, 1, &info);
 			if ( (result != NULL) && (state == dyld_image_state_mapped) ) {
@@ -413,8 +487,18 @@ static void notifySingle(dyld_image_states state, const struct mach_header* mh, 
 			}
 		}
 	}
+#if CORESYMBOLICATION_SUPPORT
+    // mach message csdlc about dynamically loaded images 
+    if ( dyld_all_image_infos.coreSymbolicationShmPage != NULL) {
+		CSCppDyldSharedMemoryPage* connection = (CSCppDyldSharedMemoryPage*)dyld_all_image_infos.coreSymbolicationShmPage;
+		if ( connection->is_valid_version() ) {
+			if ( state == dyld_image_state_terminated ) {
+				coresymbolication_unload_image(connection, image);
+			}
+		}
+	}
+#endif	
 }
-
 
 
 static int imageSorter(const void* l, const void* r)
@@ -482,6 +566,22 @@ static void notifyBatchPartial(dyld_image_states state, bool orLater, dyld_image
 			}
 		}
 	}
+#if CORESYMBOLICATION_SUPPORT
+	if ( dyld_all_image_infos.coreSymbolicationShmPage != NULL) {
+		CSCppDyldSharedMemoryPage* connection = (CSCppDyldSharedMemoryPage*)dyld_all_image_infos.coreSymbolicationShmPage;
+		if ( connection->is_valid_version() ) {
+			if ( state == dyld_image_state_rebased ) {
+				// This needs to be captured now
+				uint64_t load_timestamp = mach_absolute_time();
+				for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
+					dyld_image_states imageState = (*it)->getState();
+					if ( (imageState == state) || (orLater && (imageState > state)) )
+						coresymbolication_load_image(connection, *it, load_timestamp);
+				}
+			}
+		}
+	}
+#endif
 }
 
 static void notifyBatch(dyld_image_states state)
@@ -500,14 +600,6 @@ static void addRootImage(ImageLoader* image)
 	sImageRoots.push_back(image);
 }
 
-#if IMAGE_NOTIFY_SUPPORT
-// Objective-C will contain a __DATA/__image_notify section which contains pointers to a function to call
-// whenever any new image is loaded.
-static void addImageNeedingNotification(ImageLoader* image)
-{
-	sImagesToNotifyAboutOtherImages.push_back(image);
-}
-#endif
 
 static void clearAllDepths()
 {
@@ -520,29 +612,6 @@ static unsigned int imageCount()
 	return sAllImages.size();
 }
 
-static void notifySharedCacheInvalid()
-{
-	gSharedCacheNeedsUpdating = true;
-}
-
-
-
-#if __i386__
-static void makeSharedCacheImportSegmentsWritable(bool writable)
-{
-	// if cache was built with read-only __IMPORT segments
-	if ( sImportSegmentsSize != 0 ) {
-		vm_prot_t prot = VM_PROT_EXECUTE | PROT_READ;
-		if ( writable )
-			prot |= VM_PROT_WRITE;
-		vm_protect(mach_task_self(), sImportSegmentsStart, sImportSegmentsSize, false, prot);
-		if ( gLinkContext.verboseMapping ) {
-			dyld::log("%18s at %p->%p altered permissions to %c%c%c\n", "", (char*)sImportSegmentsStart, (char*)sImportSegmentsStart+sImportSegmentsSize-1,
-				(prot & PROT_READ) ? 'r' : '.',  (prot & PROT_WRITE) ? 'w' : '.',  (prot & PROT_EXEC) ? 'x' : '.' );
-		}
-	}
-}
-#endif
 
 static void setNewProgramVars(const ProgramVars& newVars)
 {
@@ -568,14 +637,34 @@ static void addImage(ImageLoader* image)
 	// add to master list
 	sAllImages.push_back(image);
 	
+	// update mapped ranges
+	uintptr_t lastSegStart = 0;
+	uintptr_t lastSegEnd = 0;
+	for(unsigned int i=0, e=image->segmentCount(); i < e; ++i) {
+		if ( image->segUnaccessible(i) ) 
+			continue;
+		uintptr_t start = image->segActualLoadAddress(i);
+		uintptr_t end = image->segActualEndAddress(i);
+		if ( start == lastSegEnd ) {
+			// two segments are contiguous, just record combined segments
+			lastSegEnd = end;
+		}
+		else {
+			// non-contiguous segments, record last (if any)
+			if ( lastSegEnd != 0 )
+				addMappedRange(image, lastSegStart, lastSegEnd);
+			lastSegStart = start;
+			lastSegEnd = end;
+		}		
+	}
+	if ( lastSegEnd != 0 )
+		addMappedRange(image, lastSegStart, lastSegEnd);
+
+	
 	if ( sEnv.DYLD_PRINT_LIBRARIES || (sEnv.DYLD_PRINT_LIBRARIES_POST_LAUNCH && (sMainExecutable!=NULL) && sMainExecutable->isLinked()) ) {
 		dyld::log("dyld: loaded: %s\n", image->getPath());
 	}
 	
-#if OLD_GDB_DYLD_INTERFACE
-	// let gdb find out about this
-	addImageForgdb(image->machHeader(), image->getSlide(), image->getPath(), image->getLogicalPath());
-#endif
 }
 
 void removeImage(ImageLoader* image)
@@ -601,7 +690,7 @@ void removeImage(ImageLoader* image)
 		}
 	}
 	
-	// tell all register add image handlers about this
+	// tell all registered remove image handlers about this
 	// do this before removing image from internal data structures so that the callback can query dyld about the image
 	if ( image->getState() >= dyld_image_state_bound ) {
 		for (std::vector<ImageCallback>::iterator it=sRemoveImageCallbacks.begin(); it != sRemoveImageCallbacks.end(); it++) {
@@ -609,16 +698,11 @@ void removeImage(ImageLoader* image)
 		}
 	}
 	
-#if IMAGE_NOTIFY_SUPPORT
-	// tell all interested images
-	for (std::vector<ImageLoader*>::iterator it=sImagesToNotifyAboutOtherImages.begin(); it != sImagesToNotifyAboutOtherImages.end(); it++) {
-		dyld_image_info info;
-		info.imageLoadAddress = image->machHeader();
-		info.imageFilePath = image->getPath();
-		info.imageFileModDate = image->lastModified();
-		(*it)->doNotification(dyld_image_removing, 1, &info);
-	}
-#endif
+	// notify 
+	notifySingle(dyld_image_state_terminated, image);
+	
+	// remove from mapped images table
+	removedMappedRanges(image);
 
 	// remove from master list
 	for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
@@ -631,16 +715,6 @@ void removeImage(ImageLoader* image)
 	// flush find-by-address cache (do this after removed from master list, so there is no chance it can come back)
 	if ( sLastImageByAddressCache == image )
 		sLastImageByAddressCache = NULL;
-
-#if IMAGE_NOTIFY_SUPPORT
-	// if in announcement list, pull it out 
-	for (std::vector<ImageLoader*>::iterator it=sImagesToNotifyAboutOtherImages.begin(); it != sImagesToNotifyAboutOtherImages.end(); it++) {
-		if ( *it == image ) {
-			sImagesToNotifyAboutOtherImages.erase(it);
-			break;
-		}
-	}
-#endif
 
 	// if in root list, pull it out 
 	for (std::vector<ImageLoader*>::iterator it=sImageRoots.begin(); it != sImageRoots.end(); it++) {
@@ -657,12 +731,6 @@ void removeImage(ImageLoader* image)
 
 	// tell gdb, new way
 	removeImageFromAllImages(image->machHeader());
-
-#if OLD_GDB_DYLD_INTERFACE
-	// tell gdb, old way
-	removeImageForgdb(image->machHeader());
-	gdb_dyld_state_changed();
-#endif
 }
 
 
@@ -682,12 +750,6 @@ void initializeMainExecutable()
 
 	// record that we've reached this step
 	gLinkContext.startedInitializingMainExecutable = true;
-
-#if __i386__
-	// make all __IMPORT segments in the shared cache read-only
-	// before executing any code
-	makeSharedCacheImportSegmentsWritable(false);
-#endif
 
 	// run initialzers for any inserted dylibs
 	const int rootCount = sImageRoots.size();
@@ -725,7 +787,6 @@ void runTerminators(void* extra)
 	for(unsigned int i=imageCount; i > 0; --i){
 		ImageLoader* image = sImageFilesNeedingTermination[i-1];
 		image->doTermination(gLinkContext);
-		notifySingle(dyld_image_state_terminated, image->machHeader(), image->getPath(), image->lastModified());
 	}
 	sImageFilesNeedingTermination.clear();
 	notifyBatch(dyld_image_state_terminated);
@@ -739,9 +800,11 @@ void runTerminators(void* extra)
 //
 static const char** parseColonList(const char* list)
 {
-	if ( list[0] == '\0' )
-		return NULL;
+	static const char* sEmptyList[] = { NULL };
 
+	if ( list[0] == '\0' ) 
+		return sEmptyList;
+	
 	int colonCount = 0;
 	for(const char* s=list; *s != '\0'; ++s) {
 		if (*s == ':') 
@@ -839,40 +902,33 @@ void processDyldEnvironmentVarible(const char* key, const char* value)
 {
 	if ( strcmp(key, "DYLD_FRAMEWORK_PATH") == 0 ) {
 		sEnv.DYLD_FRAMEWORK_PATH = parseColonList(value);
-		gSharedCacheDontNotify = true;
 	}
 	else if ( strcmp(key, "DYLD_FALLBACK_FRAMEWORK_PATH") == 0 ) {
 		sEnv.DYLD_FALLBACK_FRAMEWORK_PATH = parseColonList(value);
-		gSharedCacheDontNotify = true;
 	}
 	else if ( strcmp(key, "DYLD_LIBRARY_PATH") == 0 ) {
 		sEnv.DYLD_LIBRARY_PATH = parseColonList(value);
-		gSharedCacheDontNotify = true;
 	}
 	else if ( strcmp(key, "DYLD_FALLBACK_LIBRARY_PATH") == 0 ) {
 		sEnv.DYLD_FALLBACK_LIBRARY_PATH = parseColonList(value);
-		gSharedCacheDontNotify = true;
 	}
 	else if ( (strcmp(key, "DYLD_ROOT_PATH") == 0) || (strcmp(key, "DYLD_PATHS_ROOT") == 0) ) {
-		gSharedCacheDontNotify = true;
 		if ( strcmp(value, "/") != 0 ) {
-			sEnv.DYLD_ROOT_PATH = parseColonList(value);
-			for (int i=0; sEnv.DYLD_ROOT_PATH[i] != NULL; ++i) {
-				if ( sEnv.DYLD_ROOT_PATH[i][0] != '/' ) {
+			gLinkContext.rootPaths = parseColonList(value);
+			for (int i=0; gLinkContext.rootPaths[i] != NULL; ++i) {
+				if ( gLinkContext.rootPaths[i][0] != '/' ) {
 					dyld::warn("DYLD_ROOT_PATH not used because it contains a non-absolute path\n");
-					sEnv.DYLD_ROOT_PATH = NULL;
+					gLinkContext.rootPaths = NULL;
 					break;
 				}
 			}
 		}
 	} 
 	else if ( strcmp(key, "DYLD_IMAGE_SUFFIX") == 0 ) {
-		gSharedCacheDontNotify = true;
 		gLinkContext.imageSuffix = value;
 	}
 	else if ( strcmp(key, "DYLD_INSERT_LIBRARIES") == 0 ) {
 		sEnv.DYLD_INSERT_LIBRARIES = parseColonList(value);
-		gSharedCacheDontNotify = true;
 	}
 	else if ( strcmp(key, "DYLD_PRINT_OPTS") == 0 ) {
 		sEnv.DYLD_PRINT_OPTS = true;
@@ -902,7 +958,6 @@ void processDyldEnvironmentVarible(const char* key, const char* value)
 		// ignore, no longer relevant but some scripts still set it
 	}
 	else if ( strcmp(key, "DYLD_NO_FIX_PREBINDING") == 0 ) {
-		gSharedCacheDontNotify = true;
 	}
 	else if ( strcmp(key, "DYLD_PREBIND_DEBUG") == 0 ) {
 		gLinkContext.verbosePrebinding = true;
@@ -922,6 +977,9 @@ void processDyldEnvironmentVarible(const char* key, const char* value)
 	else if ( strcmp(key, "DYLD_PRINT_BINDINGS") == 0 ) {
 		gLinkContext.verboseBind = true;
 	}
+	else if ( strcmp(key, "DYLD_PRINT_WEAK_BINDINGS") == 0 ) {
+		gLinkContext.verboseWeakBind = true;
+	}
 	else if ( strcmp(key, "DYLD_PRINT_REBASINGS") == 0 ) {
 		gLinkContext.verboseRebase = true;
 	}
@@ -931,8 +989,10 @@ void processDyldEnvironmentVarible(const char* key, const char* value)
 	else if ( strcmp(key, "DYLD_PRINT_WARNINGS") == 0 ) {
 		gLinkContext.verboseWarnings = true;
 	}
+	else if ( strcmp(key, "DYLD_NO_PIE") == 0 ) {
+		gLinkContext.noPIE = true;
+	}
 	else if ( strcmp(key, "DYLD_SHARED_REGION") == 0 ) {
-		gSharedCacheDontNotify = true;
 		if ( strcmp(value, "private") == 0 ) {
 			gLinkContext.sharedRegionMode = ImageLoader::kUsePrivateSharedRegion;
 		}
@@ -949,8 +1009,15 @@ void processDyldEnvironmentVarible(const char* key, const char* value)
 			dyld::warn("unknown option to DYLD_SHARED_REGION.  Valid options are: use, private, avoid\n");
 		}
 	}
+#if DYLD_SHARED_CACHE_SUPPORT
+	else if ( strcmp(key, "DYLD_SHARED_CACHE_DIR") == 0 ) {
+        sSharedCacheDir = value;
+	}
+	else if ( strcmp(key, "DYLD_SHARED_CACHE_DONT_VALIDATE") == 0 ) {
+		sSharedCacheIgnoreInodeAndTimeStamp = true;
+	}
+#endif
 	else if ( strcmp(key, "DYLD_IGNORE_PREBINDING") == 0 ) {
-		gSharedCacheDontNotify = true;
 		if ( strcmp(value, "all") == 0 ) {
 			gLinkContext.prebindUsage = ImageLoader::kUseNoPrebinding;
 		}
@@ -980,9 +1047,6 @@ void processDyldEnvironmentVarible(const char* key, const char* value)
 //
 static void pruneEnvironmentVariables(const char* envp[], const char*** applep)
 {
-	// setuit binaries don't trigger a cache rebuild
-	gSharedCacheDontNotify = true;
-
 	// delete all DYLD_* and LD_LIBRARY_PATH environment variables
 	int removedCount = 0;
 	const char** d = envp;
@@ -1065,7 +1129,6 @@ static void getHostInfo()
 	mach_msg_type_number_t count = HOST_BASIC_INFO_COUNT;
 	mach_port_t hostPort = mach_host_self();
 	kern_return_t result = host_info(hostPort, HOST_BASIC_INFO, (host_info_t)&info, &count);
-	mach_port_deallocate(mach_task_self(), hostPort);
 	if ( result != KERN_SUCCESS )
 		throw "host_info() failed";
 	
@@ -1083,10 +1146,10 @@ static void getHostInfo()
 
 static void checkSharedRegionDisable()
 {
-	#if __ppc__ || __i386__
+	#if !__LP64__
 	// if main executable has segments that overlap the shared region, 
 	// then disable using the shared region
-	if ( sMainExecutable->overlapsWithAddressRange((void*)0x90000000, (void*)0xAFFFFFFF) ) {
+	if ( sMainExecutable->overlapsWithAddressRange((void*)(uintptr_t)SHARED_REGION_BASE, (void*)(uintptr_t)(SHARED_REGION_BASE + SHARED_REGION_SIZE)) ) {
 		gLinkContext.sharedRegionMode = ImageLoader::kDontUseSharedRegion;
 		if ( gLinkContext.verboseMapping )
 			dyld::warn("disabling shared region because main executable overlaps\n");
@@ -1119,64 +1182,26 @@ ImageLoader* getIndexedImage(unsigned int index)
 
 ImageLoader* findImageByMachHeader(const struct mach_header* target)
 {
-	const unsigned int imageCount = sAllImages.size();
-	for(unsigned int i=0; i < imageCount; ++i) {
-		ImageLoader* anImage = sAllImages[i];
-		if ( anImage->machHeader() == target )
-			return anImage;
-	}
-	return NULL;
+	return findMappedRange((uintptr_t)target);
 }
 
 
 ImageLoader* findImageContainingAddress(const void* addr)
 {
-#if FIND_STATS	
-	static int cacheHit = 0; 
-	static int cacheMiss = 0; 
-	static int cacheNotMacho = 0; 
-	if ( ((cacheHit+cacheMiss+cacheNotMacho) % 100) == 0 )
-		dyld::log("findImageContainingAddress(): cache hit = %d, miss = %d, unknown = %d\n", cacheHit, cacheMiss, cacheNotMacho);
-#endif
-	// first look in image where last address was found rdar://problem/3685517
-	if ( (sLastImageByAddressCache != NULL) && sLastImageByAddressCache->containsAddress(addr) ) {
-#if FIND_STATS	
-		++cacheHit;
-#endif
-		return sLastImageByAddressCache;
-	}
-	// do exhastive search 
-	// todo: consider maintaining a list sorted by address ranges and do a binary search on that
-	const unsigned int imageCount = sAllImages.size();
-	for(unsigned int i=0; i < imageCount; ++i) {
-		ImageLoader* anImage = sAllImages[i];
-		if ( anImage->containsAddress(addr) ) {
-			sLastImageByAddressCache = anImage;
-#if FIND_STATS	
-		++cacheMiss;
-#endif
+	return findMappedRange((uintptr_t)addr);
+}
+
+
+ImageLoader* findImageContainingSymbol(const void* symbol)
+{
+	for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
+		ImageLoader* anImage = *it;
+		if ( anImage->containsSymbol(symbol) )
 			return anImage;
-		}
 	}
-#if FIND_STATS	
-		++cacheNotMacho;
-#endif
 	return NULL;
 }
 
-ImageLoader* findImageContainingAddressThreadSafe(const void* addr)
-{
-	// do exhastive search 
-	// todo: consider maintaining a list sorted by address ranges and do a binary search on that
-	const unsigned int imageCount = sAllImages.size();
-	for(unsigned int i=0; i < imageCount; ++i) {
-		ImageLoader* anImage = sAllImages[i];
-		if ( anImage->containsAddress(addr) ) {
-			return anImage;
-		}
-	}
-	return NULL;
-}
 
 
 void forEachImageDo( void (*callback)(ImageLoader*, void* userData), void* userData)
@@ -1285,6 +1310,7 @@ const cpu_subtype_t CPU_SUBTYPE_END_OF_LIST = -1;
 //
 
 
+#if __ppc__
 //	 
 //	32-bit PowerPC sub-type lists
 //
@@ -1300,19 +1326,53 @@ static const cpu_subtype_t kPPC32[kPPC_RowCount][6] = {
 	// G3 cannot run G4 or G5 code
 	{ CPU_SUBTYPE_POWERPC_750,  CPU_SUBTYPE_POWERPC_ALL, CPU_SUBTYPE_END_OF_LIST,  CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST }
 };
+#endif
 
+
+#if __arm__
+//      
+//     ARM sub-type lists
+//
+const int kARM_RowCount = 5;
+static const cpu_subtype_t kARM[kARM_RowCount][6] = { 
+	// armv7 can run: v7, v6, v5, and v4
+	{  CPU_SUBTYPE_ARM_V7, CPU_SUBTYPE_ARM_V6, CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, CPU_SUBTYPE_END_OF_LIST },
+	
+	// armv6 can run: v6, v5, and v4
+	{  CPU_SUBTYPE_ARM_V6, CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST },
+	
+	// xscale can run: xscale, v5, and v4
+	{  CPU_SUBTYPE_ARM_XSCALE, CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST },
+	
+	// armv5 can run: v5 and v4
+	{  CPU_SUBTYPE_ARM_V5TEJ, CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST },
+
+	// armv4 can run: v4
+	{  CPU_SUBTYPE_ARM_V4T, CPU_SUBTYPE_ARM_ALL, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST, CPU_SUBTYPE_END_OF_LIST },
+};
+#endif
 
 
 // scan the tables above to find the cpu-sub-type-list for this machine
 static const cpu_subtype_t* findCPUSubtypeList(cpu_type_t cpu, cpu_subtype_t subtype)
 {
 	switch (cpu) {
+#if __ppc__
 		case CPU_TYPE_POWERPC:
 			for (int i=0; i < kPPC_RowCount ; ++i) {
 				if ( kPPC32[i][0] == subtype )
 					return kPPC32[i];
 			}
 			break;
+#endif
+#if __arm__
+		case CPU_TYPE_ARM:
+			for (int i=0; i < kARM_RowCount ; ++i) {
+				if ( kARM[i][0] == subtype )
+					return kARM[i];
+			}
+			break;
+#endif
 	}
 	return NULL;
 }
@@ -1359,6 +1419,7 @@ static bool fatFindRunsOnAllCPUs(cpu_type_t cpu, const fat_header* fh, uint64_t*
 	for(uint32_t i=0; i < OSSwapBigToHostInt32(fh->nfat_arch); ++i) {
 		if ( (cpu_type_t)OSSwapBigToHostInt32(archs[i].cputype) == cpu) {
 			switch (cpu) {
+#if __ppc__
 				case CPU_TYPE_POWERPC:
 					if ( (cpu_subtype_t)OSSwapBigToHostInt32(archs[i].cpusubtype) == CPU_SUBTYPE_POWERPC_ALL ) {
 						*offset = OSSwapBigToHostInt32(archs[i].offset);
@@ -1366,6 +1427,16 @@ static bool fatFindRunsOnAllCPUs(cpu_type_t cpu, const fat_header* fh, uint64_t*
 						return true;
 					}
 					break;
+#endif
+#if __arm__
+				case CPU_TYPE_ARM:
+					if ( (cpu_subtype_t)OSSwapBigToHostInt32(archs[i].cpusubtype) == CPU_SUBTYPE_ARM_ALL ) {
+						*offset = OSSwapBigToHostInt32(archs[i].offset);
+						*len = OSSwapBigToHostInt32(archs[i].size);
+						return true;
+					}
+					break;
+#endif
 			}
 		}
 	}
@@ -1420,7 +1491,7 @@ static bool fatFindBest(const fat_header* fh, uint64_t* offset, uint64_t* len)
 //
 // This is used to validate if a non-fat (aka thin or raw) mach-o file can be used
 // on the current processor. //
-bool isCompatibleMachO(const uint8_t* firstPage)
+bool isCompatibleMachO(const uint8_t* firstPage, const char* path)
 {
 #if CPU_SUBTYPES_SUPPORTED
 	// It is deemed compatible if any of the following are true:
@@ -1440,7 +1511,7 @@ bool isCompatibleMachO(const uint8_t* firstPage)
 							return true;
 					}
 					// have list and not in list, so not compatible
-					throw "incompatible cpu-subtype";
+					throwf("incompatible cpu-subtype: 0x%08X in %s", mh->cpusubtype, path);
 				}
 				// unknown cpu sub-type, but if exact match for current subtype then ok to use
 				if ( mh->cpusubtype == sHostCPUsubtype ) 
@@ -1480,11 +1551,11 @@ bool isCompatibleMachO(const uint8_t* firstPage)
 
 // The kernel maps in main executable before dyld gets control.  We need to 
 // make an ImageLoader* for the already mapped in main executable.
-static ImageLoader* instantiateFromLoadedImage(const struct mach_header* mh, uintptr_t slide, const char* path)
+static ImageLoader* instantiateFromLoadedImage(const macho_header* mh, uintptr_t slide, const char* path)
 {
 	// try mach-o loader
-	if ( isCompatibleMachO((const uint8_t*)mh) ) {
-		ImageLoader* image = new ImageLoaderMachO(mh, slide, path, gLinkContext);
+	if ( isCompatibleMachO((const uint8_t*)mh, path) ) {
+		ImageLoader* image = ImageLoaderMachO::instantiateMainExecutable(mh, slide, path, gLinkContext);
 		addImage(image);
 		return image;
 	}
@@ -1493,6 +1564,40 @@ static ImageLoader* instantiateFromLoadedImage(const struct mach_header* mh, uin
 }
 
 #if DYLD_SHARED_CACHE_SUPPORT
+bool inSharedCache(const char* path)
+{
+	if ( sSharedCache != NULL ) {
+		struct stat stat_buf;
+		if ( stat(path, &stat_buf) == -1 )
+			return false;
+		
+		// walk shared cache to see if there is a cached image that matches the inode/mtime/path desired
+		const dyld_cache_image_info* const start = (dyld_cache_image_info*)((uint8_t*)sSharedCache + sSharedCache->imagesOffset);
+		const dyld_cache_image_info* const end = &start[sSharedCache->imagesCount];
+		for( const dyld_cache_image_info* p = start; p != end; ++p) {
+			// check mtime and inode first because it is fast
+			if ( sSharedCacheIgnoreInodeAndTimeStamp 
+				|| ( ((time_t)p->modTime == stat_buf.st_mtime) && ((ino_t)p->inode == stat_buf.st_ino) ) ) {
+				// mod-time and inode match an image in the shared cache, now check path
+				const char* pathInCache = (char*)sSharedCache + p->pathFileOffset;
+				bool cacheHit = (strcmp(path, pathInCache) == 0);
+				if ( ! cacheHit ) {
+					// path does not match install name of dylib in cache, but inode and mtime does match
+					// perhaps path is a symlink to the cached dylib
+					struct stat pathInCacheStatBuf;
+					if ( stat(pathInCache, &pathInCacheStatBuf) != -1 )
+						cacheHit = ( (pathInCacheStatBuf.st_dev == stat_buf.st_dev) && (pathInCacheStatBuf.st_ino == stat_buf.st_ino) );	
+				}
+				if ( cacheHit ) {
+					// found image in cache
+					return true;
+				}
+			}
+		}	
+	}
+	return false;
+}
+
 static ImageLoader* findSharedCacheImage(const struct stat& stat_buf, const char* path)
 {
 	if ( sSharedCache != NULL ) {
@@ -1501,7 +1606,8 @@ static ImageLoader* findSharedCacheImage(const struct stat& stat_buf, const char
 		const dyld_cache_image_info* const end = &start[sSharedCache->imagesCount];
 		for( const dyld_cache_image_info* p = start; p != end; ++p) {
 			// check mtime and inode first because it is fast
-			if ( ((time_t)p->modTime == stat_buf.st_mtime) && ((ino_t)p->inode == stat_buf.st_ino) ) {
+			if ( sSharedCacheIgnoreInodeAndTimeStamp 
+				|| ( ((time_t)p->modTime == stat_buf.st_mtime) && ((ino_t)p->inode == stat_buf.st_ino) ) ) {
 				// mod-time and inode match an image in the shared cache, now check path
 				const char* pathInCache = (char*)sSharedCache + p->pathFileOffset;
 				bool cacheHit = (strcmp(path, pathInCache) == 0);
@@ -1514,7 +1620,7 @@ static ImageLoader* findSharedCacheImage(const struct stat& stat_buf, const char
 				}
 				if ( cacheHit ) {
 					// found image in cache, instantiate an ImageLoader with it
-					return new ImageLoaderMachO((struct mach_header*)(p->address), pathInCache, stat_buf, gLinkContext);
+					return ImageLoaderMachO::instantiateFromCache((macho_header*)(p->address), pathInCache, stat_buf, gLinkContext);
 				}
 			}
 		}	
@@ -1534,7 +1640,7 @@ static ImageLoader* checkandAddImage(ImageLoader* image, const LoadContext& cont
 			if ( installPath != NULL) {
 				if ( strcmp(loadedImageInstallPath, installPath) == 0 ) {
 					//dyld::log("duplicate(%s) => %p\n", installPath, anImage);
-					delete image;
+					ImageLoader::deleteImage(image);
 					return anImage;
 				}
 			}
@@ -1547,6 +1653,12 @@ static ImageLoader* checkandAddImage(ImageLoader* image, const LoadContext& cont
 	if ( context.mustBeDylib && !image->isDylib() )
 		throw "not a dylib";
 
+	// regular main executables cannot be loaded 
+	if ( image->isExecutable() ) {
+		if ( !context.canBePIE || !image->isPositionIndependentExecutable() )
+			throw "can't load a main executable";
+	}
+	
 	// don't add bundles to global list, they can be loaded but not linked.  When linked it will be added to list
 	if ( ! image->isBundle() ) 
 		addImage(image);
@@ -1570,18 +1682,23 @@ static ImageLoader* loadPhase6(int fd, struct stat& stat_buf, const char* path, 
 	
 	// min mach-o file is 4K
 	if ( fileLength < 4096 ) {
-		pread(fd, firstPage, fileLength, 0);
+		if ( pread(fd, firstPage, fileLength, 0) != (ssize_t)fileLength )
+			throwf("pread of short file failed: %d", errno);
 		shortPage = true;
 	} 
 	else {
-		pread(fd, firstPage, 4096,0);
+		if ( pread(fd, firstPage, 4096,0) != 4096 )
+			throwf("pread of first 4K failed: %d", errno);
 	}
 	
 	// if fat wrapper, find usable sub-file
 	const fat_header* fileStartAsFat = (fat_header*)firstPage;
 	if ( fileStartAsFat->magic == OSSwapBigToHostInt32(FAT_MAGIC) ) {
 		if ( fatFindBest(fileStartAsFat, &fileOffset, &fileLength) ) {
-			pread(fd, firstPage, 4096, fileOffset);
+			if ( (fileOffset+fileLength) > (uint64_t)(stat_buf.st_size) )
+				throwf("truncated fat file.  file length=%llu, but needed slice goes to %llu", stat_buf.st_size, fileOffset+fileLength);
+			if (pread(fd, firstPage, 4096, fileOffset) != 4096)
+				throwf("pread of fat file failed: %d", errno);
 		}
 		else {
 			throw "no matching architecture in universal wrapper";
@@ -1589,12 +1706,12 @@ static ImageLoader* loadPhase6(int fd, struct stat& stat_buf, const char* path, 
 	}
 	
 	// try mach-o loader
-	if ( isCompatibleMachO(firstPage) ) {
+	if ( isCompatibleMachO(firstPage, path) ) {
 		if ( shortPage ) 
 			throw "file too short";
 
 		// instantiate an image
-		ImageLoader* image = new ImageLoaderMachO(path, fd, firstPage, fileOffset, fileLength, stat_buf, gLinkContext);
+		ImageLoader* image = ImageLoaderMachO::instantiateFromFile(path, fd, firstPage, fileOffset, fileLength, stat_buf, gLinkContext);
 		
 		// validate
 		return checkandAddImage(image, context);
@@ -1653,9 +1770,15 @@ static ImageLoader* loadPhase5open(const char* path, const LoadContext& context,
 	// open file (automagically closed when this function exits)
 	FileOpener file(path);
 		
-	// just return NULL if file not found
-	if ( file.getFileDescriptor() == -1 ) 
-		return NULL;	
+	// just return NULL if file not found, but record any other errors
+	if ( file.getFileDescriptor() == -1 ) {
+		int err = errno;
+		if ( err != ENOENT ) {
+			const char* newMsg = dyld::mkstringf("%s: open() failed with errno=%d", path, err);
+			exceptions->push_back(newMsg);
+		}
+		return NULL;
+	}
 
 	try {
 		return loadPhase6(file.getFileDescriptor(), stat_buf, path, context);
@@ -1674,9 +1797,11 @@ static ImageLoader* loadPhase5check(const char* path, const LoadContext& context
 	//dyld::log("%s(%s)\n", __func__ , path);
 	// search path against load-path and install-path of all already loaded images
 	uint32_t hash = ImageLoader::hash(path);
+	//dyld::log("check() hash=%d, path=%s\n", hash, path);
 	for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
 		ImageLoader* anImage = *it;
-		// check has first to cut down on strcmp calls
+		// check hash first to cut down on strcmp calls
+		//dyld::log("    check() hash=%d, path=%s\n", anImage->getPathHash(), anImage->getPath());
 		if ( anImage->getPathHash() == hash )
 			if ( strcmp(path, anImage->getPath()) == 0 ) {
 				// if we are looking for a dylib don't return something else
@@ -1737,9 +1862,8 @@ static ImageLoader* loadPhase3(const char* path, const LoadContext& context, std
 	ImageLoader* image = NULL;
 	if ( strncmp(path, "@executable_path/", 17) == 0 ) {
 		// executable_path cannot be in used in any binary in a setuid process rdar://problem/4589305
-		if ( sMainExecutableIsSetuid ) {
-			throwf("unsafe use of @executable_path in %s with setuid binary", context.origin);
-		}
+		if ( sProcessIsRestricted ) 
+			throwf("unsafe use of @executable_path in %s with restricted binary", context.origin);
 		// handle @executable_path path prefix
 		const char* executablePath = sExecPath;
 		char newPath[strlen(executablePath) + strlen(path)];
@@ -1770,9 +1894,8 @@ static ImageLoader* loadPhase3(const char* path, const LoadContext& context, std
 	}
 	else if ( (strncmp(path, "@loader_path/", 13) == 0) && (context.origin != NULL) ) {
 		// @loader_path cannot be used from the main executable of a setuid process rdar://problem/4589305
-		if ( sMainExecutableIsSetuid && (strcmp(context.origin, sExecPath) == 0) )
-			throwf("unsafe use of @loader_path in %s with setuid binary", context.origin);
-	
+		if ( sProcessIsRestricted && (strcmp(context.origin, sExecPath) == 0) )
+			throwf("unsafe use of @loader_path in %s with restricted binary", context.origin);
 		// handle @loader_path path prefix
 		char newPath[strlen(context.origin) + strlen(path)];
 		strcpy(newPath, context.origin);
@@ -1829,8 +1952,8 @@ static ImageLoader* loadPhase3(const char* path, const LoadContext& context, std
 		if ( (exceptions != NULL) && (trailingPath != path) )
 			return NULL;
 	}
-	else if ( sMainExecutableIsSetuid && (path[0] != '/') ) {
-		throwf("unsafe use of relative rpath %s in %s with setuid binary", path, context.origin);
+	else if (sProcessIsRestricted && (path[0] != '/' )) {
+		throwf("unsafe use of relative rpath %s in %s with restricted binary", path, context.origin);
 	}
 	
 	return loadPhase4(path, context, exceptions);
@@ -1903,8 +2026,11 @@ static ImageLoader* loadPhase1(const char* path, const LoadContext& context, std
 		return image;
 	
 	// try fallback paths during second time (will open file)
-	if ( !context.dontLoad  && (exceptions != NULL) && ((sEnv.DYLD_FALLBACK_FRAMEWORK_PATH != NULL) || (sEnv.DYLD_FALLBACK_LIBRARY_PATH != NULL)) ) {
-		image = loadPhase2(path, context, sEnv.DYLD_FALLBACK_FRAMEWORK_PATH, sEnv.DYLD_FALLBACK_LIBRARY_PATH, exceptions);
+	const char* const* fallbackLibraryPaths = sEnv.DYLD_FALLBACK_LIBRARY_PATH;
+	if ( (fallbackLibraryPaths != NULL) && !context.useFallbackPaths )
+		fallbackLibraryPaths = NULL;
+	if ( !context.dontLoad  && (exceptions != NULL) && ((sEnv.DYLD_FALLBACK_FRAMEWORK_PATH != NULL) || (fallbackLibraryPaths != NULL)) ) {
+		image = loadPhase2(path, context, sEnv.DYLD_FALLBACK_FRAMEWORK_PATH, fallbackLibraryPaths, exceptions);
 		if ( image != NULL )
 			return image;
 	}
@@ -1918,8 +2044,8 @@ static ImageLoader* loadPhase0(const char* path, const LoadContext& context, std
 	//dyld::log("%s(%s, %p)\n", __func__ , path, exceptions);
 
 	// handle DYLD_ROOT_PATH which forces absolute paths to use a new root
-	if ( (sEnv.DYLD_ROOT_PATH != NULL) && (path[0] == '/') ) {
-		for(const char* const* rootPath = sEnv.DYLD_ROOT_PATH ; *rootPath != NULL; ++rootPath) {
+	if ( (gLinkContext.rootPaths != NULL) && (path[0] == '/') ) {
+		for(const char* const* rootPath = gLinkContext.rootPaths ; *rootPath != NULL; ++rootPath) {
 			char newPath[strlen(*rootPath) + strlen(path)+2];
 			strcpy(newPath, *rootPath);
 			strcat(newPath, path);
@@ -1967,8 +2093,12 @@ ImageLoader* load(const char* path, const LoadContext& context)
 	image = loadPhase0(path, context, &exceptions);
 	if ( image != NULL )
 		return image;
-	else if ( exceptions.size() == 0 )
-		throw "image not found";
+	else if ( exceptions.size() == 0 ) {
+		if ( context.dontLoad )
+			return NULL;
+		else
+			throw "image not found";
+	}
 	else {
 		const char* msgStart = "no suitable image found.  Did find:";
 		const char* delim = "\n\t";
@@ -2021,13 +2151,7 @@ static int __attribute__((noinline)) _shared_region_map_np(int fd, uint32_t coun
 	}
 
 	// remove the shared region sub-map
-#if __ppc__ || __i386__
-	vm_address_t addr = (vm_address_t)0x90000000;
-	vm_deallocate(mach_task_self(), addr, 0x20000000);
-#elif __ppc64__ || __x86_64__
-	vm_address_t addr = (vm_address_t)0x7FFF60000000;
-	vm_deallocate(mach_task_self(), addr, 0x80000000);
-#endif
+	vm_deallocate(mach_task_self(), (vm_address_t)SHARED_REGION_BASE, SHARED_REGION_SIZE);
 	
 	// map cache just for this process with mmap()
 	bool failed = false;
@@ -2090,17 +2214,21 @@ const void*	imMemorySharedCacheHeader()
 
 int openSharedCacheFile()
 {
+	char path[1024];
+	strcpy(path, sSharedCacheDir);
+	strcat(path, "/");
 #if __ppc__
-		// rosetta cannot handle optimized _ppc cache, so it use _rosetta cache instead, rdar://problem/5495438
-		if ( isRosetta() )
-			return ::open(DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME_ROSETTA, O_RDONLY);
-		else
+	// rosetta cannot handle optimized _ppc cache, so it use _rosetta cache instead, rdar://problem/5495438
+    if ( isRosetta() )
+		strcat(path, DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME_ROSETTA);
+    else
 #endif
-		return ::open(DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME, O_RDONLY);
+		strcat(path, DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME);
+	return ::open(path, O_RDONLY);
 }
 
 static void mapSharedCache()
-{	
+{
 	uint64_t cacheBaseAddress;
 	// quick check if a cache is alreay mapped into shared region
 	if ( _shared_region_check_np(&cacheBaseAddress) == 0 ) {
@@ -2113,14 +2241,16 @@ static void mapSharedCache()
 		}
 	}
 	else {
+#if __i386__ || __x86_64__
 		// <rdar://problem/5925940> Safe Boot should disable dyld shared cache
 		// if we are in safe-boot mode and the cache was not made during this boot cycle,
-		// delete the cache file and let it be regenerated 
+		// delete the cache file
 		uint32_t	safeBootValue = 0;
 		size_t		safeBootValueSize = sizeof(safeBootValue);
 		if ( (sysctlbyname("kern.safeboot", &safeBootValue, &safeBootValueSize, NULL, 0) == 0) && (safeBootValue != 0) ) {
 			// user booted machine in safe-boot mode
 			struct stat dyldCacheStatInfo;
+			//  Don't use custom DYLD_SHARED_CACHE_DIR if provided, use standard path
 			if ( ::stat(DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME, &dyldCacheStatInfo) == 0 ) {
 				struct timeval bootTimeValue;
 				size_t bootTimeValueSize = sizeof(bootTimeValue);
@@ -2129,20 +2259,20 @@ static void mapSharedCache()
 					if ( dyldCacheStatInfo.st_mtime < bootTimeValue.tv_sec ) {
 						::unlink(DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME);
 						gLinkContext.sharedRegionMode = ImageLoader::kDontUseSharedRegion;
-						gSharedCacheNotFound = true;
 						return;
 					}
 				}
 			}
 		}
+#endif
 		// map in shared cache to shared region
 		int fd = openSharedCacheFile();
 		if ( fd != -1 ) {
-			uint8_t firstPage[4096];
-			if ( ::read(fd, firstPage, 4096) == 4096 ) {
-				dyld_cache_header* header = (dyld_cache_header*)firstPage;
+			uint8_t firstPages[8192];
+			if ( ::read(fd, firstPages, 8192) == 8192 ) {
+				dyld_cache_header* header = (dyld_cache_header*)firstPages;
 				if ( strcmp(header->magic, ARCH_CACHE_MAGIC) == 0 ) {
-					const shared_file_mapping_np* mappings = (shared_file_mapping_np*)&firstPage[header->mappingOffset];
+					const shared_file_mapping_np* mappings = (shared_file_mapping_np*)&firstPages[header->mappingOffset];
 					const shared_file_mapping_np* const end = &mappings[header->mappingCount];
 					// validate that the cache file has not been truncated
 					bool goodCache = false;
@@ -2152,37 +2282,51 @@ static void mapSharedCache()
 						for (const shared_file_mapping_np* p = mappings; p < end; ++p) {
 							// rdar://problem/5694507 old update_dyld_shared_cache tool could make a cache file
 							// that is not page aligned, but otherwise ok.
-							if ( p->sfm_file_offset+p->sfm_size > (uint64_t)(stat_buf.st_size+4095 & (-4096)) )
+							if ( p->sfm_file_offset+p->sfm_size > (uint64_t)(stat_buf.st_size+4095 & (-4096)) ) {
+								dyld::log("dyld: shared cached file is corrupt: %s" DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME "\n", sSharedCacheDir);
 								goodCache = false;
+							}
 						}
 					}
+					// sanity check that /usr/lib/libSystem.B.dylib stat() info matches cache
+					if ( header->imagesCount * sizeof(dyld_cache_image_info) + header->imagesOffset < 8192 ) {
+						bool foundLibSystem = false;
+						if ( stat("/usr/lib/libSystem.B.dylib", &stat_buf) == 0 ) {
+							const dyld_cache_image_info* images = (dyld_cache_image_info*)&firstPages[header->imagesOffset];
+							const dyld_cache_image_info* const imagesEnd = &images[header->imagesCount];
+							for (const dyld_cache_image_info* p = images; p < imagesEnd; ++p) {
+ 								if ( ((time_t)p->modTime == stat_buf.st_mtime) && ((ino_t)p->inode == stat_buf.st_ino) ) {
+									foundLibSystem = true;
+									break;
+								}
+							}					
+						}
+						if ( !sSharedCacheIgnoreInodeAndTimeStamp && !foundLibSystem ) {
+							dyld::log("dyld: shared cached file was build against a different libSystem.dylib, ignoring cache\n");
+							goodCache = false;
+						}
+					}
+										
 					if ( goodCache ) {
-						const shared_file_mapping_np* mappings = (shared_file_mapping_np*)&firstPage[header->mappingOffset];
+						const shared_file_mapping_np* mappings = (shared_file_mapping_np*)&firstPages[header->mappingOffset];
 						if (_shared_region_map_np(fd, header->mappingCount, mappings) == 0) {
 							// sucessfully mapped cache into shared region
 							sSharedCache = (dyld_cache_header*)mappings[0].sfm_address;
 						}
 					}
-					else {
-						gSharedCacheNeedsUpdating = true;
-						dyld::log("dyld: shared cached file is corrupt: " DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME "\n");
-					}
 				}
 				else {
-					gSharedCacheNeedsUpdating = true;
 					if ( gLinkContext.verboseMapping ) 
 						dyld::log("dyld: shared cached file is invalid\n");
 				}
 			}
 			else {
-				gSharedCacheNeedsUpdating = true;
 				if ( gLinkContext.verboseMapping ) 
 					dyld::log("dyld: shared cached file cannot be read\n");
 			}
 			close(fd);
 		}
 		else {
-			gSharedCacheNotFound = true;
 			if ( gLinkContext.verboseMapping ) 
 				dyld::log("dyld: shared cached file cannot be opened\n");
 		}
@@ -2202,9 +2346,9 @@ static void mapSharedCache()
 			dyld_shared_cache_ranges.sharedRegionsCount = 4;
 		if ( gLinkContext.verboseMapping ) {
 			if ( gLinkContext.sharedRegionMode == ImageLoader::kUseSharedRegion )
-				dyld::log("dyld: Mapping shared cache\n");
+				dyld::log("dyld: Mapping shared cache from %s" DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME "\n", sSharedCacheDir);
 			else if ( gLinkContext.sharedRegionMode == ImageLoader::kUsePrivateSharedRegion )
-				dyld::log("dyld: Mapping private shared cache\n");
+				dyld::log("dyld: Mapping private shared cache from %s" DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME "\n", sSharedCacheDir);
 		}
 		const shared_file_mapping_np* const end = &start[dyld_shared_cache_ranges.sharedRegionsCount];
 		int index = 0;
@@ -2218,12 +2362,18 @@ static void mapSharedCache()
 					((p->sfm_init_prot & VM_PROT_EXECUTE) ? "execute " : ""),  p->sfm_init_prot, p->sfm_max_prot);
 			}
 		#if __i386__
-			// record if a non-writable and executable region is found in the R/W shared region
-			// this is the __IMPORT segments.  dyld will turn write protection on and off as needed
+			// If a non-writable and executable region is found in the R/W shared region, then this is __IMPORT segments
+			// This is an old cache.  Make writable.  dyld no longer supports turn W on and off as it binds
 			if ( (p->sfm_init_prot == (VM_PROT_READ|VM_PROT_EXECUTE)) && ((p->sfm_address & 0xF0000000) == 0xA0000000) ) {
-				sImportSegmentsStart = p->sfm_address;
-				sImportSegmentsSize = p->sfm_size;
-				makeSharedCacheImportSegmentsWritable(true);
+				if ( p->sfm_size != 0 ) {
+					vm_prot_t prot = VM_PROT_EXECUTE | PROT_READ | VM_PROT_WRITE;
+					vm_protect(mach_task_self(), p->sfm_address, p->sfm_size, false, prot);
+					if ( gLinkContext.verboseMapping ) {
+						dyld::log("%18s at 0x%08llX->0x%08llX altered permissions to %c%c%c\n", "", p->sfm_address, 
+							p->sfm_address+p->sfm_size-1,
+							(prot & PROT_READ) ? 'r' : '.',  (prot & PROT_WRITE) ? 'w' : '.',  (prot & PROT_EXEC) ? 'x' : '.' );
+					}
+				}
 			}
 		#endif
 		}
@@ -2237,8 +2387,6 @@ static void mapSharedCache()
 // create when NSLinkModule is called for a second time on a bundle
 ImageLoader* cloneImage(ImageLoader* image)
 {
-	const uint64_t offsetInFat = image->getOffsetInFatFile();
-
 	// open file (automagically closed when this function exits)
 	FileOpener file(image->getPath());
 	
@@ -2246,24 +2394,19 @@ ImageLoader* cloneImage(ImageLoader* image)
 	if ( fstat(file.getFileDescriptor(), &stat_buf) == -1)
 		throw "stat error";
 	
-	// read first page of file
-	uint8_t firstPage[4096];
-	pread(file.getFileDescriptor(), firstPage, 4096, offsetInFat);
-	
-	// fat length is only used for sanity checking, since this image was already loaded once, just use upper bound
-	uint64_t lenInFat = stat_buf.st_size - offsetInFat;
-	
-	// try mach-o loader
-	if ( isCompatibleMachO(firstPage) ) {
-		ImageLoader* clone = new ImageLoaderMachO(image->getPath(), file.getFileDescriptor(), firstPage, offsetInFat, lenInFat, stat_buf, gLinkContext);
-		// don't add bundles to global list, they can be loaded but not linked.  When linked it will be added to list
-		if ( ! image->isBundle() ) 
-			addImage(clone);
-		return clone;
-	}
-	
-	// try other file formats...
-	throw "can't clone image";
+	dyld::LoadContext context;
+	context.useSearchPaths		= false;
+	context.useFallbackPaths	= false;
+	context.useLdLibraryPath	= false;
+	context.implicitRPath		= false;
+	context.matchByInstallName	= false;
+	context.dontLoad			= false;
+	context.mustBeBundle		= true;
+	context.mustBeDylib			= false;
+	context.canBePIE			= false;
+	context.origin				= false;
+	context.rpath				= false;
+	return loadPhase6(file.getFileDescriptor(), stat_buf, image->getPath(), context);
 }
 
 
@@ -2284,8 +2427,8 @@ ImageLoader* loadFromMemory(const uint8_t* mem, uint64_t len, const char* module
 	}
 
 	// try each loader
-	if ( isCompatibleMachO(mem) ) {
-		ImageLoader* image = new ImageLoaderMachO(moduleName, (mach_header*)mem, len, gLinkContext);
+	if ( isCompatibleMachO(mem, moduleName) ) {
+		ImageLoader* image = ImageLoaderMachO::instantiateFromMemory(moduleName, (macho_header*)mem, len, gLinkContext);
 		// don't add bundles to global list, they can be loaded but not linked.  When linked it will be added to list
 		if ( ! image->isBundle() ) 
 			addImage(image);
@@ -2334,8 +2477,7 @@ void clearErrorMessage()
 void setErrorMessage(const char* message)
 {
 	// save off error message in global buffer for CrashReporter to find
-	strncpy(error_string, message, sizeof(error_string)-1);
-	error_string[sizeof(error_string)-1] = '\0';
+	strlcpy(error_string, message, sizeof(error_string));
 }
 
 const char* getErrorMessage()
@@ -2344,12 +2486,14 @@ const char* getErrorMessage()
 }
 
 
-void  halt(const char* message)
+void halt(const char* message)
 {
 	dyld::log("dyld: %s\n", message);
 	setErrorMessage(message);
-	strncpy(error_string, message, sizeof(error_string)-1);
-	error_string[sizeof(error_string)-1] = '\0';
+	uintptr_t terminationFlags = 0;
+	if ( !gLinkContext.startedInitializingMainExecutable )
+		terminationFlags = 1;
+	setAlImageInfosHalt(error_string, terminationFlags);
 	dyld_fatal_error(error_string);
 }
 
@@ -2368,7 +2512,7 @@ uintptr_t bindLazySymbol(const mach_header* mh, uintptr_t* lazyPointer)
 	#if __i386__
 		// fast stubs pass NULL for mh and image is instead found via the location of stub (aka lazyPointer)
 		if ( mh == NULL )
-			target = dyld::findImageContainingAddressThreadSafe(lazyPointer);
+			target = dyld::findImageContainingAddress(lazyPointer);
 		else
 			target = dyld::findImageByMachHeader(mh);
 	#else
@@ -2393,12 +2537,36 @@ uintptr_t bindLazySymbol(const mach_header* mh, uintptr_t* lazyPointer)
 }
 
 
-// SPI used by ZeroLink to lazy load bundles
-void registerZeroLinkHandlers(BundleNotificationCallBack notify, BundleLocatorCallBack locate)
+#if COMPRESSED_DYLD_INFO_SUPPORT
+uintptr_t fastBindLazySymbol(ImageLoader** imageLoaderCache, uintptr_t lazyBindingInfoOffset)
 {
-	sBundleNotifier = notify;
-	sBundleLocation = locate;
+	uintptr_t result = 0;
+	// get image 
+	if ( *imageLoaderCache == NULL ) {
+		// save in cache
+		*imageLoaderCache = dyld::findMappedRange((uintptr_t)imageLoaderCache);
+		if ( *imageLoaderCache == NULL ) {
+			const char* message = "fast lazy binding from unknown image";
+			dyld::log("dyld: %s\n", message);
+			halt(message);
+		}
+	}
+	
+	// bind lazy pointer and return it
+	try {
+		result = (*imageLoaderCache)->doBindFastLazySymbol(lazyBindingInfoOffset, gLinkContext);
+	}
+	catch (const char* message) {
+		dyld::log("dyld: lazy symbol binding failed: %s\n", message);
+		halt(message);
+	}
+
+	// return target address to glue which jumps to it with real parameters restored
+	return result;
 }
+#endif // COMPRESSED_DYLD_INFO_SUPPORT
+
+
 
 void registerUndefinedHandler(UndefinedHandler handler)
 {
@@ -2414,48 +2582,6 @@ static void undefinedHandler(const char* symboName)
 
 static bool findExportedSymbol(const char* name, bool onlyInCoalesced, const ImageLoader::Symbol** sym, const ImageLoader** image)
 {
-	// try ZeroLink short cut to finding bundle which exports this symbol
-	if ( sBundleLocation != NULL ) {
-		ImageLoader* zlImage = (*sBundleLocation)(name);
-		if ( zlImage == ((ImageLoader*)(-1)) ) {
-			// -1 is magic value that request symbol is in a bundle not yet linked into process
-			// try calling handler to link in that symbol
-			undefinedHandler(name);
-			// call locator again
-			zlImage = (*sBundleLocation)(name);
-		}
-		// if still not found, then ZeroLink has no idea where to find it
-		if ( zlImage == ((ImageLoader*)(-1)) ) 
-			return false;
-		if ( zlImage != NULL ) {
-			// ZeroLink cache knows where the symbol is
-			if ( onlyInCoalesced ) {
-				// but ZeroLink does not know about coalescing weak symbols, so ignore ZeroLink's hint when onlyInCoalesced==true
-			}
-			else {
-				*sym = zlImage->findExportedSymbol(name, NULL, false, image);
-				if ( *sym != NULL ) {
-					*image = zlImage;
-					return true;
-				}
-			}
-		}
-		else {
-			// ZeroLink says it is in some bundle already loaded, but not linked, walk them all
-			const unsigned int imageCount = sAllImages.size();
-			for(unsigned int i=0; i < imageCount; ++i){
-				ImageLoader* anImage = sAllImages[i];
-				if ( anImage->isBundle() && !anImage->hasHiddenExports() ) {
-					//dyld::log("dyld: search for %s in %s\n", name, anImage->getPath());
-					*sym = anImage->findExportedSymbol(name, NULL, false, image);
-					if ( *sym != NULL ) {
-						return true;
-					}
-				}
-			}
-		}
-	}
-
 	// search all images in order
 	const ImageLoader* firstWeakImage = NULL;
 	const ImageLoader::Symbol* firstWeakSym = NULL;
@@ -2471,7 +2597,7 @@ static bool findExportedSymbol(const char* name, bool onlyInCoalesced, const Ima
 				anImage = sAllImages[0];
 		}
 		if ( ! anImage->hasHiddenExports() && (!onlyInCoalesced || anImage->hasCoalescedExports()) ) {
-			*sym = anImage->findExportedSymbol(name, NULL, false, image);
+			*sym = anImage->findExportedSymbol(name, false, image);
 			if ( *sym != NULL ) {
 				// if weak definition found, record first one found
 				if ( ((*image)->getExportedSymbolInfo(*sym) & ImageLoader::kWeakDefinition) != 0 ) {
@@ -2516,7 +2642,7 @@ bool flatFindExportedSymbolWithHint(const char* name, const char* librarySubstri
 		ImageLoader* anImage = sAllImages[i];
 		// only look at images whose paths contain the hint string (NULL hint string is wildcard)
 		if ( ! anImage->isBundle() && ((librarySubstring==NULL) || (strstr(anImage->getPath(), librarySubstring) != NULL)) ) {
-			*sym = anImage->findExportedSymbol(name, NULL, false, image);
+			*sym = anImage->findExportedSymbol(name, false, image);
 			if ( *sym != NULL ) {
 				return true;
 			}
@@ -2524,6 +2650,20 @@ bool flatFindExportedSymbolWithHint(const char* name, const char* librarySubstri
 	}
 	return false;
 }
+
+unsigned int getCoalescedImages(ImageLoader* images[])
+{
+	unsigned int count = 0;
+	for (std::vector<ImageLoader*>::iterator it=sAllImages.begin(); it != sAllImages.end(); it++) {
+		ImageLoader* image = *it;
+		if ( image->participatesInCoalescing() ) {
+			*images++ = *it;
+			++count;
+		}
+	}
+	return count;
+}
+
 
 static ImageLoader::MappedRegion* getMappedRegions(ImageLoader::MappedRegion* regions)
 {
@@ -2584,17 +2724,18 @@ void registerImageStateBatchChangeHandler(dyld_image_states state, dyld_image_st
 	}
 }
 
-static ImageLoader* libraryLocator(const char* libraryName, bool search, bool findDLL, const char* origin, const ImageLoader::RPathChain* rpaths)
+static ImageLoader* libraryLocator(const char* libraryName, bool search, const char* origin, const ImageLoader::RPathChain* rpaths)
 {
 	dyld::LoadContext context;
 	context.useSearchPaths		= search;
+	context.useFallbackPaths	= search;
 	context.useLdLibraryPath	= false;
 	context.implicitRPath		= false;
 	context.matchByInstallName	= false;
 	context.dontLoad			= false;
 	context.mustBeBundle		= false;
 	context.mustBeDylib			= true;
-	context.findDLL				= findDLL;
+	context.canBePIE			= false;
 	context.origin				= origin;
 	context.rpath				= rpaths;
 	return load(libraryName, context);
@@ -2610,17 +2751,14 @@ static const char* basename(const char* path)
     return last;
 }
 
-static void setContext(const struct mach_header* mainExecutableMH, int argc, const char* argv[], const char* envp[], const char* apple[])
+static void setContext(const macho_header* mainExecutableMH, int argc, const char* argv[], const char* envp[], const char* apple[])
 {
 	gLinkContext.loadLibrary			= &libraryLocator;
 	gLinkContext.terminationRecorder	= &terminationRecorder;
 	gLinkContext.flatExportFinder		= &flatFindExportedSymbol;
 	gLinkContext.coalescedExportFinder	= &findCoalescedExportedSymbol;
+	gLinkContext.getCoalescedImages		= &getCoalescedImages;
 	gLinkContext.undefinedHandler		= &undefinedHandler;
-#if IMAGE_NOTIFY_SUPPORT
-	gLinkContext.addImageNeedingNotification = &addImageNeedingNotification;
-	gLinkContext.notifyAdding			= &notifyAdding;
-#endif
 	gLinkContext.getAllMappedRegions	= &getMappedRegions;
 	gLinkContext.bindingHandler			= NULL;
 	gLinkContext.notifySingle			= &notifySingle;
@@ -2629,11 +2767,10 @@ static void setContext(const struct mach_header* mainExecutableMH, int argc, con
 	gLinkContext.registerDOFs			= &registerDOFs;
 	gLinkContext.clearAllDepths			= &clearAllDepths;
 	gLinkContext.imageCount				= &imageCount;
-	gLinkContext.notifySharedCacheInvalid= &notifySharedCacheInvalid;
-#if __i386__
-	gLinkContext.makeSharedCacheImportSegmentsWritable = &makeSharedCacheImportSegmentsWritable;
-#endif
 	gLinkContext.setNewProgramVars		= &setNewProgramVars;
+#if DYLD_SHARED_CACHE_SUPPORT
+	gLinkContext.inSharedCache			= &inSharedCache;
+#endif
 #if SUPPORT_OLD_CRT_INITIALIZATION
 	gLinkContext.setRunInitialzersOldWay= &setRunInitialzersOldWay;
 #endif
@@ -2669,6 +2806,53 @@ bool isRosetta()
 }
 #endif
 
+
+#if __LP64__
+	#define LC_SEGMENT_COMMAND		LC_SEGMENT_64
+	#define macho_segment_command	segment_command_64
+	#define macho_section			section_64
+#else
+	#define LC_SEGMENT_COMMAND		LC_SEGMENT
+	#define macho_segment_command	segment_command
+	#define macho_section			section
+#endif
+
+
+//
+// Look for a special segment in the mach header. 
+// Its presences means that the binary wants to have DYLD ignore
+// DYLD_ environment variables.
+//
+static bool hasRestrictedSegment(const macho_header* mh)
+{
+	const uint32_t cmd_count = mh->ncmds;
+	const struct load_command* const cmds = (struct load_command*)(((char*)mh)+sizeof(macho_header));
+	const struct load_command* cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		switch (cmd->cmd) {
+			case LC_SEGMENT_COMMAND:
+			{
+				const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+				
+				//dyld::log("seg name: %s\n", seg->segname);
+				if (strcmp(seg->segname, "__RESTRICT") == 0) {
+					const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
+					const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
+					for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+						if (strcmp(sect->sectname, "__restrict") == 0) 
+							return true;
+					}
+				}
+			}
+			break;
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+		
+	return false;
+}
+	
+											
 #if 0
 static void printAllImages()
 {
@@ -2693,15 +2877,6 @@ void link(ImageLoader* image, bool forceLazysBound, const ImageLoader::RPathChai
 	if ( !image->isLinked() )
 		addRootImage(image);
 	
-	// notify ZeroLink of new image with concat of logical and physical name
-	if ( sBundleNotifier != NULL && image->isBundle() ) {
-		const int logicalLen = strlen(image->getLogicalPath());
-		char logAndPhys[strlen(image->getPath())+logicalLen+2];
-		strcpy(logAndPhys, image->getLogicalPath());
-		strcpy(&logAndPhys[logicalLen+1], image->getPath());
-		(*sBundleNotifier)(logAndPhys, image);
-	}
-
 	// process images
 	try {
 		image->link(gLinkContext, forceLazysBound, false, loaderRPaths);
@@ -2710,11 +2885,6 @@ void link(ImageLoader* image, bool forceLazysBound, const ImageLoader::RPathChai
 		garbageCollectImages();
 		throw;
 	}
-	
-#if OLD_GDB_DYLD_INTERFACE
-	// notify gdb that loaded libraries have changed
-	gdb_dyld_state_changed();
-#endif
 }
 
 
@@ -2737,7 +2907,7 @@ void garbageCollectImages()
 					//dyld::log("garbageCollectImages: deleting %s\n", image->getPath());
 					image->setBeingRemoved();
 					removeImage(image);
-					delete image;
+					ImageLoader::deleteImage(image);
 				}
 				catch (const char* msg) {
 					dyld::warn("problem deleting image: %s\n", msg);
@@ -2755,7 +2925,7 @@ static void preflight_finally(ImageLoader* image)
 {
 	if ( image->isBundle() ) {
 		removeImageFromAllImages(image->machHeader());
-		delete image;
+		ImageLoader::deleteImage(image);
 	}
 	sBundleBeingLoaded = NULL;
 	dyld::garbageCollectImages();
@@ -2782,13 +2952,14 @@ static void loadInsertedDylib(const char* path)
 	try {
 		LoadContext context;
 		context.useSearchPaths		= false;
+		context.useFallbackPaths	= false;
 		context.useLdLibraryPath	= false;
 		context.implicitRPath		= false;
 		context.matchByInstallName	= false;
 		context.dontLoad			= false;
 		context.mustBeBundle		= false;
 		context.mustBeDylib			= true;
-		context.findDLL				= false;
+		context.canBePIE			= false;
 		context.origin				= NULL;	// can't use @loader_path with DYLD_INSERT_LIBRARIES
 		context.rpath				= NULL;
 		image = load(path, context);
@@ -2806,10 +2977,18 @@ static void loadInsertedDylib(const char* path)
 // Returns address of main() in target program which __dyld_start jumps to
 //
 uintptr_t
-_main(const struct mach_header* mainExecutableMH, uintptr_t mainExecutableSlide, int argc, const char* argv[], const char* envp[], const char* apple[])
+_main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int argc, const char* argv[], const char* envp[], const char* apple[])
 {	
-	setContext(mainExecutableMH, argc, argv, envp, apple);
+#ifdef ALTERNATIVE_LOGFILE
+	sLogfile = open(ALTERNATIVE_LOGFILE, O_WRONLY | O_CREAT | O_APPEND);
+	if ( sLogfile == -1 ) {
+		sLogfile = STDERR_FILENO;
+		dyld::log("error opening alternate log file %s, errno = %d\n", ALTERNATIVE_LOGFILE, errno);
+	}
+#endif
 	
+	setContext(mainExecutableMH, argc, argv, envp, apple);
+
 	// Pickup the pointer to the exec path.
 	sExecPath = apple[0];
 	bool ignoreEnvironmentVariables = false;
@@ -2837,8 +3016,12 @@ _main(const struct mach_header* mainExecutableMH, uintptr_t mainExecutableSlide,
 	}
 	uintptr_t result = 0;
 	sMainExecutableMachHeader = mainExecutableMH;
-	sMainExecutableIsSetuid = issetugid();
-	if ( sMainExecutableIsSetuid )
+	sProcessIsRestricted = issetugid();
+	if ( geteuid() != 0 ) {
+		// if we are not root, see if the binary is requesting restricting the use of DYLD_ env vars.
+		sProcessIsRestricted |= hasRestrictedSegment(mainExecutableMH);
+	}
+	if ( sProcessIsRestricted )
 		pruneEnvironmentVariables(envp, &apple);
 	else
 		checkEnvironmentVariables(envp, ignoreEnvironmentVariables);
@@ -2850,18 +3033,24 @@ _main(const struct mach_header* mainExecutableMH, uintptr_t mainExecutableSlide,
 	// install gdb notifier
 	stateToHandlers(dyld_image_state_dependents_mapped, sBatchHandlers)->push_back(notifyGDB);
 	// make initial allocations large enough that it is unlikely to need to be re-alloced
-	sAllImages.reserve(200);
+	sAllImages.reserve(INITIAL_IMAGE_COUNT);
 	sImageRoots.reserve(16);
 	sAddImageCallbacks.reserve(4);
 	sRemoveImageCallbacks.reserve(4);
 	sImageFilesNeedingTermination.reserve(16);
 	sImageFilesNeedingDOFUnregistration.reserve(8);
 	
+#ifdef WAIT_FOR_SYSTEM_ORDER_HANDSHAKE
+	// <rdar://problem/6849505> Add gating mechanism to dyld support system order file generation process
+	WAIT_FOR_SYSTEM_ORDER_HANDSHAKE(dyld_all_image_infos.systemOrderFlag);
+#endif
+	
 	try {
 		// instantiate ImageLoader for main executable
 		sMainExecutable = instantiateFromLoadedImage(mainExecutableMH, mainExecutableSlide, sExecPath);
 		sMainExecutable->setNeverUnload();
 		gLinkContext.mainExecutable = sMainExecutable;
+		gLinkContext.processIsRestricted = sProcessIsRestricted;
 		// load shared cache
 		checkSharedRegionDisable();
 	#if DYLD_SHARED_CACHE_SUPPORT
@@ -2910,6 +3099,14 @@ _main(const struct mach_header* mainExecutableMH, uintptr_t mainExecutableSlide,
 		dyld::log("dyld: launch failed\n");
 	}
 
+#ifdef ALTERNATIVE_LOGFILE
+	// only use alternate log during launch, otherwise file is open forever
+	if ( sLogfile != STDERR_FILENO ) {
+		close(sLogfile);
+		sLogfile = STDERR_FILENO;
+	}
+#endif
+	
 	return result;
 }
 

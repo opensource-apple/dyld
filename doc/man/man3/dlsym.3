@@ -1,4 +1,4 @@
-.Dd Jan 16, 2008
+.Dd August 28, 2008
 .Dt DLSYM 3
 .Sh NAME
 .Nm dlsym
@@ -39,10 +39,18 @@ If
 is called with the special
 .Fa handle
 .Dv RTLD_NEXT ,
-then the search for the symbol is limited to the images which were loaded
-by the image issuing the call to
-.Fn dlsym .
-In other words, search the dylib symbols that the calling image linked against when it was built.
+then dyld searches for the symbol in the dylibs the calling image 
+linked against when built. It is usually used when
+you intentionally have multiply defined symbol across images
+and want to find the "next" definition.  It searches other images 
+for the definition that the caller would be using if it did not
+have a definition.  The exact search algorithm depends on whether
+the caller's image was linked -flat_namespace or -twolevel_namespace.
+For flat linked images, the search starts in the load ordered list
+of all images, in the image right after the caller's image.  
+For two-level images, the search simulates how the static linker
+would have searched for the symbol when linking the caller's
+image.  
 .Pp
 If
 .Fn dlsym
@@ -53,6 +61,15 @@ then the search for the symbol starts with the image that called
 .Fn dlsym .
 If it is not found, the search continues as if RTLD_NEXT was used.
 .Pp
+If
+.Fn dlsym
+is called with the special
+.Fa handle
+.Dv RTLD_MAIN_ONLY ,
+then it only searches for 
+.Fa symbol
+in the main executable.
+.Pp
 .Sh RETURN VALUES
 The
 .Fn dlsym
@@ -62,9 +79,13 @@ condition which may be queried with
 .Fn dlerror .
 .Pp
 .Sh NOTES
-Unlike other dyld API's, the symbol name passed to
+The symbol name passed to
 .Fn dlsym
-must NOT be prepended with an underscore.  
+is the name used in C source code.  For example to find the address
+of function foo(), you would pass "foo" as the symbol name.  This
+is unlike the older dyld APIs which required a leading underscore.
+If you looking up a C++ symbol, you need to use the mangled C++ symbol
+name.  
 .Sh SEE ALSO
 .Xr dlopen 3
 .Xr dlsym 3

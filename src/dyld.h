@@ -38,13 +38,14 @@ namespace dyld {
 	struct LoadContext
 	{
 		bool			useSearchPaths;
+		bool			useFallbackPaths;
 		bool			useLdLibraryPath;
 		bool			implicitRPath;
 		bool			matchByInstallName;
 		bool			dontLoad;
 		bool			mustBeBundle;
 		bool			mustBeDylib;
-		bool			findDLL;
+		bool			canBePIE;
 		const char*						origin;			// path for expanding @loader_path
 		const ImageLoader::RPathChain*	rpath;			// paths for expanding @rpath
 	};
@@ -52,24 +53,18 @@ namespace dyld {
 
 
 	typedef void		 (*ImageCallback)(const struct mach_header* mh, intptr_t slide);
-	typedef void		 (*BundleNotificationCallBack)(const char* imageName, ImageLoader* image);
-	typedef ImageLoader* (*BundleLocatorCallBack)(const char* symbolName);
 	typedef void		 (*UndefinedHandler)(const char* symbolName);
 	typedef const char*	 (*ImageLocator)(const char* dllName);
 
 
 	extern ImageLoader::LinkContext			gLinkContext;
 	extern bool								gLogAPIs;
-	extern bool								gSharedCacheNotFound;
-	extern bool								gSharedCacheNeedsUpdating;
-	extern bool								gSharedCacheDontNotify;
 	extern const struct LibSystemHelpers*	gLibSystemHelpers;
 #if SUPPORT_OLD_CRT_INITIALIZATION
 	extern bool								gRunInitializersOldWay;
 #endif
 	extern void					registerAddCallback(ImageCallback func);
 	extern void					registerRemoveCallback(ImageCallback func);
-	extern void					registerZeroLinkHandlers(BundleNotificationCallBack, BundleLocatorCallBack);
 	extern void					registerUndefinedHandler(UndefinedHandler);
 	extern void					initializeMainExecutable();
 	extern void					preflight(ImageLoader* image, const ImageLoader::RPathChain& loaderRPaths);
@@ -82,6 +77,7 @@ namespace dyld {
 	extern uint32_t				getImageCount();
 	extern ImageLoader*			findImageByMachHeader(const struct mach_header* target);
 	extern ImageLoader*			findImageContainingAddress(const void* addr);
+	extern ImageLoader*			findImageContainingSymbol(const void* symbol);
 	extern ImageLoader*			findImageByName(const char* path);
 	extern ImageLoader*			findLoadedImageByInstallPath(const char* path);
 	extern bool					flatFindExportedSymbol(const char* name, const ImageLoader::Symbol** sym, const ImageLoader** image);
@@ -91,7 +87,7 @@ namespace dyld {
 	extern void					removeImage(ImageLoader* image);
 	extern ImageLoader*			cloneImage(ImageLoader* image);
 	extern void					forEachImageDo( void (*)(ImageLoader*, void*), void*);
-	extern uintptr_t			_main(const struct mach_header* mainExecutableMH, uintptr_t mainExecutableSlide, int argc, const char* argv[], const char* envp[], const char* apple[]);
+	extern uintptr_t			_main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int argc, const char* argv[], const char* envp[], const char* apple[]);
 	extern void					halt(const char* message)  __attribute__((noreturn));
 	extern void					setErrorMessage(const char* msg);
 	extern const char*			getErrorMessage();
@@ -102,9 +98,10 @@ namespace dyld {
 	extern void					registerImageStateSingleChangeHandler(dyld_image_states state, dyld_image_state_change_handler handler);
 	extern void					registerImageStateBatchChangeHandler(dyld_image_states state, dyld_image_state_change_handler handler);
 	extern void					garbageCollectImages();
-	extern void					registerWinImageLocator(ImageLocator);
 	extern int					openSharedCacheFile();
 	extern const void*			imMemorySharedCacheHeader();
+	extern uintptr_t			fastBindLazySymbol(ImageLoader** imageLoaderCache, uintptr_t lazyBindingInfoOffset);
+	extern bool					inSharedCache(const char* path);
 
 };
 

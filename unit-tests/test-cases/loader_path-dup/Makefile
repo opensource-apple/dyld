@@ -23,6 +23,8 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+PWD = $(shell pwd)
+
 ### 
 ### This test case is to verify that two different dylibs with the same name  
 ### and each loaded via the same @loader_path does not confuse dyld
@@ -32,14 +34,16 @@ include ${TESTROOT}/include/common.makefile
 ## Note, until ld understands @loader_path we have to do a funky make
 
 
-run: all
+all-check: all check
+
+check:
 	./main
 
 all: main
 
 foo/libfoo.dylib : foo.c foo/libbase.dylib
 	mkdir -p foo
-	${CC} foo.c foo/libbase.dylib -dynamiclib -o "`pwd`/foo/libfoo.dylib" 
+	${CC} foo.c foo/libbase.dylib -dynamiclib -o "${PWD}/foo/libfoo.dylib" 
 	
 foo/libbase.dylib : base.c 
 	mkdir -p foo
@@ -48,7 +52,7 @@ foo/libbase.dylib : base.c
 
 bar/libbar.dylib : bar.c bar/libbase.dylib
 	mkdir -p bar
-	${CC} bar.c bar/libbase.dylib -dynamiclib -o "`pwd`/bar/libbar.dylib" 
+	${CC} bar.c bar/libbase.dylib -dynamiclib -o "${PWD}/bar/libbar.dylib" 
 	
 bar/libbase.dylib : base.c 
 	mkdir -p bar

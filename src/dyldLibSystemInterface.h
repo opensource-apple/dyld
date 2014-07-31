@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -28,8 +28,9 @@
 
 #include <stdint.h>
 
-
+#if __cplusplus
 namespace dyld {
+#endif
 	//
 	// This file contains the synchronization utilities used by dyld to be thread safe.
 	// This struct is implemented in in libSystem (where pthreads is available)
@@ -51,9 +52,15 @@ namespace dyld {
 		// addded in version 4
 		void		(*acquireDyldInitializerLock)();
 		void		(*releaseDyldInitializerLock)();
+		// added in version 5
+		int		(*pthread_key_create)(pthread_key_t*, void (*destructor)(void*));
+		int		(*pthread_setspecific)(pthread_key_t, const void*);
+		// added in version 6
+		size_t		(*malloc_size)(const void *ptr);
 	};
+#if __cplusplus
 };
-
+#endif
 
 
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2008 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -25,16 +25,14 @@
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
-// foo is defined in libfoo.dylib
-// it calls myfunc() 
+// foo is defined in libfoo.dylib it calls myfunc() 
 extern int foo();
-
-// add this so WEAK_DEFINES is set, so dyld searchs this image
-int __attribute__((weak)) junk = 2;
+// bar is defined in libfoo.dylib it calls myfunc() 
+extern int bar();
 
 int main()
 {
-	if ( foo() == 10 )
+	if ( (foo() == 10) && (bar() == 10) )
 		PASS("weak-override");
 	else
 		FAIL("weak-override");

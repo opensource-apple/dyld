@@ -23,12 +23,15 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+all-check: all check
+
+check:
 	./main
 
 all:
-	${CC} ${CCFLAGS} -Wno-deprecated-declarations  -I${TESTROOT}/include -o main main.c
+	${CC} ${CCFLAGS} -Wno-deprecated-declarations -g -I${TESTROOT}/include -o main main.c -mmacosx-version-min=10.5
+	
 
 clean:
-	${RM} ${RMFLAGS} *~ main
+	${RM} ${RMFLAGS} *~ main main.dSYM
 

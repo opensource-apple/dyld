@@ -23,7 +23,9 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
-run: all
+all-check: all check
+
+check:
 	${TESTROOT}/bin/exit-non-zero-pass.pl "fallback-with-suid" "fallback-with-suid" ./main-suid
 	
 all: main-suid
