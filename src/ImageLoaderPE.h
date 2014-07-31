@@ -1,4 +1,5 @@
-/*
+/* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
+ *
  * Copyright (c) 2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
@@ -20,26 +21,5 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-#include <stdio.h>
-#include <stdlib.h>
-#include <dlfcn.h>
-#include <unistd.h>
-#include <stdlib.h>
-
-  
-#include "test.h"
 
 
-int main()
-{
-	for (int i=0; i < 100; ++i) {
-		dlopen_preflight("libfoo.dylib");
-	}
-	
-	// execute leaks command on myself
-	char cmd[512];
-	sprintf(cmd, "leaks %u\n", getpid());
-	system(cmd);
-	 	
-	return EXIT_SUCCESS;
-}

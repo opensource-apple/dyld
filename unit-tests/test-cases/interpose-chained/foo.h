@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -21,12 +21,4 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#include <stdlib.h>
-
-
-void* externalRlocToMalloc = &malloc;
-
-void* foo()
-{
-	return externalRlocToMalloc;
-}
+extern const char* foo(const char* str);

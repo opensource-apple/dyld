@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -20,12 +20,15 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
+#include <stdio.h>
+#include <mach-o/dyld-interposing.h>
+#include "foo.h"
 
-#include <dlfcn.h>
-
-
-
-int foo()
+const char* foo1(const char* str)
 {
-	return 10;
+	char* result;
+	asprintf(&result, "foo1(%s)", foo(str));
+	return result;
 }
+
+DYLD_INTERPOSE(foo1, foo)

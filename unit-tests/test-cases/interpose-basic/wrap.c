@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -20,32 +20,16 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-#include <stdio.h>
-#include <mach-o/dyld.h>
 
-#include "test.h"
+#include <string.h>
 
-///
-/// rdar://problem/3736945
-///
-///  Test that a std framework can be dynamically loaded via the fallback paths
-///
-///
+// make a pointer statically initiallized to strdup()
+// since libwrap.dylib is staticlly linked to main
+// this verfies that interposing happens properly
+static char* (*proc)(const char*) = strdup;
 
-
-
-int
-main(int argc, const char* argv[])
+char* wrap_strdup(const char* str)
 {
-	const struct mach_header *image;
-
-	image = NSAddImage("Carbon.framework/Carbon",
-			NSADDIMAGE_OPTION_RETURN_ON_ERROR | NSADDIMAGE_OPTION_WITH_SEARCHING);
-	if ( image != NULL )
-		PASS("Carbon loaded");
-	else
-		FAIL("Could not load Carbon");
-
-	return 0;
+	return proc(str);
 }
 

@@ -1296,6 +1296,12 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 					throwf("can't open file %s, errnor=%d", it->layout->getID().name, errno);
 				// mark source as "don't cache"
 				(void)fcntl(src, F_NOCACHE, 1);
+				// verify file has not changed since dependency analysis
+				struct stat stat_buf;
+				if ( fstat(src, &stat_buf) == -1)
+					throwf("can't stat open file %s, errno=%d", path, errno);
+				if ( (it->layout->getInode() != stat_buf.st_ino) || (it->layout->getLastModTime() != stat_buf.st_mtime) )
+					throwf("aborting because OS dylib modified during cache creation: %s", path);
 
 				if ( verbose )
 					fprintf(stderr, "update_dyld_shared_cache: copying %s to cache\n", it->layout->getID().name);
@@ -1309,8 +1315,33 @@ bool SharedCache<A>::update(const char* rootPath, const char* cacheDir, bool for
 							const uint64_t segmentSrcStartOffset = it->layout->getOffsetInUniversalFile()+seg.fileOffset();
 							const uint64_t segmentSize = seg.fileSize();
 							const uint64_t segmentDstStartOffset = cacheFileOffsetForAddress(seg.newAddress());
-							if ( ::pread(src, &inMemoryCache[segmentDstStartOffset], segmentSize, segmentSrcStartOffset) != segmentSize )
-								throwf("read failure copying dylib errno=%d for %s", errno, it->layout->getID().name);
+							ssize_t readResult = ::pread(src, &inMemoryCache[segmentDstStartOffset], segmentSize, segmentSrcStartOffset);
+							if ( readResult != segmentSize ) 
+								if ( readResult == -1 )
+									throwf("read failure copying dylib errno=%d for %s", errno, it->layout->getID().name);
+								else
+									throwf("read failure copying dylib. Read of %lld bytes at file offset %lld returned %ld for %s", 
+											segmentSize, segmentSrcStartOffset, readResult, it->layout->getID().name);
+							// verify __TEXT segment has no zeroed out pages
+							if ( strcmp(seg.name(), "__TEXT") == 0 ) {
+								// only scan first 128KB.  Some OS dylibs have zero filled TEXT pages later in __const...
+								int scanEnd = segmentSize;
+								if ( scanEnd > 0x20000 )
+									scanEnd = 0x20000;
+								for (int pageOffset = 0; pageOffset < scanEnd; pageOffset += 4096) {
+									const uint32_t* page = (uint32_t*)(&inMemoryCache[segmentDstStartOffset+pageOffset]);
+									bool foundNonZero = false;
+									for(int p=0; p < 1024; ++p) {
+										if ( page[p] != 0 ) {
+											//fprintf(stderr, "found non-zero at pageOffset=0x%08X, p=0x%08X in memory=%p for %s\n", pageOffset, p, page, it->layout->getID().name);
+											foundNonZero = true;
+											break;
+										}
+									}
+									if ( !foundNonZero )
+										throwf("suspected bad read. Found __TEXT segment page at offset 0x%08X that is all zeros for %s in %s", pageOffset, archName(), it->layout->getID().name);
+								}
+							}
 						}
 					}
 				}
@@ -1732,6 +1763,8 @@ static kern_return_t do_update_cache(cpu_type_t arch, bool deleteExistingCacheFi
 			fprintf(stderr, "update_dyld_shared_cache[%u] for arch=%s failed: %s\n", getpid(), ArchGraph::archName(arch), msg);
 			return KERN_FAILURE;
 		}
+		// <rdar://problem/6378354> only build one cache file per life of process
+		doNothingAndDrainQueue = true;
 	}
 	return KERN_SUCCESS;
 }

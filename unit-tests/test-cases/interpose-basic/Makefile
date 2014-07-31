@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2007 Apple Inc. All rights reserved.
+# Copyright (c) 2005-2007 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -23,29 +23,22 @@
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+run: all
+	export DYLD_INSERT_LIBRARIES="libmystrdup.dylib" && ./main
 
-### <rdar://problem/5565230> CFSTRs cause crashes in Leopard
-### 
-### main registers for notification and then dlopens(libfoo).
-### In the notification callback, main calls NSLookupSymbolInImage(BIND)
-### which double bound libfoo
-###
+all: main libmystrdup.dylib
 
-all-check: all check
+main : main.c libwrap.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main libwrap.dylib main.c
 
-check:
-	./main 
+libwrap.dylib: wrap.c
+	${CC} ${CCFLAGS} -dynamiclib wrap.c -o libwrap.dylib
 
-all: main 
+libmystrdup.dylib : mystrdup.c
+	${CC} ${CCFLAGS} -dynamiclib mystrdup.c -o libmystrdup.dylib
 
-main : main.c  libfoo.dylib 
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c -mmacosx-version-min=10.4
-
-
-libfoo.dylib : foo.c
-	${CC} ${CCFLAGS} -dynamiclib foo.c -o libfoo.dylib 
 
 
 clean:
-	${RM} ${RMFLAGS} *~ main libfoo.dylib 
+	${RM} ${RMFLAGS} *~ main libmystrdup.dylib libwrap.dylib
 

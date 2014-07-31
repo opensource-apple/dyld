@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -20,19 +20,20 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
+#include <stdio.h>  // fprintf(), NULL
+#include <stdlib.h> // exit(), EXIT_SUCCESS
+#include <string.h>
 
-#include <dlfcn.h>
+#include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
+#include "foo.h"
 
-static void myInit() __attribute__((constructor));
-
-static void myInit() 
-{		
-	// call dlopen to verify that initializer lock can be held recursively
-	dlopen("libbar.dylib", RTLD_LAZY);
-}
-
-
-int foo1()
+int main()
 {
-	return 10;
+	const char* x = foo("seed");
+  
+	if ( strcmp(x, "foo3(foo2(foo1(foo(seed))))") == 0 )
+		PASS("interpose-chained");
+	else 
+		FAIL("interpose-chained %s", x);
+	return EXIT_SUCCESS;
 }

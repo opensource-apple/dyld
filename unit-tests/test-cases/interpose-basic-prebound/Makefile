@@ -1,7 +1,5 @@
-all-check: all check
-
-check:##
-# Copyright (c) 2007 Apple Inc. All rights reserved.
+##
+# Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -25,38 +23,22 @@ check:##
 TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
+run: all
+	export DYLD_INSERT_LIBRARIES="libmystrdup.dylib" && ./main
 
-### <rdar://problem/5504633> ADOBE: Premiere Pro crashes on quit
-### 
-### libfoo depends on libfoo1 and libfoo2.  main dlopens(libfoo).
-### libfoo1 has an initializer that calls dlopen(libbar).
-### libbar depends on libfoo2
-###
+all: main libmystrdup.dylib
 
-all-check: all check
+main : main.c libfoo.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c libfoo.dylib
 
-check:
-	./main 
+libfoo.dylib : foo.c
+	export MACOSX_DEPLOYMENT_TARGET=10.3 && ${CC} ${CCFLAGS} -dynamiclib foo.c -o libfoo.dylib -prebind -seg1addr 20000 
 
-all: main 
+libmystrdup.dylib : mystrdup.c
+	${CC} ${CCFLAGS} -dynamiclib mystrdup.c -o libmystrdup.dylib
 
-main : main.cxx  libfoo.dylib 
-	${CXX} ${CCXXFLAGS} -I${TESTROOT}/include -o main main.cxx
-
-
-libfoo.dylib : foo.c libfoo1.dylib libfoo2.dylib
-	${CC} ${CCFLAGS} -dynamiclib foo.c -o libfoo.dylib libfoo1.dylib libfoo2.dylib
-
-libfoo1.dylib : foo1.c libbar.dylib 
-	${CC} ${CCFLAGS} -dynamiclib foo1.c -o libfoo1.dylib
-
-libfoo2.dylib : foo2.c
-	${CC} ${CCFLAGS} -dynamiclib foo2.c -o libfoo2.dylib
-
-libbar.dylib : bar.c libfoo2.dylib
-	${CC} ${CCFLAGS} -dynamiclib bar.c -o libbar.dylib libfoo2.dylib
 
 
 clean:
-	${RM} ${RMFLAGS} *~ main libbar.dylib libfoo.dylib libfoo1.dylib libfoo2.dylib
-
+	${RM} ${RMFLAGS} *~ main libmystrdup.dylib libfoo.dylib 
+ 

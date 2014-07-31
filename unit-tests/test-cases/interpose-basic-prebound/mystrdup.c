@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -20,29 +20,13 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-#include <stdio.h>
-#include <stdlib.h>
-#include <dlfcn.h>
-#include <unistd.h>
-#include <stdlib.h>
 
-  
-#include "test.h"
+#include <string.h>
+#include <mach-o/dyld-interposing.h>
 
-
-int main()
+char* mystrdup(const char* in)
 {
-	for (int i=0; i < 100; ++i) {
-		void* handle = dlopen("libfoo.dylib", RTLD_LAZY);
-		if ( handle != NULL ) 
-			dlclose(handle);
-		dlopen("libnotthere.dylib", RTLD_LAZY);
-	}
-	
-	// execute leaks command on myself
-	char cmd[512];
-	sprintf(cmd, "leaks %u\n", getpid());
-	system(cmd);
-	 	
-	return EXIT_SUCCESS;
+	return "hello";
 }
+
+DYLD_INTERPOSE(mystrdup, strdup)

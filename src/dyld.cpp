@@ -2113,6 +2113,28 @@ static void mapSharedCache()
 		}
 	}
 	else {
+		// <rdar://problem/5925940> Safe Boot should disable dyld shared cache
+		// if we are in safe-boot mode and the cache was not made during this boot cycle,
+		// delete the cache file and let it be regenerated 
+		uint32_t	safeBootValue = 0;
+		size_t		safeBootValueSize = sizeof(safeBootValue);
+		if ( (sysctlbyname("kern.safeboot", &safeBootValue, &safeBootValueSize, NULL, 0) == 0) && (safeBootValue != 0) ) {
+			// user booted machine in safe-boot mode
+			struct stat dyldCacheStatInfo;
+			if ( ::stat(DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME, &dyldCacheStatInfo) == 0 ) {
+				struct timeval bootTimeValue;
+				size_t bootTimeValueSize = sizeof(bootTimeValue);
+				if ( (sysctlbyname("kern.boottime", &bootTimeValue, &bootTimeValueSize, NULL, 0) == 0) && (bootTimeValue.tv_sec != 0) ) {
+					// if the cache file was created before this boot, then throw it away and let it rebuild itself
+					if ( dyldCacheStatInfo.st_mtime < bootTimeValue.tv_sec ) {
+						::unlink(DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME ARCH_NAME);
+						gLinkContext.sharedRegionMode = ImageLoader::kDontUseSharedRegion;
+						gSharedCacheNotFound = true;
+						return;
+					}
+				}
+			}
+		}
 		// map in shared cache to shared region
 		int fd = openSharedCacheFile();
 		if ( fd != -1 ) {

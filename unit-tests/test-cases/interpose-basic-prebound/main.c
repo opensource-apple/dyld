@@ -22,47 +22,19 @@
  */
 #include <stdio.h>  // fprintf(), NULL
 #include <stdlib.h> // exit(), EXIT_SUCCESS
+#include <stdbool.h>
+#include <string.h>
 #include <dlfcn.h>
-#include <mach-o/dyld.h>
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
-
-typedef void* (*fooProc)();
-
-
-static void notify(const struct mach_header *mh, intptr_t vmaddr_slide) 
-{
-	//fprintf(stderr, "mh=%p\n", mh);
-	NSLookupSymbolInImage(mh, "_bar", NSLOOKUPSYMBOLINIMAGE_OPTION_BIND_FULLY | NSLOOKUPSYMBOLINIMAGE_OPTION_RETURN_ON_ERROR);
-}
-
+extern bool check_dylib_interposing();
 
 int main()
-{
-	_dyld_register_func_for_add_image(&notify);
-
-	void* handle = dlopen("libfoo.dylib", RTLD_LAZY);
-	if ( handle == NULL ) {
-		FAIL("dlopen(\"%s\") failed with: %s", "libfoo.dylib", dlerror());
-		exit(0);
-	}
-	
-	fooProc fooPtr = (fooProc)dlsym(handle, "foo");
-	if ( fooPtr == NULL ) {
-		FAIL("dlsym(handle, \"foo\") failed");
-		exit(0);
-	}
-	
-	void* foosMalloc = (*fooPtr)();
-	//fprintf(stderr, "foo says &malloc=%p\n", foosMalloc);
-	//fprintf(stderr, "&malloc=%p\n", &malloc);
-	
-	dlclose(handle);
-  
-	if ( foosMalloc == &malloc )
-		PASS("dlopen-notify-bind");
+{  
+	if ( check_dylib_interposing() )
+		PASS("interpose-basic");
 	else
-		FAIL("dlopen-notify-bind libfoo.dylib double bound");
+		FAIL("interpose-basic");
 	return EXIT_SUCCESS;
 }

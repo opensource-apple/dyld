@@ -91,7 +91,7 @@ public:
 		void		setSize(uint64_t new_size)		{ fSize = new_size; }
 		void		setFileOffset(uint64_t new_off)	{ fFileOffset = new_off; }
 		void		setFileSize(uint64_t new_size)	{ fFileSize = new_size; }
-		void		setWritable(bool writable)		{ if (writable) fPermissions |= VM_PROT_WRITE; else fPermissions &= ~VM_PROT_WRITE; }
+		void		setWritable(bool w)		{ if (w) fPermissions |= VM_PROT_WRITE; else fPermissions &= ~VM_PROT_WRITE; }
 	private:
 		uint64_t	fAddress;
 		uint64_t	fSize;

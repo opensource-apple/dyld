@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -21,17 +21,12 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#include <dlfcn.h>
+#include <string.h>
+#include <mach-o/dyld-interposing.h>
 
-static void myInit() __attribute__((constructor));
-
-static void myInit() 
-{		
-
-}
-
-
-int foo2()
+char* mystrdup(const char* in)
 {
-	return 10;
+	return "hello";
 }
+
+DYLD_INTERPOSE(mystrdup, strdup)
