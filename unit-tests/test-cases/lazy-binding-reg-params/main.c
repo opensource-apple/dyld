@@ -24,6 +24,7 @@
 #include <stdio.h>  // fprintf(), NULL
 #include <stdlib.h> // exit(), EXIT_SUCCESS
 #include <dlfcn.h>
+#include <sys/sysctl.h>
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
@@ -35,20 +36,66 @@
 ///
 
 				
-extern
-#if __i386__
-__attribute__((regparm(3)))
+#include "foo.h"
+
+
+static bool inttest()
+{
+	return dointtest(123,456,789,4444,55555);
+}
+
+static bool floattest()
+{
+#if __ppc__ || __ppc64__
+	return dofloattest(1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0,11.0,12.0,13.0);
+#elif __i386__
+	return true;
+#else
+	#error unknown architecture
 #endif
-bool inttest(int p1, int p2, int p3, int p4, int p5);
+}
+
+static bool vectorSupport()
+{
+#if __ppc__
+	uint32_t value;
+	size_t size=sizeof(uint32_t);
+	int err = sysctlbyname("hw.optional.altivec", &value, &size, NULL, 0);
+	//fprintf(stderr, "sysctlbyname() = %d\n", err);
+	return ( err == 0 );
+#else
+	return true;
+#endif
+}
+
+
+static bool vectortest()
+{
+	vFloat p1 = { 1.1, 1.2, 1.3, 1.4 };
+	vFloat p2 = { 2.1, 2.2, 2.3, 2.4 };
+	vFloat p3 = { 3.1, 3.2, 3.3, 3.4 };
+	vFloat p4 = { 4.1, 4.2, 4.3, 4.4 };
+	vFloat p5 = { 5.1, 5.2, 5.3, 5.4 };
+	return dovectortest(p1, p2, p3, p4, p5);
+}
 
 int main()
 {
-	
-	if ( ! inttest(123, 456, 789, 4444, 55555) ) {
+	if ( ! inttest() ) {
 		FAIL("lazy-binding-reg-params int parameters");
 		return EXIT_SUCCESS;
 	}
-	
+
+	if ( ! floattest() ) {
+		FAIL("lazy-binding-reg-params float parameters");
+		return EXIT_SUCCESS;
+	}
+
+	if ( vectorSupport() && ! vectortest() ) {
+		FAIL("lazy-binding-reg-params vector parameters");
+		return EXIT_SUCCESS;
+	}
+		
 	PASS("lazy-binding-reg-params");
 	return EXIT_SUCCESS;
 }

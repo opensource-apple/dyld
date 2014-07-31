@@ -1769,6 +1769,34 @@ uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const s
 	}
 }
 
+// returns if 'addr' is within the address range of section 'sectionIndex'
+// fSlide is not used.  'addr' is assumed to be a prebound address in this image 
+bool ImageLoaderMachO::isAddrInSection(uintptr_t addr, uint8_t sectionIndex)
+{
+	uint8_t currentSectionIndex = 1;
+	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+	const struct load_command* cmd = cmds;
+	for (unsigned long i = 0; i < cmd_count; ++i) {
+		if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
+			const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+			if ( (currentSectionIndex <= sectionIndex) && (sectionIndex < currentSectionIndex+seg->nsects) ) {
+				// 'sectionIndex' is in this segment, get section info
+				const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
+				const struct macho_section* const section = &sectionsStart[sectionIndex-currentSectionIndex];
+				return ( (section->addr <= addr) && (addr < section->addr+section->size) );
+			}
+			else {
+				// 'sectionIndex' not in this segment, skip to next segment
+				currentSectionIndex += seg->nsects;
+			}
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+	
+	return false;
+}
+
 void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, bool onlyCoalescedSymbols)
 {
 	const uintptr_t relocBase = this->getRelocBase();
@@ -1805,10 +1833,24 @@ void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, boo
 					#endif
 						if ( prebound ) {
 							// we are doing relocations, so prebinding was not usable
-							// in a prebound executable, the n_value field is set to the address where the symbol was found when prebound
+							// in a prebound executable, the n_value field of an undefined symbol is set to the address where the symbol was found when prebound
 							// so, subtracting that gives the initial displacement which we need to add to the newly found symbol address
-							// if mach-o relocation structs had an "addend" field this would not be necessary.
-							value -= undefinedSymbol->n_value;
+							// if mach-o relocation structs had an "addend" field this complication would not be necessary.
+							if ( ((undefinedSymbol->n_type & N_TYPE) == N_SECT) && ((undefinedSymbol->n_desc & N_WEAK_DEF) != 0) ) {
+								// weak symbols need special casing, since *location may have been prebound to a definition in another image.
+								// If *location is currently prebound to somewhere in the same section as the weak definition, we assume 
+								// that we can subtract off the weak symbol address to get the addend.
+								// If prebound elsewhere, we've lost the addend and have to assume it is zero.
+								// The prebinding to elsewhere only happens with 10.4+ update_prebinding which only operates on a small set of Apple dylibs
+								if ( (value == undefinedSymbol->n_value) || this->isAddrInSection(value, undefinedSymbol->n_sect) )
+									value -= undefinedSymbol->n_value;
+								else
+									value = 0;
+							} 
+							else {
+								// is undefined or non-weak symbol, so do subtraction to get addend
+								value -= undefinedSymbol->n_value;
+							}
 						}
 						// if undefinedSymbol is same as last time, then symbolAddr and image will resolve to the same too
 						if ( undefinedSymbol != lastUndefinedSymbol ) {
@@ -1837,10 +1879,14 @@ void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, boo
 							*location = value - ((uintptr_t)location + 4);
 						}
 						else {
-							*location = value; 
+							// don't dirty page if prebound value was correct
+							if ( !prebound || (*location != value) )
+								*location = value; 
 						}
 					#else
-                         *location = value; 
+						// don't dirty page if prebound value was correct
+						if ( !prebound || (*location != value) )
+							*location = value; 
 					#endif
 					}
 					break;

@@ -33,33 +33,61 @@
  * sp+4	address of lazy pointer
  * sp+0	address of mach header
  *
- * Some inter-image function calls pass parameters in registers EAX, ECX, or EDX.
+ * Some inter-image function calls pass parameters in registers EAX, ECX, EDX, or XXM0-3,
  * Therefore those registers need to be preserved during the lazy binding.
  * 
  * After the symbol has been resolved and the pointer filled in this is to pop
  * these arguments off the stack and jump to the address of the defined symbol.
  */
-	.text
-	.align 4,0x90
-	.globl _stub_binding_helper_interface
+#define MH_PARAM_BP			4
+#define LP_PARAM_BP			8
+#define RESULT_BP			8    /* in order to trash no registers, the target is stored back on the stack then ret it done to it */
+
+#define MH_PARAM_OUT        0
+#define LP_PARAM_OUT        4
+#define EAX_SAVE			8
+#define ECX_SAVE			12
+#define EDX_SAVE			16
+#define XMMM0_SAVE			32    /* 16-byte align */
+#define XMMM1_SAVE			48
+#define XMMM2_SAVE			64
+#define XMMM3_SAVE			80
+#define STACK_SIZE			96 /*  (XMMM3_SAVE+16) must be 16 byte aligned too */
+
+
+    .text
+    .align 4,0x90
+    .globl _stub_binding_helper_interface
 _stub_binding_helper_interface:
-	pushl	%eax		    # save registers that might be trashed by dyld::bindLazySymbol()
-	pushl	%ecx		    
-	pushl	%edx		   
-	subl	$8,%esp		    # reserve space for parameters to dyld::bindLazySymbol()
-	movl	20(%esp), %eax	    
-	movl	%eax, 0(%esp)	    # copy mach header parameter
-	movl	24(%esp), %eax
-	movl	%eax, 4(%esp)	    # copy lazy pointer parameter 
-	call	__ZN4dyld14bindLazySymbolEPK11mach_headerPm
-	addl	$8,%esp		    # clean up stack after function call
-	movl	%eax,16(%esp)	    # store target into stack so ret at end will jump there
-	popl	%edx		    # restore registers
-	popl	%ecx
-	popl	%eax
-	addl	$4,%esp		    # remove meta-parameter, other meta-parmaeter now holds target for ret
+	pushl		%ebp
+	movl		%esp,%ebp
+	subl		$STACK_SIZE,%esp		# at this point stack is 16-byte aligned because two meta-parameters where pushed
+	movl		%eax,EAX_SAVE(%esp)		# save registers that might be used as parameters
+	movl		%ecx,ECX_SAVE(%esp)
+	movl		%edx,EDX_SAVE(%esp)
+	movdqu		%xmm0,XMMM0_SAVE(%esp)
+	movdqu		%xmm1,XMMM1_SAVE(%esp)
+	movdqu		%xmm2,XMMM2_SAVE(%esp)
+	movdqu		%xmm3,XMMM3_SAVE(%esp)
+	movl		MH_PARAM_BP(%ebp),%eax	# call dyld::bindLazySymbol(mh, lazy_ptr)
+	movl		%eax,MH_PARAM_OUT(%esp)
+	movl		LP_PARAM_BP(%ebp),%eax
+	movl		%eax,LP_PARAM_OUT(%esp)
+	call		__ZN4dyld14bindLazySymbolEPK11mach_headerPm
+	movl		%eax,RESULT_BP(%ebp)	# store target for ret
+	movdqu		XMMM0_SAVE(%esp),%xmm0	# restore registers
+	movdqu		XMMM1_SAVE(%esp),%xmm1
+	movdqu		XMMM2_SAVE(%esp),%xmm2
+	movdqu		XMMM3_SAVE(%esp),%xmm3
+	movl		EAX_SAVE(%esp),%eax
+	movl		ECX_SAVE(%esp),%ecx
+	movl		EDX_SAVE(%esp),%edx
+	addl		$STACK_SIZE,%esp
+	popl		%ebp
+	addl		$4,%esp					# remove meta-parameter, other meta-parmaeter now holds target for ret
 	ret
 #endif /* __i386__ */
+
 
 
 #if __ppc__ || __ppc64__

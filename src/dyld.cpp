@@ -1221,8 +1221,18 @@ static ImageLoader* loadPhase6(int fd, struct stat& stat_buf, const char* path, 
 	
 	// try other file formats...
 	
-	throwf("unknown file type, first eight bytes: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X", 
-		firstPage[0], firstPage[1], firstPage[2], firstPage[3], firstPage[4], firstPage[5], firstPage[6],firstPage[7]);
+	
+	// throw error about what was found
+	switch (*(uint32_t*)firstPage) {
+		case MH_MAGIC:
+		case MH_CIGAM:
+		case MH_MAGIC_64:
+		case MH_CIGAM_64:
+			throw "mach-o, but wrong architecture";
+		default:
+		throwf("unknown file type, first eight bytes: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X", 
+			firstPage[0], firstPage[1], firstPage[2], firstPage[3], firstPage[4], firstPage[5], firstPage[6],firstPage[7]);
+	}
 }
 
 
@@ -1608,8 +1618,17 @@ ImageLoader* loadFromMemory(const uint8_t* mem, uint64_t len, const char* module
 	
 	// try other file formats...
 	
-	throwf("unknown file type, first eight bytes: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X", 
-		mem[0], mem[1], mem[2], mem[3], mem[4], mem[5], mem[6],mem[7]);
+	// throw error about what was found
+	switch (*(uint32_t*)mem) {
+		case MH_MAGIC:
+		case MH_CIGAM:
+		case MH_MAGIC_64:
+		case MH_CIGAM_64:
+			throw "mach-o, but wrong architecture";
+		default:
+		throwf("unknown file type, first eight bytes: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X", 
+			mem[0], mem[1], mem[2], mem[3], mem[4], mem[5], mem[6],mem[7]);
+	}
 }
 
 

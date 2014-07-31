@@ -127,6 +127,28 @@ struct tm* localtime(const time_t* t)
 	return (struct tm*)NULL;
 }
 
+/*
+ * On ppc64, the C++ runtime references strftime & wcsftime, but they
+ * never actually get called, and they try to use all the localtime()
+ * machinery, so stub them out.
+ */
+
+size_t strftime(char * __restrict p1, size_t p2, const char * __restrict p3,
+				const struct tm * __restrict p4) 
+{
+	return 0;
+}
+size_t  wcsftime(wchar_t * __restrict p1, size_t p2,
+				 const wchar_t * __restrict p3,
+				 const struct tm * __restrict p4)
+{
+	return 0;
+}
+
+int __strtopdd (const char* p1, char** p2, double* p3)
+{
+	return 0;
+}
 
 char* __ldtoa(long double *ld, int mode, int ndigits, int *decpt, int *sign, char **rve)
 {

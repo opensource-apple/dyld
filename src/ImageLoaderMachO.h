@@ -128,6 +128,7 @@ private:
 			void		initMappingTable(uint64_t offsetInFat, _shared_region_mapping_np *mappingTable);
 #endif
 			bool		needsCoalescing() const;
+			bool		isAddrInSection(uintptr_t addr, uint8_t sectionIndex);
 			
 	static	bool				symbolRequiresCoalescing(const struct macho_nlist* symbol); 
 	static uintptr_t			bindLazySymbol(const mach_header*, uintptr_t* lazyPointer);
@@ -153,7 +154,7 @@ private:
 	const struct twolevel_hints_command*	fTwoLevelHints;
 	const struct dylib_command*				fDylibID;
 	const char*								fReExportThruFramework;
-	SegmentMachO*							fTextSegmentWithFixups; // NULL unless __TEXT segment has fixups
+	class SegmentMachO*						fTextSegmentWithFixups; // NULL unless __TEXT segment has fixups
 
 	static uint32_t					fgHintedBinaryTreeSearchs;
 	static uint32_t					fgUnhintedBinaryTreeSearchs;
