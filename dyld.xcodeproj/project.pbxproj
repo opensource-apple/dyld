@@ -226,7 +226,7 @@
 		F939F219078F1A2100AC144F /* dyld_debug.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = dyld_debug.h; path = "include/mach-o/dyld_debug.h"; sourceTree = "<group>"; };
 		F99EE6AE06B48D4200BF1992 /* dlfcn.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = dlfcn.h; path = include/dlfcn.h; sourceTree = "<group>"; };
 		F9B01E3D0739ABDE00CF981B /* dyld.exp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.exports; name = dyld.exp; path = src/dyld.exp; sourceTree = SOURCE_ROOT; };
-		F9ED4C980630A76000DF4E74 /* dyld */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = dyld; sourceTree = BUILT_PRODUCTS_DIR; };
+		F9ED4C980630A76000DF4E74 /* dyld */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylinker"; includeInIndex = 0; path = dyld; sourceTree = BUILT_PRODUCTS_DIR; };
 		F9ED4C9F0630A76B00DF4E74 /* libdyldapis.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libdyldapis.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		F9ED4CC60630A7F100DF4E74 /* dyld_gdb.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = dyld_gdb.cpp; path = src/dyld_gdb.cpp; sourceTree = SOURCE_ROOT; };
 		F9ED4CC70630A7F100DF4E74 /* dyld.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = dyld.cpp; path = src/dyld.cpp; sourceTree = SOURCE_ROOT; };

@@ -47,6 +47,7 @@
 	#define RELOC_SIZE				2
 #endif
 
+	#define POINTER_RELOC GENERIC_RELOC_VANILLA
 
 //
 //  Code to bootstrap dyld into a runnable state
@@ -94,20 +95,19 @@ static void runDyldInitializers(const struct macho_header* mh, intptr_t slide, i
 	}
 }
 
-
 //
 // If the kernel does not load dyld at its preferred address, we need to apply 
 // fixups to various initialized parts of the __DATA segment
 //
 static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 {
-	// get interesting pointers into dyld
+	// rebase non-lazy pointers (which all point internal to dyld, since dyld uses no shared libraries)
+	// and get interesting pointers into dyld
 	const uint32_t cmd_count = mh->ncmds;
 	const struct load_command* const cmds = (struct load_command*)(((char*)mh)+sizeof(macho_header));
 	const struct load_command* cmd = cmds;
 	const struct macho_segment_command* linkEditSeg = NULL;
 	const struct dysymtab_command* dynamicSymbolTable = NULL;
-	const struct macho_section* nonLazySection = NULL;
 	for (uint32_t i = 0; i < cmd_count; ++i) {
 		switch (cmd->cmd) {
 			case LC_SEGMENT_COMMAND:
@@ -119,8 +119,14 @@ static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 					const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
 					for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
 						const uint8_t type = sect->flags & SECTION_TYPE;
-						if ( type == S_NON_LAZY_SYMBOL_POINTERS ) 
-							nonLazySection = sect;
+						if ( type == S_NON_LAZY_SYMBOL_POINTERS ) {
+							// rebase non-lazy pointers (which all point internal to dyld, since dyld uses no shared libraries)
+							const uint32_t pointerCount = sect->size / sizeof(uintptr_t);
+							uintptr_t* const symbolPointers = (uintptr_t*)(sect->addr + slide);
+							for (uint32_t j=0; j < pointerCount; ++j) {
+								symbolPointers[j] += slide;
+							}
+						}
 					}
 				}
 				break;
@@ -136,46 +142,21 @@ static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 	const relocation_info* const relocsStart = (struct relocation_info*)(linkEditSeg->vmaddr + slide + dynamicSymbolTable->locreloff - linkEditSeg->fileoff);
 	const relocation_info* const relocsEnd = &relocsStart[dynamicSymbolTable->nlocrel];
 	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
-		if ( (reloc->r_address & R_SCATTERED) == 0 ) {
-			if (reloc->r_length == RELOC_SIZE) {
-				switch(reloc->r_type) {
-					case GENERIC_RELOC_VANILLA:
-						*((uintptr_t*)(reloc->r_address + relocBase)) += slide;
-						break;
-				}
-			}
-		}
-		else {
-			const struct scattered_relocation_info* sreloc = (struct scattered_relocation_info*)reloc;
-			if (sreloc->r_length == RELOC_SIZE) {
-				uintptr_t* locationToFix = (uintptr_t*)(sreloc->r_address + relocBase);
-				switch(sreloc->r_type) {
-					case GENERIC_RELOC_VANILLA:
-		#if __ppc__ || __ppc64__
-					case PPC_RELOC_PB_LA_PTR:
-		#elif __i386__
-					case GENERIC_RELOC_PB_LA_PTR:
-		#endif
-					// Note the use of PB_LA_PTR is unique here.  Seems like ld should strip out all lazy pointers
-					// but it does not.  But, since all lazy-pointers point within dyld, they can be slid too
-						*locationToFix += slide;
-						break;
-				}
-			}
-		}
+	#if __ppc__ || __ppc64__ || __i36__
+		if ( (reloc->r_address & R_SCATTERED) != 0 )
+			throw "scattered relocation in dyld";
+	#endif
+		if ( reloc->r_length != RELOC_SIZE ) 
+			throw "relocation in dyld has wrong size";
+
+		if ( reloc->r_type != POINTER_RELOC ) 
+			throw "relocation in dyld has wrong type";
+		
+		// update pointer by amount dyld slid
+		*((uintptr_t*)(reloc->r_address + relocBase)) += slide;
 	}
-	
-	// rebase non-lazy pointers (which all point internal to dyld, since dyld uses no shared libraries)
-	if ( nonLazySection != NULL ) {
-		const uint32_t pointerCount = nonLazySection->size / sizeof(uintptr_t);
-		uintptr_t* const symbolPointers = (uintptr_t*)(nonLazySection->addr + slide);
-		for (uint32_t j=0; j < pointerCount; ++j) {
-			symbolPointers[j] += slide;
-		}
-	}
-	
-	
 }
+
 
 //
 // For some reason the kernel loads dyld with __TEXT and __LINKEDIT writable

@@ -122,6 +122,8 @@ dyld_stub_binding_helper:
 L_end:
 #endif /* __i386__ */
 
+
+
 #if __ppc__ || __ppc64__
 #include <architecture/ppc/mode_independent_asm.h>
 

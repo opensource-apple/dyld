@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
- * Copyright (c) 2004-2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004-2006 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -653,6 +653,7 @@ void processDyldEnvironmentVarible(const char* key, const char* value)
 	}
 }
 
+
 static void checkEnvironmentVariables(const char* envp[], bool ignoreEnviron)
 {
 	const char* home = NULL;
@@ -679,28 +680,24 @@ static void checkEnvironmentVariables(const char* envp[], bool ignoreEnviron)
 				sEnv.LD_LIBRARY_PATH = parseColonList(path);
 		}
 	}
-	
+		
 	// default value for DYLD_FALLBACK_FRAMEWORK_PATH, if not set in environment
 	if ( sEnv.DYLD_FALLBACK_FRAMEWORK_PATH == NULL ) {
 		const char** paths = sFrameworkFallbackPaths;
-		if ( home != NULL ) {
-			if ( riskyUser() )
-				removePathWithPrefix(paths, "$HOME");
-			else
-				paths_expand_roots(paths, "$HOME", home);
-		}
+		if ( home == NULL )
+			removePathWithPrefix(paths, "$HOME");
+		else
+			paths_expand_roots(paths, "$HOME", home);
 		sEnv.DYLD_FALLBACK_FRAMEWORK_PATH = paths;
 	}
 
 	// default value for DYLD_FALLBACK_LIBRARY_PATH, if not set in environment
 	if ( sEnv.DYLD_FALLBACK_LIBRARY_PATH == NULL ) {
 		const char** paths = sLibraryFallbackPaths;
-		if ( home != NULL ) {
-			if ( riskyUser() )
-				removePathWithPrefix(paths, "$HOME");
-			else
-				paths_expand_roots(paths, "$HOME", home);
-		}
+		if ( home == NULL ) 
+			removePathWithPrefix(paths, "$HOME");
+		else
+			paths_expand_roots(paths, "$HOME", home);
 		sEnv.DYLD_FALLBACK_LIBRARY_PATH = paths;
 	}
 }
@@ -1152,7 +1149,7 @@ static ImageLoader* instantiateFromLoadedImage(const struct mach_header* mh, con
 		return image;
 	}
 	
-	return NULL;
+	throw "main executable not a known format";
 }
 
 

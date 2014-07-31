@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1999-2006 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -90,6 +90,7 @@ _stub_binding_helper_interface:
 	addl		$4,%esp					# remove meta-parameter, other meta-parmaeter now holds target for ret
 	ret
 #endif /* __i386__ */
+
 
 
 

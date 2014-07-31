@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005-2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -20,23 +20,10 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-#include <stdio.h>  // fprintf(), NULL
-#include <stdlib.h> // exit(), EXIT_SUCCESS
-#include <string.h> // strcmp(), strncmp()
+#include <stdio.h>
 
-#include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
-
-//
-// binaries set to run as some other user id never use DYLD_INSERT_LIBRARIES
-// That environment variable is cleared by dyld (its right-hand-side is set to empty)
-//
-
-int main(int argc, const char *argv[])
+extern "C" 
+void foo()
 {
-	const char* rhs = getenv("DYLD_INSERT_LIBRARIES");
-	if ( (rhs != NULL) && (rhs[0] != '\0') )
-        FAIL("insert-libraries-with-suid DYLD_INSERT_LIBRARIES not cleared");
-	else
-		PASS("insert-libraries-with-suid");
-	return EXIT_SUCCESS;
 }
+

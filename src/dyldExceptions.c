@@ -201,7 +201,7 @@ const void* getsectdatafromheader(struct mach_header* mh, const char* segname, c
 // Hack for transition of rdar://problem/3933738
 // Can be removed later.
 // Allow C++ runtime to call getsectdatafromheader or getsectdatafromheader_64
-#if __ppc64__
+#if __LP64__
 	#undef getsectdatafromheader
 	const void* getsectdatafromheader(struct mach_header* mh, const char* segname, const char* sectname, unsigned long* size)
 	{

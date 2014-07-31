@@ -76,6 +76,7 @@ extern "C" void sys_icache_invalidate(void *, size_t);
 	struct macho_routines_command	: public routines_command  {};	
 #endif
 
+	#define POINTER_RELOC GENERIC_RELOC_VANILLA
 
 uint32_t ImageLoaderMachO::fgHintedBinaryTreeSearchs = 0;
 uint32_t ImageLoaderMachO::fgUnhintedBinaryTreeSearchs = 0;
@@ -410,6 +411,8 @@ ImageLoaderMachO::sharedRegionMapFilePrivateOutside(int fd,
 					}
 					sNextAltLoadAddress += 0x00100000;  // skip ahead 1MB and try again
 					if ( (sNextAltLoadAddress & 0xF0000000) == 0x90000000 )
+						sNextAltLoadAddress = 0xB0000000;
+					if ( (sNextAltLoadAddress & 0xF0000000) == 0xF0000000 )
 						throw "can't map split seg anywhere";
 					foundRoom = false;
 					break;
@@ -1192,19 +1195,25 @@ ImageLoader::LibraryInfo ImageLoaderMachO::doGetLibraryInfo()
 	return info;
 }
 
+uintptr_t ImageLoaderMachO::getFirstWritableSegmentAddress()
+{
+	// in split segment libraries r_address is offset from first writable segment
+	for (std::vector<class Segment*>::iterator it=fSegments.begin(); it != fSegments.end(); ++it) {
+		if ( (*it)->writeable() ) {
+			return (*it)->getActualLoadAddress();
+		}
+	}
+	throw "no writable segment";
+}
 
 uintptr_t ImageLoaderMachO::getRelocBase()
 {
+#if __ppc__ || __i386__
 	if ( fIsSplitSeg ) {
 		// in split segment libraries r_address is offset from first writable segment
-		const unsigned int segmentCount = fSegments.size();
-		for(unsigned int i=0; i < segmentCount; ++i){
-			Segment* seg = fSegments[i];
-			if ( seg->writeable() ) {
-				return seg->getActualLoadAddress();
-			}
-		}
+		return getFirstWritableSegmentAddress();
 	}
+#endif
 	
 	// in non-split segment libraries r_address is offset from first segment
 	return fSegments[0]->getActualLoadAddress();
@@ -1281,6 +1290,7 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 	const relocation_info* const relocsStart = (struct relocation_info*)(&fLinkEditBase[fDynamicInfo->locreloff]);
 	const relocation_info* const relocsEnd = &relocsStart[fDynamicInfo->nlocrel];
 	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
+	#if __ppc__ || __ppc64__ || __i386__
 		if ( (reloc->r_address & R_SCATTERED) == 0 ) {
 			if ( reloc->r_symbolnum == R_ABS ) {
 				// ignore absolute relocations
@@ -1344,6 +1354,7 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 				throw "bad local scattered relocation length";
 			}
 		}
+	#endif 
 	}
 	
 	// if there were __TEXT fixups, restore write protection
@@ -1513,6 +1524,7 @@ const ImageLoader::Symbol* ImageLoaderMachO::findExportedSymbol(const char* name
 		}
 	}
 
+    
 	return NULL;
 }
 
@@ -1834,7 +1846,7 @@ void ImageLoaderMachO::doBindExternalRelocations(const LinkContext& context, boo
 	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
 		if (reloc->r_length == RELOC_SIZE) {
 			switch(reloc->r_type) {
-				case GENERIC_RELOC_VANILLA:
+				case POINTER_RELOC:
 					{
 						const struct macho_nlist* undefinedSymbol = &fSymbolTable[reloc->r_symbolnum];
 						// if only processing coalesced symbols and this one does not require coalesceing, skip to next
