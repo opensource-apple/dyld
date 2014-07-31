@@ -1481,7 +1481,10 @@ static void _dyld_update_prebinding(int pathCount, const char* paths[], uint32_t
 		if ( dyld::getImageCount() != 1 )
 			throw "_dyld_update_prebinding cannot be called with dylib already loaded";
 			
-		const uint32_t max_allowed_link_errors = 10;
+		// note that we are prebinding
+		dyld::gLinkContext.prebinding = true;
+
+		const uint32_t max_allowed_link_errors = 100;
 		uint32_t link_error_count = 0;
 		
 		// load and link each dylib
@@ -1513,10 +1516,12 @@ static void _dyld_update_prebinding(int pathCount, const char* paths[], uint32_t
 						stage = "link";
 					fprintf(stderr, "update_prebinding: warning: could not %s %s: %s\n", stage, paths[i], msg);
 				}
-				if ( image != NULL )
+				if ( (image != NULL) && image->isPrebindable() ) // don't count top level dylib being unprebound as an error
 					link_error_count++;
-				if ( link_error_count > max_allowed_link_errors )
-					throw;
+				if ( link_error_count > max_allowed_link_errors ) {
+					fprintf(stderr, "update_prebinding: too many errors (%d) \n", link_error_count);
+					throw "terminating";
+				}
 			}
 		}
 		

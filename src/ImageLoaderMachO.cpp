@@ -1299,7 +1299,14 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
 		++fgImagesWithUsedPrebinding; // bump totals for statistics
 		return;
 	}
-		
+	
+	// <rdar://problem/5146059> update_prebinding fails if a prebound dylib depends on a non-prebound dylib
+	// In the unusual case that we find a prebound dylib dependent on un-prebound dylib and we are running
+	// update_prebinding, we want the link of the prebound dylib to fail so that it will be excluded from 
+	// the list of dylibs to be re-written.
+	if ( context.prebinding && !this->isPrebindable() )
+		throwf("dylib not prebound: %s", this->getPath());
+	
 	// print why prebinding was not used
 	if ( context.verbosePrebinding ) {
 		if ( !this->isPrebindable() ) {
@@ -1781,7 +1788,7 @@ uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const s
 	}
 	else {
 		// symbol requires searching images with coalesced symbols
-		if ( this->needsCoalescing() && symbolRequiresCoalescing(undefinedSymbol) ) {
+		if ( !context.prebinding && this->needsCoalescing() && symbolRequiresCoalescing(undefinedSymbol) ) {
 			const Symbol* sym;
 			if ( context.coalescedExportFinder(symbolName, &sym, foundIn) )
 				return (*foundIn)->getExportedSymbolAddress(sym);
@@ -1827,7 +1834,7 @@ uintptr_t ImageLoaderMachO::resolveUndefined(const LinkContext& context, const s
 		}
 		
 		if ( target == NULL ) {
-			fprintf(stderr, "resolveUndefined(%s) in %s\n", symbolName, this->getPath());
+			//fprintf(stderr, "resolveUndefined(%s) in %s\n", symbolName, this->getPath());
 			throw "symbol not found";
 		}
 		
@@ -2305,16 +2312,49 @@ void ImageLoaderMachO::setupLazyPointerHandler(const LinkContext& context)
 						const uint8_t type = sect->flags & SECTION_TYPE;
 						if ( (type == S_SYMBOL_STUBS) && (sect->flags & S_ATTR_SELF_MODIFYING_CODE) && (sect->reserved2 == 5) ) {
 							// reset each jmp entry in this section
+							const uint32_t indirectTableOffset = sect->reserved1;
+							const uint32_t* const indirectTable = (uint32_t*)&fLinkEditBase[fDynamicInfo->indirectsymoff];
 							uint8_t* start = (uint8_t*)(sect->addr + this->fSlide);
 							uint8_t* end = start + sect->size;
 							uintptr_t dyldHandler = (uintptr_t)&fast_stub_binding_helper_interface;
-							for (uint8_t* entry = start; entry < end; entry += 5) {
-								uint32_t rel32 = dyldHandler - (((uint32_t)entry)+5);
-								entry[0] = 0xE8; // CALL rel32
-								entry[1] = rel32 & 0xFF;
-								entry[2] = (rel32 >> 8) & 0xFF;
-								entry[3] = (rel32 >> 16) & 0xFF;
-								entry[4] = (rel32 >> 24) & 0xFF;
+							uint32_t entryIndex = 0;
+							for (uint8_t* entry = start; entry < end; entry += 5, ++entryIndex) {
+								bool installLazyHandler = true;
+								// jump table entries that cross a (64-byte) cache line boundary have the potential to cause crashes
+								// if the instruction is updated by one thread while being executed by another
+								if ( ((uint32_t)entry & 0xFFFFFFC0) != ((uint32_t)entry+4 & 0xFFFFFFC0) ) {
+									// need to bind this now to avoid a potential problem if bound lazily
+									uint32_t symbolIndex = indirectTable[indirectTableOffset + entryIndex];
+									// the latest linker marks 64-byte crossing stubs with INDIRECT_SYMBOL_ABS so they are not used
+									if ( symbolIndex != INDIRECT_SYMBOL_ABS ) {
+										const char* symbolName = &fStrings[fSymbolTable[symbolIndex].n_un.n_strx];
+										ImageLoader* image = NULL;
+										try {
+											uintptr_t symbolAddr = this->resolveUndefined(context, &fSymbolTable[symbolIndex], this->usesTwoLevelNameSpace(), &image);
+											symbolAddr = this->bindIndirectSymbol((uintptr_t*)entry, sect, symbolName, symbolAddr, image, context);
+											++fgTotalBindFixups;
+											uint32_t rel32 = symbolAddr - (((uint32_t)entry)+5);
+											entry[0] = 0xE9; // JMP rel32
+											entry[1] = rel32 & 0xFF;
+											entry[2] = (rel32 >> 8) & 0xFF;
+											entry[3] = (rel32 >> 16) & 0xFF;
+											entry[4] = (rel32 >> 24) & 0xFF;
+											installLazyHandler = false;
+										} 
+										catch (const char* msg) {
+											// ignore errors when binding symbols early
+											// maybe the function is never called, and therefore erroring out now would be a regression
+										}
+									}
+								}
+								if ( installLazyHandler ) {
+									uint32_t rel32 = dyldHandler - (((uint32_t)entry)+5);
+									entry[0] = 0xE8; // CALL rel32
+									entry[1] = rel32 & 0xFF;
+									entry[2] = (rel32 >> 8) & 0xFF;
+									entry[3] = (rel32 >> 16) & 0xFF;
+									entry[4] = (rel32 >> 24) & 0xFF;
+								}
 							}
 						}
 					}
@@ -2331,7 +2371,7 @@ bool ImageLoaderMachO::usablePrebinding(const LinkContext& context) const
 	// if prebound and loaded at prebound address, and all libraries are same as when this was prebound, then no need to bind
 	if ( this->isPrebindable() 
 		&& (this->getSlide() == 0) 
-		&& this->usesTwoLevelNameSpace()
+		&& (this->usesTwoLevelNameSpace() || context.prebinding)
 		&& this->allDependentLibrariesAsWhenPreBound() ) {
 		// allow environment variables to disable prebinding
 		if ( context.bindFlat )
@@ -2511,16 +2551,22 @@ void ImageLoaderMachO::applyPrebindingToLoadCommands(const LinkContext& context,
 					for (const DependentLibrary* dl=fLibraries; dl < &fLibraries[fLibrariesCount]; dl++) {
 						if (strcmp(dl->name, name) == 0 ) {
 							// found matching DependentLibrary for this load command
-							ImageLoaderMachO* targetImage = (ImageLoaderMachO*)(dl->image); // !!! assume only mach-o images are prebound
-							if ( ! targetImage->isPrebindable() )
-								throw "dependent dylib is not prebound";
-							// if the target is currently being re-prebound then its timestamp will be the same as this one
-							if ( ! targetImage->usablePrebinding(context) ) {
-								dylib->dylib.timestamp = timestamp;
+							if ( dl->image == NULL ) {
+								// missing weak linked dylib
+								dylib->dylib.timestamp = 0;
 							}
 							else {
-								// otherwise dependent library is already correctly prebound, so use its checksum
-								dylib->dylib.timestamp = targetImage->doGetLibraryInfo().checksum;
+								ImageLoaderMachO* targetImage = (ImageLoaderMachO*)(dl->image); // !!! assume only mach-o images are prebound
+								if ( ! targetImage->isPrebindable() )
+									throw "dependent dylib is not prebound";
+								// if the target is currently being re-prebound then its timestamp will be the same as this one
+								if ( ! targetImage->usablePrebinding(context) ) {
+									dylib->dylib.timestamp = timestamp;
+								}
+								else {
+									// otherwise dependent library is already correctly prebound, so use its checksum
+									dylib->dylib.timestamp = targetImage->doGetLibraryInfo().checksum;
+								}
 							}
 							break;
 						}

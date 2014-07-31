@@ -95,6 +95,7 @@ public:
 		const char*		imageSuffix;
 		PrebindMode		prebindUsage;
 		SharedRegionMode sharedRegionMode;
+		bool			prebinding;
 		bool			bindFlat;
 		bool			slideAndPackDylibs;
 		bool			verboseOpts;

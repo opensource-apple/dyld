@@ -48,7 +48,7 @@ uint64_t								ImageLoader::fgTotalBindTime;
 uint64_t								ImageLoader::fgTotalNotifyTime;
 uint64_t								ImageLoader::fgTotalInitTime;
 uintptr_t								ImageLoader::fgNextSplitSegAddress = 0x90000000;
-uintptr_t								Segment::fgNextNonSplitSegAddress = 0x8FE00000;
+uintptr_t								Segment::fgNextNonSplitSegAddress = 0x8F000000;
 
 
 
@@ -722,8 +722,10 @@ void ImageLoader::reprebindCommit(const LinkContext& context, bool commit, bool 
 		throwf("realpath() failed on %s, errno=%d", this->getPath(), errno);
 	}
 	// recreate temp file name
-	char tempFilePath[strlen(realFilePath)+strlen("_redoprebinding")+2];
-	ImageLoader::addSuffix(realFilePath, "_redoprebinding", tempFilePath);
+	char tempFilePath[PATH_MAX];
+	char suffix[64];
+	sprintf(suffix, "_redoprebinding%d", getpid());
+	ImageLoader::addSuffix(realFilePath, suffix, tempFilePath);
 
 	if ( commit ) {
 		// all files successfully reprebound, so do swap
@@ -763,8 +765,10 @@ uint64_t ImageLoader::reprebind(const LinkContext& context, time_t timestamp)
 	if ( realpath(this->getPath(), realFilePath) == NULL ) {
 		throwf("realpath() failed on %s, errno=%d", this->getPath(), errno);
 	}
-	char tempFilePath[strlen(realFilePath)+strlen("_redoprebinding")+2];
-	ImageLoader::addSuffix(realFilePath, "_redoprebinding", tempFilePath);
+	char tempFilePath[PATH_MAX];
+	char suffix[64];
+	sprintf(suffix, "_redoprebinding%d", getpid());
+	ImageLoader::addSuffix(realFilePath, suffix, tempFilePath);
 
 	// make copy of file and map it in
 	uint8_t* fileToPrebind;
@@ -863,7 +867,7 @@ static void printTime(const char* msg, uint64_t partTime, uint64_t totalTime)
 	if ( sUnitsPerSecond == 0 ) {
 		struct mach_timebase_info timeBaseInfo;
 		if ( mach_timebase_info(&timeBaseInfo) == KERN_SUCCESS ) {
-			sUnitsPerSecond = timeBaseInfo.denom;
+			sUnitsPerSecond = 1000000000ULL * timeBaseInfo.denom / timeBaseInfo.numer;
 		}
 	}
 	if ( partTime < sUnitsPerSecond ) {
@@ -875,7 +879,7 @@ static void printTime(const char* msg, uint64_t partTime, uint64_t totalTime)
 	}
 	else {
 		uint32_t secondsTimeTen = (partTime*10)/sUnitsPerSecond;
-		uint32_t seconds = secondsTimeTen/100;
+		uint32_t seconds = secondsTimeTen/10;
 		uint32_t percentTimesTen = (partTime*1000)/totalTime;
 		uint32_t percent = percentTimesTen/10;
 		fprintf(stderr, "%s: %u.%u seconds (%u.%u%%)\n", msg, seconds, secondsTimeTen-seconds*10, percent, percentTimesTen-percent*10);
@@ -909,7 +913,7 @@ void ImageLoader::printStatistics(unsigned int imageCount)
 	fprintf(stderr, "total images loaded:  %d (%d used prebinding)\n", imageCount, fgImagesWithUsedPrebinding);
 	printTime("total images loading time", fgTotalLoadLibrariesTime, totalTime);
 	fprintf(stderr, "total rebase fixups:  %s\n", commatize(fgTotalRebaseFixups, commaNum1));
-	printTime("total rebase fixups time", fgTotalRebaseFixups, totalTime);
+	printTime("total rebase fixups time", fgTotalRebaseTime, totalTime);
 	fprintf(stderr, "total binding fixups: %s\n", commatize(fgTotalBindFixups, commaNum1));
 	printTime("total binding fixups time", fgTotalBindTime, totalTime);
 	fprintf(stderr, "total bindings lazily fixed up: %s of %s\n", commatize(fgTotalLazyBindFixups, commaNum1), commatize(fgTotalPossibleLazyBindFixups, commaNum2));

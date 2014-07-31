@@ -1,5 +1,5 @@
 ##
-# Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+# Copyright (c) 2007 Apple Inc. All rights reserved.
 #
 # @APPLE_LICENSE_HEADER_START@
 # 
@@ -24,16 +24,23 @@ TESTROOT = ../..
 include ${TESTROOT}/include/common.makefile
 
 run: all
-	cd absent/  && ../${TESTROOT}/bin/exit-non-zero-pass.pl "non-weak-library" "non-weak-library" ./main
-	cd present/ && ./main
+	./main
 
-all: foo.c main.c
-	${CC} -dynamiclib -prebind -seg1addr 400000 -o libfoo.dylib foo.c
-	mkdir -p absent/
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} -prebind -I${TESTROOT}/include -L. -lfoo -DLIB_ABSENT  -o absent/main  main.c
-	mkdir -p present/
-	export MACOSX_DEPLOYMENT_TARGET=10.2 && ${CC} -prebind -I${TESTROOT}/include -L. -lfoo -DLIB_PRESENT -o present/main main.c
-	mv libfoo.dylib present/
+all: main libfoo.dylib
+
+###
+### Test that when i386 "fast stubs" are updated early to 
+### avoid the cache line crossing race conditition, that 
+### dynamically looked up functions around bound lazily
+###
+
+main: main.c libfoo.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -o main main.c -undefined dynamic_lookup
+
+libfoo.dylib: foo.c 
+	${CC} ${CCFLAGS} -dynamiclib foo.c -o libfoo.dylib
+
 
 clean:
-	${RM} ${RMFLAGS} *~ libfoo.dylib absent present
+	${RM} ${RMFLAGS} main libfoo.dylib
+	

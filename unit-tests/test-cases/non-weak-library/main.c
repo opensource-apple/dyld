@@ -29,10 +29,10 @@ int
 main(int argc, char **argv)
 {
 #if defined(LIB_PRESENT)
-  PASS("pass message");
+  PASS("non-weak-library");
 #endif
 #if defined(LIB_ABSENT)
-  FAIL("fail message");
+  FAIL("non-weak-library");
 #endif
 
   return EXIT_SUCCESS;
