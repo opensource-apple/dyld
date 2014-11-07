@@ -93,6 +93,7 @@ private:
 	void										doRebase(int segIndex, uint64_t segOffset, uint8_t type, std::vector<void*>& pointersInData);
 	void										adjustSegmentLoadCommand(macho_segment_command<P>* seg);
 	pint_t										getSlideForVMAddress(pint_t vmaddress);
+	pint_t										maskedVMAddress(pint_t vmaddress);
 	pint_t*										mappedAddressForVMAddress(pint_t vmaddress);
 	pint_t*										mappedAddressForRelocAddress(pint_t r_address);
 	void										adjustRelocBaseAddresses();
@@ -172,6 +173,7 @@ Rebaser<A>::Rebaser(const MachOLayoutAbstraction& layout)
 template <> cpu_type_t Rebaser<x86>::getArchitecture()    const { return CPU_TYPE_I386; }
 template <> cpu_type_t Rebaser<x86_64>::getArchitecture() const { return CPU_TYPE_X86_64; }
 template <> cpu_type_t Rebaser<arm>::getArchitecture() const { return CPU_TYPE_ARM; }
+template <> cpu_type_t Rebaser<arm64>::getArchitecture() const { return CPU_TYPE_ARM64; }
 
 template <typename A>
 bool Rebaser<A>::unequalSlides() const
@@ -301,33 +303,46 @@ void Rebaser<A>::adjustLoadCommands()
 	}
 }
 
+template <>
+uint64_t Rebaser<arm64>::maskedVMAddress(pint_t vmaddress)
+{
+	return (vmaddress & 0x0FFFFFFFFFFFFFFF);
+}
+
+template <typename A>
+typename A::P::uint_t Rebaser<A>::maskedVMAddress(pint_t vmaddress)
+{
+	return vmaddress;
+}
 
 
 template <typename A>
 typename A::P::uint_t Rebaser<A>::getSlideForVMAddress(pint_t vmaddress)
 {
+	pint_t vmaddr = this->maskedVMAddress(vmaddress);
 	const std::vector<MachOLayoutAbstraction::Segment>& segments = fLayout.getSegments();
 	for(std::vector<MachOLayoutAbstraction::Segment>::const_iterator it = segments.begin(); it != segments.end(); ++it) {
 		const MachOLayoutAbstraction::Segment& seg = *it;
-		if ( (seg.address() <= vmaddress) && (seg.size() != 0) && ((vmaddress < (seg.address()+seg.size())) || (seg.address() == vmaddress)) ) {
+		if ( (seg.address() <= vmaddr) && (seg.size() != 0) && ((vmaddr < (seg.address()+seg.size())) || (seg.address() == vmaddr)) ) {
 			return seg.newAddress() - seg.address();
 		}
 	}
-	throwf("vm address 0x%08llX not found", (uint64_t)vmaddress);
+	throwf("vm address 0x%08llX not found", (uint64_t)vmaddr);
 }
 
 
 template <typename A>
 typename A::P::uint_t* Rebaser<A>::mappedAddressForVMAddress(pint_t vmaddress)
 {
+	pint_t vmaddr = this->maskedVMAddress(vmaddress);
 	const std::vector<MachOLayoutAbstraction::Segment>& segments = fLayout.getSegments();
 	for(std::vector<MachOLayoutAbstraction::Segment>::const_iterator it = segments.begin(); it != segments.end(); ++it) {
 		const MachOLayoutAbstraction::Segment& seg = *it;
-		if ( (seg.address() <= vmaddress) && (vmaddress < (seg.address()+seg.size())) ) {
-			return (pint_t*)((vmaddress - seg.address()) + (uint8_t*)seg.mappedAddress());
+		if ( (seg.address() <= vmaddr) && (vmaddr < (seg.address()+seg.size())) ) {
+			return (pint_t*)((vmaddr - seg.address()) + (uint8_t*)seg.mappedAddress());
 		}
 	}
-	throwf("mappedAddressForVMAddress(0x%08llX) not found", (uint64_t)vmaddress);
+	throwf("mappedAddressForVMAddress(0x%08llX) not found", (uint64_t)vmaddr);
 }
 
 template <typename A>
@@ -630,7 +645,17 @@ void Rebaser<A>::doCodeUpdate(uint8_t kind, uint64_t address, int64_t codeToData
 				A::P::E::set32(*p, newInstruction);
 			}
 			break;
-		case 3: // used only for ppc, an instruction that sets the hi16 of a register
+		case 3: // used for arm64 ADRP
+			p = (uint32_t*)mappedAddressForVMAddress(address);
+			instruction = A::P::E::get32(*p);
+			if ( (instruction & 0x9F000000) == 0x90000000 ) {
+				// codeToDataDelta is always a multiple of 4096, so only top 4 bits of lo16 will ever need adjusting
+				value64 = ((instruction & 0x60000000) >> 17) | ((instruction & 0x00FFFFE0) << 9);
+				value64 += codeToDataDelta;
+				instruction = (instruction & 0x9F00001F) | ((value64 << 17) & 0x60000000) | ((value64 >> 9) & 0x00FFFFE0);
+				A::P::E::set32(*p, instruction);
+			}
+			break;
 		default:
 			throwf("invalid kind=%d in split seg info", kind);
 	}
@@ -710,8 +735,11 @@ void Rebaser<A>::adjustCode()
 			const MachOLayoutAbstraction::Segment& dataSeg = *it;
 			if ( strcmp(dataSeg.name(), "__IMPORT") == 0 )
 				codeToImportDelta = (dataSeg.newAddress() - codeSeg.newAddress()) - (dataSeg.address() - codeSeg.address());
-			else if ( dataSeg.writable() ) 
+			else if ( dataSeg.writable() ) {
+				if ( (strcmp(dataSeg.name(), "__DATA") != 0) && (strcmp(dataSeg.name(), "__OBJC") != 0) )
+					throwf("only one rw segment named '__DATA' can be used in dylibs placed in the dyld shared cache (%s)", fLayout.getFilePath());
 				codeToDataDelta = (dataSeg.newAddress() - codeSeg.newAddress()) - (dataSeg.address() - codeSeg.address());
+			}
 		}
 		// decompress and call doCodeUpdate() on each address
 		for(const uint8_t* p = infoStart; (*p != 0) && (p < infoEnd);) {

@@ -26,11 +26,29 @@
 // bool save_xxm = (*((uint32_t*)_COMM_PAGE_CPU_CAPABILITIES) & kHasAVX1_0) != 0;
 
 #if __x86_64__
-	// returns address of TLV in %rax, all other registers preserved
-	#define FP_SAVE			-192
-	#define VECTOR_SAVE		-704
-	#define STACK_SIZE		704
 
+#define RDI_SAVE_RBP			-8
+#define RSI_SAVE_RBP			-16
+#define RDX_SAVE_RBP			-24
+#define RCX_SAVE_RBP			-32
+#define RBX_SAVE_RBP			-40
+#define R8_SAVE_RBP 			-48
+#define R9_SAVE_RBP 			-56
+#define R10_SAVE_RBP			-64
+#define R11_SAVE_RBP			-72
+#define STATIC_STACK_SIZE		256	// extra padding to allow it to be 64-byte aligned
+
+#define XMM0_SAVE_RSP			0x00
+#define XMM1_SAVE_RSP			0x10
+#define XMM2_SAVE_RSP			0x20
+#define XMM3_SAVE_RSP			0x30
+#define XMM4_SAVE_RSP			0x40
+#define XMM5_SAVE_RSP			0x50
+#define XMM6_SAVE_RSP			0x60
+#define XMM7_SAVE_RSP			0x70
+
+
+	// returns address of TLV in %rax, all other registers preserved
 	.globl _tlv_get_addr
 	.private_extern _tlv_get_addr
 _tlv_get_addr:
@@ -41,109 +59,127 @@ _tlv_get_addr:
 	addq	16(%rdi),%rax			// add offset from descriptor
 	ret
 LlazyAllocate:
-	pushq	%rbp
-	movq	%rsp, %rbp
-	subq	$STACK_SIZE,%rsp				// fxsave uses 512 bytes of store, xsave uses 
-	movq	%rdi,-8(%rbp)
-	movq	%rsi,-16(%rbp)
-	movq	%rdx,-24(%rbp)
-	movq	%rcx,-32(%rbp)
-	movq	%r8,-40(%rbp)
-	movq	%r9,-48(%rbp)
-	movq	%r10,-56(%rbp)
-	movq	%r11,-64(%rbp)
-	fnsave	FP_SAVE(%rbp)
-	movq    $(_COMM_PAGE_CPU_CAPABILITIES), %rcx
-	movl    (%rcx), %ecx
-	testl   $kHasAVX1_0, %ecx
-	jne     L2
-	movdqa	%xmm0, VECTOR_SAVE+0x00(%rbp)
-	movdqa	%xmm1, VECTOR_SAVE+0x10(%rbp)
-	movdqa	%xmm2, VECTOR_SAVE+0x20(%rbp)
-	movdqa	%xmm3, VECTOR_SAVE+0x30(%rbp)
-	movdqa	%xmm4, VECTOR_SAVE+0x40(%rbp)
-	movdqa	%xmm5, VECTOR_SAVE+0x50(%rbp)
-	movdqa	%xmm6, VECTOR_SAVE+0x60(%rbp)
-	movdqa	%xmm7, VECTOR_SAVE+0x70(%rbp)
-	movdqa	%xmm8, VECTOR_SAVE+0x80(%rbp)
-	movdqa	%xmm9, VECTOR_SAVE+0x90(%rbp)
-	movdqa	%xmm10,VECTOR_SAVE+0xA0(%rbp)
-	movdqa	%xmm11,VECTOR_SAVE+0xB0(%rbp)
-	movdqa	%xmm12,VECTOR_SAVE+0xC0(%rbp)
-	movdqa	%xmm13,VECTOR_SAVE+0xD0(%rbp)
-	movdqa	%xmm14,VECTOR_SAVE+0xE0(%rbp)
-	movdqa	%xmm15,VECTOR_SAVE+0xF0(%rbp)
-	jmp		L3
-L2:	vmovdqu	%ymm0, VECTOR_SAVE+0x00(%rbp)
-	vmovdqu	%ymm1, VECTOR_SAVE+0x20(%rbp)
-	vmovdqu	%ymm2, VECTOR_SAVE+0x40(%rbp)
-	vmovdqu	%ymm3, VECTOR_SAVE+0x60(%rbp)
-	vmovdqu	%ymm4, VECTOR_SAVE+0x80(%rbp)
-	vmovdqu	%ymm5, VECTOR_SAVE+0xA0(%rbp)
-	vmovdqu	%ymm6, VECTOR_SAVE+0xC0(%rbp)
-	vmovdqu	%ymm7, VECTOR_SAVE+0xE0(%rbp)
-	vmovdqu	%ymm8, VECTOR_SAVE+0x100(%rbp)
-	vmovdqu	%ymm9, VECTOR_SAVE+0x120(%rbp)
-	vmovdqu	%ymm10,VECTOR_SAVE+0x140(%rbp)
-	vmovdqu	%ymm11,VECTOR_SAVE+0x160(%rbp)
-	vmovdqu	%ymm12,VECTOR_SAVE+0x180(%rbp)
-	vmovdqu	%ymm13,VECTOR_SAVE+0x1A0(%rbp)
-	vmovdqu	%ymm14,VECTOR_SAVE+0x1C0(%rbp)
-	vmovdqu	%ymm15,VECTOR_SAVE+0x1E0(%rbp)
-L3:	movq	-32(%rbp),%rcx
-	movq	8(%rdi),%rdi			// get key from descriptor
-	call	_tlv_allocate_and_initialize_for_key
+	pushq		%rbp
+	movq		%rsp,%rbp
+	subq		$STATIC_STACK_SIZE,%rsp
+	movq		%rdi,RDI_SAVE_RBP(%rbp)	# save registers that might be used as parameters
+	movq		%rsi,RSI_SAVE_RBP(%rbp)
+	movq		%rdx,RDX_SAVE_RBP(%rbp)
+	movq		%rcx,RCX_SAVE_RBP(%rbp)
+	movq		%rbx,RBX_SAVE_RBP(%rbp)
+	movq		%r8,  R8_SAVE_RBP(%rbp)
+	movq		%r9,  R9_SAVE_RBP(%rbp)
+	movq		%r10,R10_SAVE_RBP(%rbp)
+	movq		%r11,R11_SAVE_RBP(%rbp)
 
-	frstor	FP_SAVE(%rbp)
-	movq    $(_COMM_PAGE_CPU_CAPABILITIES), %rcx
-	movl    (%rcx), %ecx
-	testl   $kHasAVX1_0, %ecx
-	jne     L4
-	movdqa	VECTOR_SAVE+0x00(%rbp), %xmm0
-	movdqa	VECTOR_SAVE+0x10(%rbp), %xmm1
-	movdqa	VECTOR_SAVE+0x20(%rbp), %xmm2
-	movdqa	VECTOR_SAVE+0x30(%rbp), %xmm3
-	movdqa	VECTOR_SAVE+0x40(%rbp), %xmm4
-	movdqa	VECTOR_SAVE+0x50(%rbp), %xmm5
-	movdqa	VECTOR_SAVE+0x60(%rbp), %xmm6
-	movdqa	VECTOR_SAVE+0x70(%rbp), %xmm7
-	movdqa	VECTOR_SAVE+0x80(%rbp), %xmm8
-	movdqa	VECTOR_SAVE+0x90(%rbp), %xmm9
-	movdqa	VECTOR_SAVE+0xA0(%rbp), %xmm10
-	movdqa	VECTOR_SAVE+0xB0(%rbp), %xmm11
-	movdqa	VECTOR_SAVE+0xC0(%rbp), %xmm12
-	movdqa	VECTOR_SAVE+0xD0(%rbp), %xmm13
-	movdqa	VECTOR_SAVE+0xE0(%rbp), %xmm14
-	movdqa	VECTOR_SAVE+0xF0(%rbp), %xmm15
-	jmp		L5
-L4: vmovdqu	VECTOR_SAVE+0x00(%rbp),  %ymm0
-	vmovdqu VECTOR_SAVE+0x20(%rbp),  %ymm1
-	vmovdqu	VECTOR_SAVE+0x40(%rbp),  %ymm2
-	vmovdqu	VECTOR_SAVE+0x60(%rbp),  %ymm3
-	vmovdqu	VECTOR_SAVE+0x80(%rbp),  %ymm4
-	vmovdqu	VECTOR_SAVE+0xA0(%rbp),  %ymm5
-	vmovdqu	VECTOR_SAVE+0xC0(%rbp),  %ymm6
-	vmovdqu	VECTOR_SAVE+0xE0(%rbp),  %ymm7
-	vmovdqu	VECTOR_SAVE+0x100(%rbp), %ymm8
-	vmovdqu	VECTOR_SAVE+0x120(%rbp), %ymm9
-	vmovdqu VECTOR_SAVE+0x140(%rbp), %ymm10
-	vmovdqu	VECTOR_SAVE+0x160(%rbp), %ymm11
-	vmovdqu	VECTOR_SAVE+0x180(%rbp), %ymm12
-	vmovdqu	VECTOR_SAVE+0x1A0(%rbp), %ymm13
-	vmovdqu	VECTOR_SAVE+0x1C0(%rbp), %ymm14
-	vmovdqu	VECTOR_SAVE+0x1E0(%rbp), %ymm15
-L5:	movq	-64(%rbp),%r11
-	movq	-56(%rbp),%r10
-	movq	-48(%rbp),%r9
-	movq	-40(%rbp),%r8
-	movq	-32(%rbp),%rcx
-	movq	-24(%rbp),%rdx
-	movq	-16(%rbp),%rsi
-	movq	-8(%rbp),%rdi
- 	addq	16(%rdi),%rax			// result = buffer + offset
-	addq	$STACK_SIZE,%rsp
-	popq	%rbp
+	cmpl		$0, _inited(%rip)
+	jne			Linited
+	movl		$0x01,%eax
+	cpuid		# get cpu features to check on xsave instruction support
+	andl		$0x08000000,%ecx		# check OSXSAVE bit
+	movl		%ecx,_hasXSave(%rip)
+	cmpl		$0, %ecx
+	jne			LxsaveInfo
+	movl		$1, _inited(%rip)
+	jmp			Lsse
+
+LxsaveInfo:
+	movl		$0x0D,%eax
+	movl		$0x00,%ecx
+	cpuid		# get xsave parameter info
+	movl		%eax,_features_lo32(%rip)
+	movl		%edx,_features_hi32(%rip)
+	movl		%ecx,_bufferSize32(%rip)
+	movl		$1, _inited(%rip)
+
+Linited:
+	cmpl		$0, _hasXSave(%rip)
+	jne			Lxsave
+
+Lsse:
+	subq		$128, %rsp
+	movdqa      %xmm0, XMM0_SAVE_RSP(%rsp)
+	movdqa      %xmm1, XMM1_SAVE_RSP(%rsp)
+	movdqa      %xmm2, XMM2_SAVE_RSP(%rsp)
+	movdqa      %xmm3, XMM3_SAVE_RSP(%rsp)
+	movdqa      %xmm4, XMM4_SAVE_RSP(%rsp)
+	movdqa      %xmm5, XMM5_SAVE_RSP(%rsp)
+	movdqa      %xmm6, XMM6_SAVE_RSP(%rsp)
+	movdqa      %xmm7, XMM7_SAVE_RSP(%rsp)
+	jmp			Lalloc
+
+Lxsave:
+	movl		_bufferSize32(%rip),%eax
+	movq		%rsp, %rdi
+	subq		%rax, %rdi				# stack alloc buffer
+	andq		$-64, %rdi				# 64-byte align stack
+	movq		%rdi, %rsp
+	# xsave requires buffer to be zero'ed out
+	movq		$0, %rcx
+	movq		%rdi, %r8
+	movq		%rdi, %r9
+	addq		%rax, %r9
+Lz:	movq		%rcx, (%r8)
+	addq		$8, %r8
+	cmpq		%r8,%r9
+	ja			Lz
+
+	movl		_features_lo32(%rip),%eax
+	movl		_features_hi32(%rip),%edx
+	# call xsave with buffer on stack and eax:edx flag bits
+	# note: do not use xsaveopt, it assumes you are using the same
+	# buffer as previous xsaves, and this thread is on the same cpu.
+	xsave		(%rsp)
+
+Lalloc:
+	movq		RDI_SAVE_RBP(%rbp),%rdi
+	movq		8(%rdi),%rdi		// get key from descriptor
+	call		_tlv_allocate_and_initialize_for_key
+
+	cmpl		$0, _hasXSave(%rip)
+	jne			Lxrstror
+
+	movdqa      XMM0_SAVE_RSP(%rsp),%xmm0
+	movdqa      XMM1_SAVE_RSP(%rsp),%xmm1
+	movdqa      XMM2_SAVE_RSP(%rsp),%xmm2
+	movdqa      XMM3_SAVE_RSP(%rsp),%xmm3
+	movdqa      XMM4_SAVE_RSP(%rsp),%xmm4
+	movdqa      XMM5_SAVE_RSP(%rsp),%xmm5
+	movdqa      XMM6_SAVE_RSP(%rsp),%xmm6
+	movdqa      XMM7_SAVE_RSP(%rsp),%xmm7
+	jmp			Ldone
+
+Lxrstror:
+	movq		%rax,%r11
+	movl		_features_lo32(%rip),%eax
+	movl		_features_hi32(%rip),%edx
+	# call xsave with buffer on stack and eax:edx flag bits
+	xrstor		(%rsp)
+	movq		%r11,%rax
+
+Ldone:
+	movq		RDI_SAVE_RBP(%rbp),%rdi
+	movq		RSI_SAVE_RBP(%rbp),%rsi
+	movq		RDX_SAVE_RBP(%rbp),%rdx
+	movq		RCX_SAVE_RBP(%rbp),%rcx
+	movq		RBX_SAVE_RBP(%rbp),%rbx
+	movq		R8_SAVE_RBP(%rbp),%r8
+	movq		R9_SAVE_RBP(%rbp),%r9
+	movq		R10_SAVE_RBP(%rbp),%r10
+	movq		R11_SAVE_RBP(%rbp),%r11
+	movq		%rbp,%rsp
+	popq		%rbp
+ 	addq		16(%rdi),%rax			// result = buffer + offset
 	ret
+
+	.data
+# Cached info from cpuid.
+_inited:			.long 0
+_features_lo32:		.long 0
+_features_hi32:		.long 0
+_bufferSize32:		.long 0
+_hasXSave:			.long 0
+
 #endif
 
 
@@ -184,6 +220,65 @@ LlazyAllocate:
 	ret
 #endif
 
+#if __arm64__
+	// Parameters: X0 = descriptor
+	// Result:  X0 = address of TLV
+	// Note: all registers except X0, x16, and x17 are preserved
+	.align 2
+	.globl _tlv_get_addr
+	.private_extern _tlv_get_addr
+_tlv_get_addr:
+	ldr		x16, [x0, #8]			// get key from descriptor
+	mrs		x17, TPIDRRO_EL0
+	and		x17, x17, #-8			// clear low 3 bits???
+	ldr		x17, [x17, x16, lsl #3]	// get thread allocation address for this key
+	cbz		x17, LlazyAllocate		// if NULL, lazily allocate
+	ldr		x16, [x0, #16]			// get offset from descriptor
+	add		x0, x17, x16			// return allocation+offset
+	ret		lr
+
+LlazyAllocate:
+	stp		fp, lr, [sp, #-16]!
+	mov		fp, sp
+	sub		sp, sp, #288
+	stp		x1, x2, [sp, #-16]!		// save all registers that C function might trash
+	stp		x3, x4, [sp, #-16]!
+	stp		x5, x6, [sp, #-16]!
+	stp		x7, x8, [sp, #-16]!
+	stp		x9, x10,  [sp, #-16]!
+	stp		x11, x12, [sp, #-16]!
+	stp		x13, x14, [sp, #-16]!
+	stp		x15, x16, [sp, #-16]!
+	stp		q0,  q1,  [sp, #-32]!
+	stp		q2,  q3,  [sp, #-32]!
+	stp		q4,  q5,  [sp, #-32]!
+	stp		q6,  q7,  [sp, #-32]!
+	stp		x0, x17,  [sp, #-16]!	// save descriptor
+
+	mov		x0, x16					// use key from descriptor as parameter
+	bl		_tlv_allocate_and_initialize_for_key
+	ldp		x16, x17, [sp], #16		// pop descriptor
+	ldr		x16, [x16, #16]			// get offset from descriptor
+	add		x0, x0, x16				// return allocation+offset
+
+	ldp		q6,  q7,  [sp], #32
+	ldp		q4,  q5,  [sp], #32
+	ldp		q2,  q3,  [sp], #32
+	ldp		q0,  q1,  [sp], #32
+	ldp		x15, x16, [sp], #16
+	ldp		x13, x14, [sp], #16
+	ldp		x11, x12, [sp], #16
+	ldp		x9, x10,  [sp], #16
+	ldp		x7, x8, [sp], #16
+	ldp		x5, x6, [sp], #16
+	ldp		x3, x4, [sp], #16
+	ldp		x1, x2, [sp], #16
+
+	mov		sp, fp
+	ldp		fp, lr, [sp], #16
+	ret		lr
+
+#endif
 
 #if 0
 #if __arm__

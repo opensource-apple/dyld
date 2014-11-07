@@ -40,13 +40,26 @@
 #include <vector>
 #include <new>
 
-#if __MAC_OS_X_VERSION_MIN_REQUIRED
+#if __arm__
+ #include <mach/vm_page_size.h>
+#endif
+
+#if __x86_64__ || __i386__
 	#include <CrashReporterClient.h>
 #else
 	// work around until iOS has CrashReporterClient.h
 	#define CRSetCrashLogMessage(x)
 	#define CRSetCrashLogMessage2(x)
 #endif
+
+#ifndef SHARED_REGION_BASE_ARM64
+	#define SHARED_REGION_BASE_ARM64 0x7FFF80000000LL
+#endif
+
+#ifndef SHARED_REGION_SIZE_ARM64
+	#define SHARED_REGION_SIZE_ARM64 0x10000000LL
+#endif
+
 
 #define LOG_BINDINGS 0
 
@@ -62,6 +75,9 @@
 #elif __arm__
 	#define SHARED_REGION_BASE SHARED_REGION_BASE_ARM
 	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_ARM
+#elif __arm64__
+	#define SHARED_REGION_BASE SHARED_REGION_BASE_ARM64
+	#define SHARED_REGION_SIZE SHARED_REGION_SIZE_ARM64
 #endif
 
 #ifndef EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER
@@ -84,14 +100,14 @@
 #if __IPHONE_OS_VERSION_MIN_REQUIRED          
 	#define SPLIT_SEG_SHARED_REGION_SUPPORT 0
 	#define SPLIT_SEG_DYLIB_SUPPORT			0
-	#define PREBOUND_IMAGE_SUPPORT			0
+	#define PREBOUND_IMAGE_SUPPORT			__arm__
 	#define TEXT_RELOC_SUPPORT				__i386__
-	#define DYLD_SHARED_CACHE_SUPPORT		__arm__
+	#define DYLD_SHARED_CACHE_SUPPORT		(__arm__ || __arm64__)
 	#define SUPPORT_OLD_CRT_INITIALIZATION	0
 	#define SUPPORT_LC_DYLD_ENVIRONMENT		0
 	#define SUPPORT_VERSIONED_PATHS			0
 	#define SUPPORT_CLASSIC_MACHO			__arm__
-	#define CORESYMBOLICATION_SUPPORT		__arm__
+	#define SUPPORT_ZERO_COST_EXCEPTIONS	(!__USING_SJLJ_EXCEPTIONS__)
 	#define INITIAL_IMAGE_COUNT				256
 #else
 	#define SPLIT_SEG_SHARED_REGION_SUPPORT 0
@@ -103,7 +119,7 @@
 	#define SUPPORT_LC_DYLD_ENVIRONMENT		(__i386__ || __x86_64__)
 	#define SUPPORT_VERSIONED_PATHS			1
 	#define SUPPORT_CLASSIC_MACHO			1
-	#define CORESYMBOLICATION_SUPPORT		1
+	#define SUPPORT_ZERO_COST_EXCEPTIONS	1
 	#define INITIAL_IMAGE_COUNT				200
 #endif
 
@@ -147,6 +163,22 @@ extern "C" 	void* xmmap(void* addr, size_t len, int prot, int flags, int fd, off
 	struct macho_header				: public mach_header  {};
 	struct macho_nlist				: public nlist  {};	
 #endif
+
+
+#if __arm64__
+	#define dyld_page_trunc(__addr)     (__addr & (-16384))
+	#define dyld_page_round(__addr)     ((__addr + 16383) & (-16384))
+	#define dyld_page_size              16384
+#elif __arm__
+	#define dyld_page_trunc(__addr)     trunc_page_kernel(__addr)
+	#define dyld_page_round(__addr)     round_page_kernel(__addr)
+	#define dyld_page_size              vm_kernel_page_size
+#else
+	#define dyld_page_trunc(__addr)     (__addr & (-4096))
+	#define dyld_page_round(__addr)     ((__addr + 4095) & (-4096))
+	#define dyld_page_size              4096
+#endif
+
 
 
 struct ProgramVars
@@ -246,6 +278,8 @@ public:
 		ImageLoader*	mainExecutable;
 		const char*		imageSuffix;
 		const char**	rootPaths;
+		const dyld_interpose_tuple*	dynamicInterposeArray;
+		size_t			dynamicInterposeCount;
 		PrebindMode		prebindUsage;
 		SharedRegionMode sharedRegionMode;
 		bool			dyldLoadedAtSameAddressNeededBySharedCache;
@@ -303,6 +337,12 @@ public:
 		}			images[1];
 	};
 	
+	struct UninitedUpwards
+	{
+		uintptr_t	 count;
+		ImageLoader* images[1];
+	};
+
 	
 										// constructor is protected, but anyone can delete an image
 	virtual								~ImageLoader();
@@ -483,8 +523,13 @@ public:
 		
 										// if image has a UUID, copy into parameter and return true
 	virtual	bool						getUUID(uuid_t) const = 0;
-	
-	
+
+										// dynamic interpose values onto this image
+	virtual void						dynamicInterpose(const LinkContext& context) = 0;
+
+										// record interposing for any late binding
+	void								addDynamicInterposingTuples(const struct dyld_interpose_tuple array[], size_t count);
+		
 //
 // A segment is a chunk of an executable file that is mapped into memory.  
 //
@@ -504,7 +549,9 @@ public:
 	virtual uintptr_t					segActualEndAddress(unsigned int) const = 0;
 
 	
+										// info from LC_VERSION_MIN_MACOSX or LC_VERSION_MIN_IPHONEOS
 	virtual uint32_t					sdkVersion() const = 0;
+	virtual uint32_t					minOSVersion() const = 0;
 	
 										// if the image contains interposing functions, register them
 	virtual void						registerInterposing() = 0;
@@ -571,7 +618,8 @@ public:
 	
 	struct InterposeTuple { 
 		uintptr_t		replacement; 
-		ImageLoader*	replacementImage;	// don't apply replacement to this image
+		ImageLoader*	neverImage;			// don't apply replacement to this image
+		ImageLoader*	onlyImage;			// only apply replacement to this image
 		uintptr_t		replacee; 
 	};
 
@@ -627,7 +675,8 @@ protected:
 	void				recursiveBind(const LinkContext& context, bool forceLazysBound, bool neverUnload);
 	void				recursiveApplyInterposing(const LinkContext& context);
 	void				recursiveGetDOFSections(const LinkContext& context, std::vector<DOFInfo>& dofs);
-	void				recursiveInitialization(const LinkContext& context, mach_port_t this_thread, ImageLoader::InitializerTimingList&);
+	void				recursiveInitialization(const LinkContext& context, mach_port_t this_thread,
+												ImageLoader::InitializerTimingList&, ImageLoader::UninitedUpwards&);
 
 								// fill in information about dependent libraries (array length is fLibraryCount)
 	virtual void				doGetDependentLibraries(DependentLibraryInfo libs[]) = 0;
@@ -679,6 +728,8 @@ protected:
 		
 	void						setFileInfo(dev_t device, ino_t inode, time_t modDate);
 	
+	static uintptr_t			interposedAddress(const LinkContext& context, uintptr_t address, const ImageLoader* notInImage, const ImageLoader* onlyInImage=NULL);
+	
 	static uintptr_t			fgNextPIEDylibAddress;
 	static uint32_t				fgImagesWithUsedPrebinding;
 	static uint32_t				fgImagesUsedFromSharedCache;
@@ -721,6 +772,8 @@ private:
 	const ImageLoader::Symbol*	findExportedSymbolInDependentImagesExcept(const char* name, const ImageLoader** dsiStart, 
 										const ImageLoader**& dsiCur, const ImageLoader** dsiEnd, const ImageLoader** foundIn) const;
 
+	void						processInitializers(const LinkContext& context, mach_port_t this_thread,
+													InitializerTimingList& timingInfo, ImageLoader::UninitedUpwards& ups);
 
 
 	recursive_lock*				fInitializerRecursiveLock;

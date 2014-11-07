@@ -35,7 +35,6 @@
 #include "CacheFileAbstraction.hpp"
 
 
-
 namespace dyld {
 
 
@@ -47,7 +46,7 @@ namespace dyld {
 		const dyldCacheFileMapping<E>* mappings = (dyldCacheFileMapping<E>*)&cache[header->mappingOffset()];
 		for (uint32_t i=0; i < header->mappingCount(); ++i) {
 			if ( (mappings[i].address() <= addr) &&  (addr < (mappings[i].address() + mappings[i].size())) ) {
-				uint32_t cacheOffset = mappings[i].file_offset() + addr - mappings[i].address();
+				uint64_t cacheOffset = mappings[i].file_offset() + addr - mappings[i].address();
 				const uint8_t* result =  &cache[cacheOffset];
 				if ( result < cacheEnd )
 					return result;
@@ -60,17 +59,19 @@ namespace dyld {
 
 	// call the callback block on each segment in this image						  	  
 	template <typename A>
-	int walkSegments(const uint8_t* cache, const uint8_t* cacheEnd, const uint8_t* firstSeg, const char* dylibPath, const uint8_t* machHeader, 
+	int walkSegments(const uint8_t* cache, const uint8_t* cacheEnd, const uint8_t* firstSeg, const char* dylibPath, uint64_t inode,uint64_t modTime, const uint8_t* machHeader, 
 											void (^callback)(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared_cache_segment_info* segInfo)) 
 	{
 		typedef typename A::P		P;	
 		typedef typename A::P::E	E;	
 		dyld_shared_cache_dylib_info	dylibInfo;
 		dyld_shared_cache_segment_info	segInfo;
-		dylibInfo.version = 1;
+		dylibInfo.version = 2;
 		dylibInfo.isAlias = (dylibPath < (char*)firstSeg); // paths for aliases are store between cache header and first segment
 		dylibInfo.machHeader = machHeader;
 		dylibInfo.path = dylibPath;
+		dylibInfo.inode = inode;
+		dylibInfo.modTime = modTime;
 		const macho_header<P>* mh = (const macho_header<P>*)machHeader;
 		const macho_load_command<P>* const cmds = (macho_load_command<P>*)(machHeader + sizeof(macho_header<P>));
 		if ( (machHeader+ mh->sizeofcmds()) > cacheEnd )
@@ -154,6 +155,8 @@ namespace dyld {
 		const uint8_t* firstSeg = NULL;
 		for (uint32_t i=0; i < header->imagesCount(); ++i) {
 			const char* dylibPath  = (char*)cache + dylibs[i].pathFileOffset();
+			uint64_t inode = dylibs[i].inode();
+			uint64_t modTime = dylibs[i].modTime();
 			if ( (const uint8_t*)dylibPath > cacheEnd )
 				return -1;
 			const uint8_t* machHeader = mappedAddress<E>(cache, cacheEnd, dylibs[i].address());
@@ -163,7 +166,7 @@ namespace dyld {
 				return -1;
 			if ( firstSeg == NULL )
 				firstSeg = machHeader;
-			int result = walkSegments<A>(cache, cacheEnd, firstSeg, dylibPath, machHeader, callback);
+			int result = walkSegments<A>(cache, cacheEnd, firstSeg, dylibPath, inode, modTime, machHeader, callback);
 			if ( result != 0 )
 				return result;
 		}
@@ -184,6 +187,8 @@ extern int dyld_shared_cache_iterate(const void* shared_cache_file, uint32_t sha
 			return dyld::walkImages<x86>(cache, shared_cache_size, callback);
 	else if ( strcmp((char*)cache, "dyld_v1  x86_64") == 0 ) 
 			return dyld::walkImages<x86_64>(cache, shared_cache_size, callback);
+	else if ( strcmp((char*)cache, "dyld_v1 x86_64h") == 0 ) 
+			return dyld::walkImages<x86_64>(cache, shared_cache_size, callback);
 	else if ( strcmp((char*)cache, "dyld_v1   armv5") == 0 ) 
 			return dyld::walkImages<arm>(cache, shared_cache_size, callback);
 	else if ( strcmp((char*)cache, "dyld_v1   armv6") == 0 ) 
@@ -192,6 +197,8 @@ extern int dyld_shared_cache_iterate(const void* shared_cache_file, uint32_t sha
 			return dyld::walkImages<arm>(cache, shared_cache_size, callback);
 	else if ( strncmp((char*)cache, "dyld_v1  armv7", 14) == 0 ) 
 			return dyld::walkImages<arm>(cache, shared_cache_size, callback);
+	else if ( strcmp((char*)cache, "dyld_v1   arm64") == 0 ) 
+			return dyld::walkImages<arm64>(cache, shared_cache_size, callback);
 	else
 		return -1;
 }

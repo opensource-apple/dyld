@@ -32,6 +32,8 @@ extern "C" void start();
 
 #if __x86_64__ || __i386__ 
 	#define address_of_start (void*)((uintptr_t)&start + 1)
+#elif __arm64__
+	#define address_of_start (void*)((uintptr_t)&start + 4)
 #elif __arm__
 	#define address_of_start (void*)((uintptr_t)&start + 2)
 #endif

@@ -127,7 +127,7 @@ public:
 	typedef _E			E;
 	
 	static uint64_t	getP(const uint_t& from)				INLINE { return _E::get32(from); }
-	static void		setP(uint_t& into, uint64_t value)		INLINE { _E::set32(into, value); }
+	static void		setP(uint_t& into, uint64_t value)		INLINE { _E::set32(into, (uint32_t)value); }
 
     // Round to a P-size boundary
     template <typename T>

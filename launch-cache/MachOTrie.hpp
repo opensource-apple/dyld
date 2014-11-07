@@ -25,6 +25,7 @@
 #define __MACH_O_TRIE__
 
 #include <algorithm>
+#include <vector>
 
 #include "MachOFileAbstraction.hpp"
 
@@ -245,12 +246,19 @@ inline uint64_t read_uleb128(const uint8_t*& p, const uint8_t* end) {
 	int		 bit = 0;
 	do {
 		if (p == end)
+#if __EXCEPTIONS
 			throw "malformed uleb128 extends beyond trie";
-
+#else
+			return result;
+#endif
 		uint64_t slice = *p & 0x7f;
 
 		if (bit >= 64 || slice << bit >> bit != slice)
+#if __EXCEPTIONS
 			throw "uleb128 too big for 64-bits";
+#else
+			return result;
+#endif
 		else {
 			result |= (slice << bit);
 			bit += 7;
@@ -321,7 +329,11 @@ static inline void processExportNode(const uint8_t* const start, const uint8_t* 
 									std::vector<EntryWithOffset>& output) 
 {
 	if ( p >= end )
+#if __EXCEPTIONS
 		throw "malformed trie, node past end";
+#else
+		return;
+#endif
 	const uint8_t terminalSize = read_uleb128(p, end);
 	const uint8_t* children = p + terminalSize;
 	if ( terminalSize != 0 ) {

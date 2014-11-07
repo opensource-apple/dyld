@@ -61,6 +61,15 @@ struct uuid_command {
 #ifndef CPU_SUBTYPE_ARM_V7S
 	#define CPU_SUBTYPE_ARM_V7S			((cpu_subtype_t) 11)
 #endif
+#ifndef CPU_SUBTYPE_ARM64_ALL
+	#define CPU_SUBTYPE_ARM64_ALL		((cpu_subtype_t) 0)
+#endif
+#ifndef CPU_TYPE_ARM64
+	#define CPU_TYPE_ARM64				((cpu_type_t) (CPU_TYPE_ARM | CPU_ARCH_ABI64))
+#endif
+
+#define ARM64_RELOC_UNSIGNED            0 // for pointers
+
 
 #ifndef LC_LOAD_UPWARD_DYLIB
 	#define	LC_LOAD_UPWARD_DYLIB (0x23|LC_REQ_DYLD)	/* load of dylib whose initializers run later */
@@ -85,6 +94,9 @@ struct uuid_command {
 	#define LC_DYLIB_CODE_SIGN_DRS 0x2B
 #endif
 
+#ifndef CPU_SUBTYPE_X86_64_H
+	#define CPU_SUBTYPE_X86_64_H		((cpu_subtype_t) 8) 
+#endif	
 
 
 #include "FileAbstraction.hpp"

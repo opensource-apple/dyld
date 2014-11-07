@@ -177,8 +177,6 @@ class objc_method_list_t {
     uint32_t count;
     objc_method_t<A> first;
 
-    // use newMethodList instead
-    void* operator new (size_t) { return NULL; }
     void* operator new (size_t, void* buf) { return buf; }
 
 public:
@@ -238,12 +236,46 @@ public:
                        uint32_t newEntsize = sizeof(objc_method_t<A>))
         : entsize(newEntsize), count(newCount) 
     { }
+
+private:
+    // use newMethodList instead
+    void* operator new (size_t);
+};
+
+
+// Ivar offset variables are 64-bit on x86_64 and 32-bit everywhere else.
+
+template <typename A>
+class objc_ivar_offset_t {
+    typedef typename A::P::uint_t pint_t;
+    typename A::P::uint_t ptr;  // uint32_t *
+
+    uint32_t& offset(SharedCache<A> *cache) const { return *(uint32_t *)cache->mappedAddressForVMAddress(A::P::getP(ptr)); }
+
+public:
+    bool hasOffset() const { return A::P::getP(ptr) != 0; }
+    pint_t getOffset(SharedCache<A> *cache) const { return A::P::E::get32(offset(cache)); }
+    void setOffset(SharedCache<A> *cache, pint_t newOffset) { A::P::E::set32(offset(cache), newOffset); }
+};
+
+template <>
+class objc_ivar_offset_t<x86_64> {
+    typedef x86_64 A;
+    typedef typename A::P::uint_t pint_t;
+    typename A::P::uint_t ptr;  // uint64_t *
+
+    uint64_t& offset(SharedCache<A> *cache) const { return *(uint64_t *)cache->mappedAddressForVMAddress(A::P::getP(ptr)); }
+
+public:
+    bool hasOffset() const { return A::P::getP(ptr) != 0; }
+    pint_t getOffset(SharedCache<A> *cache) const { return A::P::E::get64(offset(cache)); }
+    void setOffset(SharedCache<A> *cache, pint_t newOffset) { A::P::E::set64(offset(cache), newOffset); }
 };
 
 template <typename A>
 class objc_ivar_t {
     typedef typename A::P::uint_t pint_t;
-    typename A::P::uint_t offset;  // A::P *
+    objc_ivar_offset_t<A> offset;  // uint32_t *  (uint64_t * on x86_64)
     typename A::P::uint_t name;    // const char *
     typename A::P::uint_t type;    // const char *
     uint32_t alignment; 
@@ -252,9 +284,9 @@ class objc_ivar_t {
 public:
     const char * getName(SharedCache<A> *cache) const { return (const char *)cache->mappedAddressForVMAddress(A::P::getP(name)); }
 
-    bool hasOffset() const { return A::P::getP(offset) != 0; }
-    pint_t getOffset(SharedCache<A> *cache) const { return A::P::getP(*(pint_t * const)cache->mappedAddressForVMAddress(A::P::getP(offset))); }
-    void setOffset(SharedCache<A> *cache, pint_t newOffset) { A::P::setP(*(pint_t *)cache->mappedAddressForVMAddress(A::P::getP(offset)), newOffset); }
+    bool hasOffset() const { return offset.hasOffset(); }
+    pint_t getOffset(SharedCache<A> *cache) const { return offset.getOffset(cache); }
+    void setOffset(SharedCache<A> *cache, pint_t newOffset) { offset.setOffset(cache, newOffset); }
     
     uint32_t getAlignment()
     {
@@ -270,8 +302,6 @@ class objc_ivar_list_t {
     uint32_t count;
     objc_ivar_t<A> first;
 
-    // use newIvarList instead
-    void* operator new (size_t) { return NULL; }
     void* operator new (size_t, void* buf) { return buf; }
 
 public:
@@ -310,7 +340,9 @@ public:
                          uint32_t newEntsize = sizeof(objc_ivar_t<A>))
         : entsize(newEntsize), count(newCount) 
     { }
-
+private:
+	// use newIvarList instead
+    void* operator new (size_t);
 };
 
 
@@ -334,8 +366,6 @@ class objc_property_list_t {
     uint32_t count;
     objc_property_t<A> first;
 
-    // use newPropertyList instead
-    void* operator new (size_t) { return NULL; }
     void* operator new (size_t, void* buf) { return buf; }
 
 public:
@@ -391,7 +421,9 @@ public:
                          uint32_t newEntsize = sizeof(objc_property_t<A>))
         : entsize(newEntsize), count(newCount) 
     { }
-
+private:
+    // use newPropertyList instead
+    void* operator new (size_t);
 };
 
 template <typename A>
@@ -422,8 +454,6 @@ class objc_protocol_list_t {
     pint_t count;
     pint_t list[0];
 
-    // use newProtocolList instead
-    void* operator new (size_t) { return NULL; }
     void* operator new (size_t, void* buf) { return buf; }
 
 public:
@@ -470,7 +500,9 @@ public:
     }
 
     objc_protocol_list_t(uint32_t newCount) : count(newCount) { }
-
+private:
+    // use newProtocolList instead
+    void* operator new (size_t);
 };
 
 

@@ -54,12 +54,12 @@
 
     .text
     .align 4,0x90
-	.globl _fast_stub_binding_helper_interface
-_fast_stub_binding_helper_interface:
+	.globl _stub_binding_helper_i386_old
+_stub_binding_helper_i386_old:
 	pushl		$0
-    .globl _stub_binding_helper_interface
+    .globl _stub_binding_helper
     .globl _misaligned_stack_error
-_stub_binding_helper_interface:
+_stub_binding_helper:
 	subl		$STACK_SIZE,%esp	    # makes stack 16-byte aligned
 	movl		%eax,EAX_SAVE(%esp)	
 	movl		LP_OLD_BP_SAVE(%esp),%eax   # get lazy-pointer meta-parameter
@@ -133,8 +133,8 @@ _stub_binding_helper_interface2:
     
     .text
     .align 2,0x90
-    .globl _stub_binding_helper_interface
-_stub_binding_helper_interface:
+    .globl _stub_binding_helper
+_stub_binding_helper:
 	pushq		%rbp
 	movq		%rsp,%rbp
 	subq		$STACK_SIZE,%rsp	# at this point stack is 16-byte aligned because two meta-parameters where pushed
@@ -196,8 +196,8 @@ _stub_binding_helper_interface:
   
 	.text
 	.align 2
-	.globl	_stub_binding_helper_interface
-_stub_binding_helper_interface:
+	.globl	_stub_binding_helper
+_stub_binding_helper:
 	stmfd	sp!, {r0,r1,r2,r3,r7,lr}	// save registers
 	add	r7, sp, #16			// point FP to previous FP
 

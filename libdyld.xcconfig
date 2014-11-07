@@ -1,0 +1,8 @@
+
+LIBSYSTEM_LIBS[sdk=*simulator*]     = -Wl,-upward-lsystem_sim_c  -Wl,-upward-lSystem
+LIBSYSTEM_LIBS[sdk=iphoneos*]       = -Wl,-upward-lsystem_platform -Wl,-upward-lsystem_malloc -Wl,-upward-lsystem_c -Wl,-upward-lsystem_pthread -Wl,-upward-llaunch -Wl,-upward-lsystem_blocks -Wl,-upward-lsystem_kernel
+LIBSYSTEM_LIBS[sdk=macosx*]         = -Wl,-upward-lsystem_platform -Wl,-upward-lsystem_malloc -Wl,-upward-lsystem_c -Wl,-upward-lsystem_pthread -Wl,-upward-llaunch -Wl,-upward-lsystem_blocks -Wl,-upward-lsystem_kernel
+
+INSTALL_PATH_ACTUAL = /usr/lib/system
+
+

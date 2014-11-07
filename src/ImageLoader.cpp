@@ -351,6 +351,43 @@ void ImageLoader::applyInterposing(const LinkContext& context)
 		this->recursiveApplyInterposing(context);
 }
 
+
+uintptr_t ImageLoader::interposedAddress(const LinkContext& context, uintptr_t address, const ImageLoader* inImage, const ImageLoader* onlyInImage)
+{
+	//dyld::log("interposedAddress(0x%08llX), tupleCount=%lu\n", (uint64_t)address, fgInterposingTuples.size());
+	for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
+		//dyld::log("    interposedAddress: replacee=0x%08llX, replacement=0x%08llX, neverImage=%p, onlyImage=%p, inImage=%p\n", 
+		//				(uint64_t)it->replacee, (uint64_t)it->replacement,  it->neverImage, it->onlyImage, inImage);
+		// replace all references to 'replacee' with 'replacement'
+		if ( (address == it->replacee) && (inImage != it->neverImage) && ((it->onlyImage == NULL) || (inImage == it->onlyImage)) ) {
+			if ( context.verboseInterposing ) {
+				dyld::log("dyld interposing: replace 0x%lX with 0x%lX\n", it->replacee, it->replacement);
+			}
+			return it->replacement;
+		}
+	}
+	return address;
+}
+
+void ImageLoader::addDynamicInterposingTuples(const struct dyld_interpose_tuple array[], size_t count)
+{
+	for(size_t i=0; i < count; ++i) {
+		ImageLoader::InterposeTuple tuple;
+		tuple.replacement		= (uintptr_t)array[i].replacement;
+		tuple.neverImage		= NULL;
+		tuple.onlyImage		    = this;
+		tuple.replacee			= (uintptr_t)array[i].replacee;
+		// chain to any existing interpositions
+		for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
+			if ( (it->replacee == tuple.replacee) && (it->onlyImage == this) ) {
+				tuple.replacee = it->replacement;
+			}
+		}
+		ImageLoader::fgInterposingTuples.push_back(tuple);
+	}
+}
+
+
 void ImageLoader::link(const LinkContext& context, bool forceLazysBound, bool preflightOnly, bool neverUnload, const RPathChain& loaderRPaths)
 {
 	//dyld::log("ImageLoader::link(%s) refCount=%d, neverUnload=%d\n", this->getPath(), fDlopenReferenceCount, fNeverUnload);
@@ -423,13 +460,39 @@ bool ImageLoader::decrementDlopenReferenceCount()
 	return false;
 }
 
+
+// <rdar://problem/14412057> upward dylib initializers can be run too soon
+// To handle dangling dylibs which are upward linked but not downward, all upward linked dylibs
+// have their initialization postponed until after the recursion through downward dylibs
+// has completed.
+void ImageLoader::processInitializers(const LinkContext& context, mach_port_t thisThread,
+									 InitializerTimingList& timingInfo, ImageLoader::UninitedUpwards& images)
+{
+	uint32_t maxImageCount = context.imageCount();
+	ImageLoader::UninitedUpwards upsBuffer[maxImageCount];
+	ImageLoader::UninitedUpwards& ups = upsBuffer[0];
+	ups.count = 0;
+	// Calling recursive init on all images in images list, building a new list of
+	// uninitialized upward dependencies.
+	for (uintptr_t i=0; i < images.count; ++i) {
+		images.images[i]->recursiveInitialization(context, thisThread, timingInfo, ups);
+	}
+	// If any upward dependencies remain, init them.
+	if ( ups.count > 0 )
+		processInitializers(context, thisThread, timingInfo, ups);
+}
+
+
 void ImageLoader::runInitializers(const LinkContext& context, InitializerTimingList& timingInfo)
 {
 	uint64_t t1 = mach_absolute_time();
-	mach_port_t this_thread = mach_thread_self();
-	this->recursiveInitialization(context, this_thread, timingInfo);
+	mach_port_t thisThread = mach_thread_self();
+	ImageLoader::UninitedUpwards up;
+	up.count = 1;
+	up.images[0] = this;
+	processInitializers(context, thisThread, timingInfo, up);
 	context.notifyBatch(dyld_image_state_initialized);
-	mach_port_deallocate(mach_task_self(), this_thread);
+	mach_port_deallocate(mach_task_self(), thisThread);
 	uint64_t t2 = mach_absolute_time();
 	fgTotalInitTime += (t2 - t1);
 }
@@ -518,7 +581,6 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context, bool prefli
 		fState = dyld_image_state_dependents_mapped;
 		
 		// get list of libraries this image needs
-		//dyld::log("ImageLoader::recursiveLoadLibraries() %ld = %d*%ld\n", fLibrariesCount*sizeof(DependentLibrary), fLibrariesCount, sizeof(DependentLibrary));
 		DependentLibraryInfo libraryInfos[fLibraryCount]; 
 		this->doGetDependentLibraries(libraryInfos);
 		
@@ -601,8 +663,11 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context, bool prefli
 						(*context.setErrorStrings)(dyld_error_kind_dylib_wrong_arch, this->getPath(), requiredLibInfo.name, NULL);
 					else
 						(*context.setErrorStrings)(dyld_error_kind_dylib_missing, this->getPath(), requiredLibInfo.name, NULL);
-					dyld::throwf("Library not loaded: %s\n  Referenced from: %s\n  Reason: %s", requiredLibInfo.name, this->getRealPath(), msg);
+					const char* newMsg = dyld::mkstringf("Library not loaded: %s\n  Referenced from: %s\n  Reason: %s", requiredLibInfo.name, this->getRealPath(), msg);
+					free((void*)msg); 	// our free() will do nothing if msg is a string literal
+					throw newMsg;
 				}
+				free((void*)msg); 	// our free() will do nothing if msg is a string literal
 				// ok if weak library not found
 				dependentLib = NULL;
 				canUsePrelinkingInfo = false;  // this disables all prebinding, we may want to just slam import vectors for this lib to zero
@@ -901,7 +966,8 @@ void ImageLoader::recursiveSpinUnLock()
 }
 
 
-void ImageLoader::recursiveInitialization(const LinkContext& context, mach_port_t this_thread, InitializerTimingList& timingInfo)
+void ImageLoader::recursiveInitialization(const LinkContext& context, mach_port_t this_thread,
+										  InitializerTimingList& timingInfo, UninitedUpwards& uninitUps)
 {
 	recursive_lock lock_info(this_thread);
 	recursiveSpinLock(lock_info);
@@ -911,17 +977,18 @@ void ImageLoader::recursiveInitialization(const LinkContext& context, mach_port_
 		// break cycles
 		fState = dyld_image_state_dependents_initialized-1;
 		try {
-			bool hasUpwards = false;
 			// initialize lower level libraries first
 			for(unsigned int i=0; i < libraryCount(); ++i) {
 				ImageLoader* dependentImage = libImage(i);
 				if ( dependentImage != NULL ) {
-					// don't try to initialize stuff "above" me
-					bool isUpward = libIsUpward(i);
-					if ( (dependentImage->fDepth >= fDepth) && !isUpward ) {
-						dependentImage->recursiveInitialization(context, this_thread, timingInfo);
+					// don't try to initialize stuff "above" me yet
+					if ( libIsUpward(i) ) {
+						uninitUps.images[uninitUps.count] = dependentImage;
+						uninitUps.count++;
 					}
-					hasUpwards |= isUpward;
+					else if ( dependentImage->fDepth >= fDepth ) {
+						dependentImage->recursiveInitialization(context, this_thread, timingInfo, uninitUps);
+					}
                 }
 			}
 			
@@ -938,18 +1005,6 @@ void ImageLoader::recursiveInitialization(const LinkContext& context, mach_port_
 			// initialize this image
 			bool hasInitializers = this->doInitialization(context);
 
-			// <rdar://problem/10491874> initialize any upward depedencies
-			if ( hasUpwards ) {
-				for(unsigned int i=0; i < libraryCount(); ++i) {
-					ImageLoader* dependentImage = libImage(i);
-					// <rdar://problem/10643239> ObjC CG hang
-					// only init upward lib here if lib is not downwardly referenced somewhere 
-					if ( (dependentImage != NULL) && libIsUpward(i) && !dependentImage->isReferencedDownward() ) {
-						dependentImage->recursiveInitialization(context, this_thread, timingInfo);
-					}
-				}
-			}
-            
 			// let anyone know we finished initializing this image
 			fState = dyld_image_state_initialized;
 			oldState = fState;
@@ -984,16 +1039,16 @@ static void printTime(const char* msg, uint64_t partTime, uint64_t totalTime)
 		}
 	}
 	if ( partTime < sUnitsPerSecond ) {
-		uint32_t milliSecondsTimesHundred = (partTime*100000)/sUnitsPerSecond;
-		uint32_t milliSeconds = milliSecondsTimesHundred/100;
-		uint32_t percentTimesTen = (partTime*1000)/totalTime;
+		uint32_t milliSecondsTimesHundred = (uint32_t)((partTime*100000)/sUnitsPerSecond);
+		uint32_t milliSeconds = (uint32_t)(milliSecondsTimesHundred/100);
+		uint32_t percentTimesTen = (uint32_t)((partTime*1000)/totalTime);
 		uint32_t percent = percentTimesTen/10;
 		dyld::log("%s: %u.%02u milliseconds (%u.%u%%)\n", msg, milliSeconds, milliSecondsTimesHundred-milliSeconds*100, percent, percentTimesTen-percent*10);
 	}
 	else {
-		uint32_t secondsTimeTen = (partTime*10)/sUnitsPerSecond;
+		uint32_t secondsTimeTen = (uint32_t)((partTime*10)/sUnitsPerSecond);
 		uint32_t seconds = secondsTimeTen/10;
-		uint32_t percentTimesTen = (partTime*1000)/totalTime;
+		uint32_t percentTimesTen = (uint32_t)((partTime*1000)/totalTime);
 		uint32_t percent = percentTimesTen/10;
 		dyld::log("%s: %u.%u seconds (%u.%u%%)\n", msg, seconds, secondsTimeTen-seconds*10, percent, percentTimesTen-percent*10);
 	}

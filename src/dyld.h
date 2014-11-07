@@ -75,8 +75,7 @@ namespace dyld {
 	extern void					preflight(ImageLoader* image, const ImageLoader::RPathChain& loaderRPaths);
 	extern void					link(ImageLoader* image, bool forceLazysBound, bool neverUnload, const ImageLoader::RPathChain& loaderRPaths);
 	extern void					runInitializers(ImageLoader* image);
-	extern void					runTerminators(void*);
-	extern void					runImageTerminators(ImageLoader* image);
+	extern void					runImageStaticTerminators(ImageLoader* image);	
 	extern const char*			getExecutablePath();
 	extern bool					validImage(const ImageLoader*);
 	extern ImageLoader*			getIndexedImage(uint32_t index);
@@ -93,8 +92,8 @@ namespace dyld {
 	extern void					removeImage(ImageLoader* image);
 	extern ImageLoader*			cloneImage(ImageLoader* image);
 	extern void					forEachImageDo( void (*)(ImageLoader*, void*), void*);
-	extern uintptr_t			_main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int argc, const char* argv[], const char* envp[], 
-									  const char* apple[], uintptr_t* startGlue) __attribute__((noinline));  // <rdar://problem/11340356>
+	extern uintptr_t			_main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide, int argc, const char* argv[], const char* envp[],
+									  const char* apple[], uintptr_t* startGlue) __attribute__((noinline));  // <rdar://problem/113
 	extern void					halt(const char* message)  __attribute__((noreturn));
 	extern void					setErrorMessage(const char* msg);
 	extern const char*			getErrorMessage();

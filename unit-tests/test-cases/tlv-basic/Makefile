@@ -36,7 +36,7 @@ check:
 all: main 
 
 main : main.c 
-	clang -arch ${ARCH} ${CCFLAGS} -I${TESTROOT}/include main.c -o main 
+	${CC} -arch ${ARCH} ${CCFLAGS} -I${TESTROOT}/include main.c -o main 
 
 
 clean:

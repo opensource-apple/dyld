@@ -61,7 +61,7 @@ void addImagesToAllImages(uint32_t infoCount, const dyld_image_info info[])
 	// append all new images
 	for (uint32_t i=0; i < infoCount; ++i)
 		sImageInfos.push_back(info[i]);
-	dyld::gProcessInfo->infoArrayCount = sImageInfos.size();
+	dyld::gProcessInfo->infoArrayCount = (uint32_t)sImageInfos.size();
 	
 	// set infoArray back to base address of vector (other process can now read)
 	dyld::gProcessInfo->infoArray = &sImageInfos[0];
@@ -79,7 +79,7 @@ void syncProcessInfo()
 				sImageInfos.push_back(dyld::gProcessInfo->infoArray[i]);
 			}
 			dyld::gProcessInfo->infoArray = &sImageInfos[0];
-			dyld::gProcessInfo->infoArrayCount = sImageInfos.size();
+			dyld::gProcessInfo->infoArrayCount = (uint32_t)sImageInfos.size();
 		}
 	}
 	dyld::gProcessInfo->notification(dyld_image_info_change, 0, NULL);
@@ -127,7 +127,7 @@ void removeImageFromAllImages(const struct mach_header* loadAddress)
 			break;
 		}
 	}
-	dyld::gProcessInfo->infoArrayCount = sImageInfos.size();
+	dyld::gProcessInfo->infoArrayCount = (uint32_t)sImageInfos.size();
 	
 	// set infoArray back to base address of vector
 	dyld::gProcessInfo->infoArray = &sImageInfos[0];
@@ -189,7 +189,8 @@ void setAlImageInfosHalt(const char* message, uintptr_t flags)
 								= { 
 									14, 0, NULL, &gdb_image_notifier, false, false, (const mach_header*)&__dso_handle, NULL,
 									XSTR(DYLD_VERSION), NULL, 0, NULL, 0, 0, NULL, &dyld_all_image_infos, 
-									0, dyld_error_kind_none, NULL, NULL, NULL, 0, {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,}, 0
+									0, dyld_error_kind_none, NULL, NULL, NULL, 0, {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,}, 
+									{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,}
 									};
 
 	struct dyld_shared_cache_ranges dyld_shared_cache_ranges;

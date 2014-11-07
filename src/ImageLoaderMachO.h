@@ -101,9 +101,11 @@ public:
 	virtual uintptr_t					segActualEndAddress(unsigned int) const;
 	virtual void						registerInterposing();
 	virtual uint32_t					sdkVersion() const;
+	virtual uint32_t					minOSVersion() const;
 			
 	
 	static void							printStatistics(unsigned int imageCount, const InitializerTimingList&);
+	static  uint32_t					minOSVersion(const mach_header*);
 	
 protected:
 						ImageLoaderMachO(const ImageLoaderMachO&);
@@ -176,7 +178,8 @@ protected:
 			void		mapSegments(const void* memoryImage, uint64_t imageLen, const LinkContext& context);
 			void		UnmapSegments();
 			void		__attribute__((noreturn)) throwSymbolNotFound(const LinkContext& context, const char* symbol, 
-																	const char* referencedFrom, const char* expectedIn);
+																	const char* referencedFrom, const char* fromVersMismatch,
+																	const char* expectedIn);
 			void		doImageInit(const LinkContext& context);
 			void		doModInitFunctions(const LinkContext& context);
 			void		setupLazyPointerHandler(const LinkContext& context);

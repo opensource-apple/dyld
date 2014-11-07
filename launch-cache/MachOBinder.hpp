@@ -286,10 +286,12 @@ Binder<A>::Binder(const MachOLayoutAbstraction& layout, uint64_t dyldBaseAddress
 template <> uint8_t	Binder<x86>::pointerRelocSize()   { return 2; }
 template <> uint8_t	Binder<x86_64>::pointerRelocSize() { return 3; }
 template <> uint8_t	Binder<arm>::pointerRelocSize() { return 2; }
+template <> uint8_t	Binder<arm64>::pointerRelocSize() { return 3; }
 
 template <> uint8_t	Binder<x86>::pointerRelocType()   { return GENERIC_RELOC_VANILLA; }
 template <> uint8_t	Binder<x86_64>::pointerRelocType() { return X86_64_RELOC_UNSIGNED; }
 template <> uint8_t	Binder<arm>::pointerRelocType() { return ARM_RELOC_VANILLA; }
+template <> uint8_t	Binder<arm64>::pointerRelocType() { return ARM64_RELOC_UNSIGNED; }
 
 
 template <typename A>
@@ -1140,7 +1142,28 @@ typename A::P::uint_t Binder<A>::findLazyPointerFor(const char* symbolName)
 		}
 		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
 	} 
- 
+
+	if ( log ) fprintf(stderr, "not found shared lazy pointer for %s in %s, checking for re-export symbol\n", symbolName, this->getDylibID());
+	for (typename std::vector<SymbolReExport>::iterator it=fReExportedSymbols.begin(); it != fReExportedSymbols.end(); ++it) {
+		if ( strcmp(it->exportName, symbolName) != 0 )
+			continue;
+
+		if ( it->dylibOrdinal <= 0 ) 
+			throw "bad mach-o binary, special library ordinal not allowed in re-exported symbols in dyld shared cache";
+		
+		Binder<A>* binder = fDependentDylibs[it->dylibOrdinal-1].binder;
+		return binder->findLazyPointerFor(it->importName);
+	}
+
+	if ( log ) fprintf(stderr, "not found shared lazy pointer for %s in %s, checking re-export dylibs\n", symbolName, this->getDylibID());
+	for (typename std::vector<BinderAndReExportFlag>::iterator it = fDependentDylibs.begin(); it != fDependentDylibs.end(); ++it) {
+		if ( it->reExport ) {
+			pint_t result = it->binder->findLazyPointerFor(symbolName);
+			if ( result != 0 )
+				return result;
+		}
+	}
+
 	if ( log ) fprintf(stderr, "NOT found shared lazy pointer for %s in %s\n", symbolName, this->getDylibID());
     return 0;
 }
@@ -1155,7 +1178,7 @@ void Binder<A>::optimize()
             it->client->optimizeStub(it->symbolName, lpVMAddr);
         }
         else {
-            fprintf(stderr, "not able to optimize lazy pointer for %s in %s\n", it->symbolName, it->client->getDylibID());
+			fprintf(stderr, "not able to optimize lazy pointer for %s in %s\n", it->symbolName, it->client->getDylibID());
         }
         
     }

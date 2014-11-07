@@ -128,7 +128,7 @@ public:
 	static void			findSharedDylibs(ArchPair ap);
 	static ArchGraph*	graphForArchPair(ArchPair ap) { return fgPerArchGraph[ap]; }
 	static void			setFileSystemRoot(const char* root) { fgFileSystemRoot = root; }
-	static void			setFileSystemOverlay(const char* overlay) { fgFileSystemOverlay = overlay; }
+	static void			setFileSystemOverlay(const std::vector<const char*>& overlays);
 	static const char*	archName(ArchPair ap);
 	
 	ArchPair											getArchPair() { return fArchPair; }
@@ -170,7 +170,7 @@ private:
 
 	static std::map<ArchPair, ArchGraph*>	fgPerArchGraph;
 	static const char*						fgFileSystemRoot;
-	static const char*						fgFileSystemOverlay;
+	static std::vector<const char*> 		fgFileSystemOverlays;
 	
 	ArchPair									fArchPair;
 	std::set<DependencyNode*>					fRoots;
@@ -180,12 +180,18 @@ private:
 };
 std::map<ArchPair, ArchGraph*>		ArchGraph::fgPerArchGraph;
 const char*							ArchGraph::fgFileSystemRoot = "";
-const char*							ArchGraph::fgFileSystemOverlay = "";
+std::vector<const char*> 			ArchGraph::fgFileSystemOverlays;
 
 void ArchGraph::addArchPair(ArchPair ap)
 {
 	//fprintf(stderr, "adding ArchPair 0x%08X,0x%08X\n", ap.arch, ap.subtype);
 	fgPerArchGraph[ap] = new ArchGraph(ap);
+}
+
+void ArchGraph::setFileSystemOverlay(const std::vector<const char*>& overlays) 
+{ 
+	for (std::vector<const char*>::const_iterator it=overlays.begin(); it != overlays.end(); ++it) 
+		fgFileSystemOverlays.push_back(*it);
 }
 
 void ArchGraph::addRoot(const char* vpath, const std::set<ArchPair>& onlyArchs)
@@ -194,12 +200,14 @@ void ArchGraph::addRoot(const char* vpath, const std::set<ArchPair>& onlyArchs)
 	char completePath[MAXPATHLEN];
 	const char* path = NULL;
 	// check -overlay path first
-	if ( fgFileSystemOverlay[0] != '\0' ) {
-		strcpy(completePath, fgFileSystemOverlay);
+	for (std::vector<const char*>::const_iterator it=fgFileSystemOverlays.begin(); it != fgFileSystemOverlays.end(); ++it) {
+		strcpy(completePath, *it);
 		strcat(completePath, vpath);	// assumes vpath starts with '/'
 		struct stat stat_buf;
-		if ( stat(completePath, &stat_buf) == 0 )
+		if ( stat(completePath, &stat_buf) == 0 ) {
 			path = completePath;
+			break;
+		}
 	}
 	// if not found in overlay, check for -root
 	if ( (path == NULL) && (fgFileSystemRoot[0] != '\0') ) {
@@ -255,41 +263,42 @@ ArchGraph::DependencyNode* ArchGraph::getNodeForVirtualPath(const char* vpath)
 {
 	//fprintf(stderr, "getNodeForVirtualPath(%s)\n", vpath);
 	char completePath[MAXPATHLEN];
-	if ( fgFileSystemOverlay[0] != '\0' ) {
+	for (std::vector<const char*>::const_iterator it=fgFileSystemOverlays.begin(); it != fgFileSystemOverlays.end(); ++it) {
+		const char* overlayPath = *it;
 		// using -overlay means if /overlay/path/dylib exists use it, otherwise use /path/dylib
-		strcpy(completePath, fgFileSystemOverlay);
+		strcpy(completePath, overlayPath);
 		strcat(completePath, vpath);	// assumes vpath starts with '/'
 		struct stat stat_buf;
-		if ( stat(completePath, &stat_buf) == 0 )
+		if ( stat(completePath, &stat_buf) == 0 ) {
 			return this->getNode(completePath);
-		else {
-			// <rdar://problem/9279770> support when install name is a symlink
-			const char* pathToSymlink = vpath;
-			if ( fgFileSystemRoot[0] != '\0' ) {
-				strcpy(completePath, fgFileSystemRoot);
-				strcat(completePath, vpath);
-				pathToSymlink = completePath;
-			}
-			if ( (lstat(pathToSymlink, &stat_buf) == 0) && S_ISLNK(stat_buf.st_mode) ) {
-				// requested path did not exist in /overlay, but leaf of path is a symlink in /
-				char pathInSymLink[MAXPATHLEN];
-				size_t res = readlink(pathToSymlink, pathInSymLink, sizeof(pathInSymLink));
-				if ( res != -1 ) {
-					pathInSymLink[res] = '\0';
-					if ( pathInSymLink[0] != '/' ) {
-						char symFullPath[MAXPATHLEN];
-						strcpy(symFullPath, vpath);
-						char* lastSlash = strrchr(symFullPath, '/');
-						if ( lastSlash != NULL ) {
-							strcpy(lastSlash+1, pathInSymLink);
-							// (re)try looking for what symlink points to, but in /overlay
-							return this->getNodeForVirtualPath(symFullPath);
-						}
-					} 
-				}
+		}
+		// <rdar://problem/9279770> support when install name is a symlink
+		const char* pathToSymlink = vpath;
+		if ( fgFileSystemRoot[0] != '\0' ) {
+			strcpy(completePath, fgFileSystemRoot);
+			strcat(completePath, vpath);
+			pathToSymlink = completePath;
+		}
+		if ( (lstat(pathToSymlink, &stat_buf) == 0) && S_ISLNK(stat_buf.st_mode) ) {
+			// requested path did not exist in /overlay, but leaf of path is a symlink in /
+			char pathInSymLink[MAXPATHLEN];
+			size_t res = readlink(pathToSymlink, pathInSymLink, sizeof(pathInSymLink));
+			if ( res != -1 ) {
+				pathInSymLink[res] = '\0';
+				if ( pathInSymLink[0] != '/' ) {
+					char symFullPath[MAXPATHLEN];
+					strcpy(symFullPath, vpath);
+					char* lastSlash = strrchr(symFullPath, '/');
+					if ( lastSlash != NULL ) {
+						strcpy(lastSlash+1, pathInSymLink);
+						// (re)try looking for what symlink points to, but in /overlay
+						return this->getNodeForVirtualPath(symFullPath);
+					}
+				} 
 			}
 		}
 	}
+
 	if ( fgFileSystemRoot[0] != '\0' ) {
 		// using -root means always use /rootpath/usr/lib
 		strcpy(completePath, fgFileSystemRoot);
@@ -371,8 +380,12 @@ ArchGraph::DependencyNode* ArchGraph::getNode(const char* path)
 			aliasPath = &realPath[strlen(fgFileSystemRoot)];
 		}
 		// <rdar://problem/11192810> Too many aliases in -overlay mode
-		if ( (fgFileSystemOverlay != NULL) && (fgFileSystemOverlay[0] != '\0') && (strncmp(realPath, fgFileSystemOverlay, strlen(fgFileSystemOverlay)) == 0) ) {
-			aliasPath = &realPath[strlen(fgFileSystemOverlay)];
+		for (std::vector<const char*>::const_iterator it=fgFileSystemOverlays.begin(); it != fgFileSystemOverlays.end(); ++it) {
+			const char* overlayPath = *it;
+			if ( strncmp(realPath, overlayPath, strlen(overlayPath)) == 0 ) {
+				aliasPath = &realPath[strlen(overlayPath)];
+				break;
+			}
 		}
 		if ( fAliasesMap.find(aliasPath) == fAliasesMap.end() ) {
 			if ( strcmp(aliasPath, node->getLayout()->getID().name) != 0 ) {
@@ -522,7 +535,12 @@ const char*	ArchGraph::archName(ArchPair ap)
 		case CPU_TYPE_I386:
 			return "i386";
 		case CPU_TYPE_X86_64:
-			return "x86_64";
+			switch ( ap.subtype ) {
+				case CPU_SUBTYPE_X86_64_H:
+					return "x86_64h";
+				default:
+					return "x86_64";
+			}
 		case CPU_TYPE_ARM:
 			switch ( ap.subtype ) {
 				case CPU_SUBTYPE_ARM_V4T:
@@ -544,6 +562,8 @@ const char*	ArchGraph::archName(ArchPair ap)
 				default:
 					return "arm";
 			}
+		case CPU_TYPE_ARM64:
+			return "arm64";
 		default:
 			return "unknown";
 	}
@@ -553,18 +573,18 @@ bool ArchGraph::sharable(const MachOLayoutAbstraction* layout, ArchPair ap, char
 {
 	if ( ! layout->isTwoLevelNamespace() ) 
 		asprintf(msg, "can't put %s in shared cache because it was built -flat_namespace", layout->getID().name);
+	else if ( ! layout->inSharableLocation() )
+		asprintf(msg, "can't put %s in shared cache because its -install_name is not in /usr/lib or /System/Library", layout->getID().name);
 	else if ( ! layout->hasSplitSegInfo() ) 
 		asprintf(msg, "can't put %s in shared cache because it was not built for %s or later", layout->getID().name, (iPhoneOS ? "iPhoneOS 3.1" : "MacOSX 10.5"));
 	else if ( ! layout->isRootOwned() )
 		asprintf(msg, "can't put %s in shared cache because it is not owned by root", layout->getID().name);
-	else if ( ! layout->inSharableLocation() )
-		asprintf(msg, "can't put %s in shared cache because it is not in /usr/lib or /System/Library", layout->getID().name);
 	else if ( layout->hasDynamicLookupLinkage() )
 		asprintf(msg, "can't put %s in shared cache because it was built with '-undefined dynamic_lookup'", layout->getID().name);
 	else if ( layout->hasMainExecutableLookupLinkage() )
 		asprintf(msg, "can't put %s in shared cache because it was built with '-bundle_loader'", layout->getID().name);
-	//else if ( ! layout->hasDyldInfo() )
-	//	asprintf(msg, "can't put %s in shared cache because it was built for older OS", layout->getID().name);
+	else if ( layout->hasMultipleReadWriteSegments() )
+		asprintf(msg, "can't put %s in shared cache because it has multiple r/w segments", layout->getID().name);
 	else
 		return true;
 	return false;
@@ -638,6 +658,7 @@ public:
 	uint32_t	add(const char* str);
 	uint32_t	addUnique(const char* str);
 	const char* stringAtIndex(uint32_t) const;
+	
 private:
 	typedef std::unordered_map<const char*, uint32_t, CStringHash, CStringEquals> StringToOffset;
 
@@ -649,7 +670,7 @@ private:
 
 
 StringPool::StringPool() 
-	: fBufferUsed(0), fBufferAllocated(48*1024*1024)
+	: fBufferUsed(0), fBufferAllocated(64*1024*1024)
 {
 	fBuffer = (char*)malloc(fBufferAllocated);
 }
@@ -708,7 +729,7 @@ template <typename A>
 class SharedCache
 {
 public:
-							SharedCache(ArchGraph* graph, const char* rootPath, const char* overlayPath, const char* cacheDir, bool explicitCacheDir,
+							SharedCache(ArchGraph* graph, const char* rootPath, const std::vector<const char*>& overlayPaths, const char* cacheDir, bool explicitCacheDir,
 											bool alphaSort, bool verify, bool optimize, uint64_t dyldBaseAddress);
 	bool					update(bool force, bool optimize, bool deleteExistingFirst, int archIndex, 
 										int archCount, bool keepSignatures, bool dontMapLocalSymbols);
@@ -742,8 +763,11 @@ private:
 	static uint64_t			sharedRegionStartReadOnlyAddress(uint64_t, uint64_t);
 	static uint64_t			getWritableSegmentNewAddress(uint64_t proposedNewAddress, uint64_t originalAddress, uint64_t executableSlide);
 	static bool				addCacheSlideInfo();
+	static uint64_t			pathHash(const char*);
 	
 	static uint64_t			pageAlign(uint64_t addr);
+	static uint64_t			regionAlign(uint64_t addr);
+	static uint64_t			pageAlign4KB(uint64_t addr);
 	void					assignNewBaseAddresses(bool verify);
 
 	struct LayoutInfo {
@@ -927,40 +951,54 @@ public:
 template <>	 cpu_type_t	SharedCache<x86>::arch()	{ return CPU_TYPE_I386; }
 template <>	 cpu_type_t	SharedCache<x86_64>::arch()	{ return CPU_TYPE_X86_64; }
 template <>	 cpu_type_t	SharedCache<arm>::arch()	{ return CPU_TYPE_ARM; }
+template <>	 cpu_type_t	SharedCache<arm64>::arch()	{ return CPU_TYPE_ARM64; }
 
 template <>	 uint64_t	SharedCache<x86>::sharedRegionStartAddress()			{ return 0x90000000; }
 template <>	 uint64_t	SharedCache<x86_64>::sharedRegionStartAddress()			{ return 0x7FFF80000000LL; }
 template <>	 uint64_t	SharedCache<arm>::sharedRegionStartAddress()			{ return ARM_SHARED_REGION_START; }
+template <>	 uint64_t	SharedCache<arm64>::sharedRegionStartAddress()			{ return ARM64_SHARED_REGION_START; }
 
 template <>	 uint64_t	SharedCache<x86>::sharedRegionSize()					{ return 0x20000000; }
 template <>	 uint64_t	SharedCache<x86_64>::sharedRegionSize()					{ return 0x40000000; }
 template <>	 uint64_t	SharedCache<arm>::sharedRegionSize()					{ return ARM_SHARED_REGION_SIZE; }
+template <>	 uint64_t	SharedCache<arm64>::sharedRegionSize()					{ return ARM64_SHARED_REGION_SIZE; }
 
 template <>	 uint64_t	SharedCache<x86>::sharedRegionStartWritableAddress(uint64_t exEnd)			{ return exEnd + 0x04000000; }
 template <>	 uint64_t	SharedCache<x86_64>::sharedRegionStartWritableAddress(uint64_t exEnd)		{ return 0x7FFF70000000LL; }
 template <>	 uint64_t	SharedCache<arm>::sharedRegionStartWritableAddress(uint64_t exEnd)			{ return (exEnd + 16383) & (-16384); }
+template <>	 uint64_t	SharedCache<arm64>::sharedRegionStartWritableAddress(uint64_t exEnd)		{ return exEnd; }
 
 template <>	 uint64_t	SharedCache<x86>::sharedRegionStartReadOnlyAddress(uint64_t wrEnd, uint64_t exEnd)	 { return wrEnd + 0x04000000; }
 template <>	 uint64_t	SharedCache<x86_64>::sharedRegionStartReadOnlyAddress(uint64_t wrEnd, uint64_t exEnd){ return exEnd; }
 template <>	 uint64_t	SharedCache<arm>::sharedRegionStartReadOnlyAddress(uint64_t wrEnd, uint64_t exEnd)	 { return (wrEnd + 16383) & (-16384); }
-
+template <>	 uint64_t	SharedCache<arm64>::sharedRegionStartReadOnlyAddress(uint64_t wrEnd, uint64_t exEnd) { return (wrEnd + 16383) & (-16384); }
 
 template <>	 const char*	SharedCache<x86>::archName()	{ return "i386"; }
 template <>	 const char*	SharedCache<x86_64>::archName()	{ return "x86_64"; }
 template <>	 const char*	SharedCache<arm>::archName()	{ return "arm"; }
+template <>	 const char*	SharedCache<arm64>::archName()	{ return "arm64"; }
 
 template <>	 const char*	SharedCache<x86>::cacheFileSuffix(bool, const char* archName)	{ return archName; }
 template <>	 const char*	SharedCache<x86_64>::cacheFileSuffix(bool, const char* archName){ return archName; }
 template <>	 const char*	SharedCache<arm>::cacheFileSuffix(bool, const char* archName)	{ return archName; }
-
+template <>	 const char*	SharedCache<arm64>::cacheFileSuffix(bool, const char* archName)	{ return archName; }
 
 template <>  uint64_t		SharedCache<x86>::pageAlign(uint64_t addr)    { return ( (addr + 4095) & (-4096) ); }
 template <>  uint64_t		SharedCache<x86_64>::pageAlign(uint64_t addr) { return ( (addr + 4095) & (-4096) ); }
 template <>  uint64_t		SharedCache<arm>::pageAlign(uint64_t addr)    { return ( (addr + 4095) & (-4096) ); }
+template <>  uint64_t		SharedCache<arm64>::pageAlign(uint64_t addr)  { return ( (addr + 16383) & (-16384) ); }
 
+template <>  uint64_t		SharedCache<x86>::regionAlign(uint64_t addr)    { return ( (addr + 4095) & (-4096) ); }
+template <>  uint64_t		SharedCache<x86_64>::regionAlign(uint64_t addr) { return ( (addr + 4095) & (-4096) ); }
+template <>  uint64_t		SharedCache<arm>::regionAlign(uint64_t addr)    { return ( (addr + 16383) & (-16384) ); }
+template <>  uint64_t		SharedCache<arm64>::regionAlign(uint64_t addr)  { return ( (addr + 16383) & (-16384) ); }
+
+
+template <typename A>  
+uint64_t SharedCache<A>::pageAlign4KB(uint64_t addr)    { return ( (addr + 4095) & (-4096) ); }
 
 template <typename A>
-SharedCache<A>::SharedCache(ArchGraph* graph, const char* rootPath, const char* overlayPath, const char* cacheDir, bool explicitCacheDir, bool alphaSort, bool verify, bool optimize, uint64_t dyldBaseAddress) 
+SharedCache<A>::SharedCache(ArchGraph* graph, const char* rootPath, const std::vector<const char*>& overlayPaths, const char* cacheDir, bool explicitCacheDir, bool alphaSort, bool verify, bool optimize, uint64_t dyldBaseAddress) 
   : fArchGraph(graph), fVerify(verify), fExistingIsNotUpToDate(true), 
 	fCacheFileInFinalLocation(rootPath[0] == '\0'), fCacheFilePath(NULL),
 	fExistingCacheForVerification(NULL), fDyldBaseAddress(dyldBaseAddress),
@@ -986,8 +1024,12 @@ SharedCache<A>::SharedCache(ArchGraph* graph, const char* rootPath, const char* 
 		LayoutInfo temp;
 		temp.layout = lib;
 		temp.info.address = 0;
-		temp.info.modTime = lib->getLastModTime();
 		temp.info.inode = lib->getInode();
+		temp.info.modTime = lib->getLastModTime();
+		if ( iPhoneOS ) {
+			temp.info.inode = pathHash(lib->getID().name);
+			temp.info.modTime = 0;
+		}
 		temp.info.pathFileOffset = lib->getNameFileOffset();  // for now this is the offset within the dylib
 		for(ArchGraph::StringToString::iterator ait = aliases.begin(); ait != aliases.end(); ++ait) {
 			if ( strcmp(ait->second, lib->getID().name) == 0 ) {
@@ -1009,8 +1051,9 @@ SharedCache<A>::SharedCache(ArchGraph* graph, const char* rootPath, const char* 
 	if ( explicitCacheDir ) {
 		fCacheFilePath = strdup(cachePathCanonical);
 	}
-	else if ( overlayPath[0] != '\0' ) {
-		strcpy(cachePath, overlayPath);
+	else if ( overlayPaths.size() == 1 ) {
+		// if no -cache_dir and exactly on -overlay, write cache file into that overlay dir
+		strcpy(cachePath, overlayPaths[0]);
 		strcat(cachePath, "/");
 		strcat(cachePath, cachePathCanonical);
 		fCacheFilePath = strdup(cachePath);
@@ -1024,8 +1067,8 @@ SharedCache<A>::SharedCache(ArchGraph* graph, const char* rootPath, const char* 
 	else {
 		fCacheFilePath = strdup(cachePathCanonical);
 	}
-	if ( overlayPath[0] != '\0' ) {
-		// in overlay mode if there already is a cache file in the overlay
+	if ( overlayPaths.size() == 1 ) {
+		// in overlay mode if there already is a cache file in the overlay,
 		// check if it is up to date.  
 		struct stat stat_buf;
 		if ( stat(fCacheFilePath, &stat_buf) == 0 ) {
@@ -1082,6 +1125,10 @@ SharedCache<A>::SharedCache(ArchGraph* graph, const char* rootPath, const char* 
 			temp.aliases.clear();
 			temp.aliases.push_back(aliasPath);
 			temp.info.pathFileOffset = fHeaderSize; 
+			if ( iPhoneOS ) {
+				temp.info.inode = pathHash(aliasPath); 
+				temp.info.modTime = 0;
+			}
 			fDylibAliases.push_back(temp);
 			fHeaderSize += strlen(aliasPath)+1;
 		}
@@ -1119,6 +1166,15 @@ uint64_t SharedCache<A>::getWritableSegmentNewAddress(uint64_t proposedNewAddres
 	return proposedNewAddress;
 }
 
+template <typename A>
+uint64_t SharedCache<A>::pathHash(const char* path)
+{
+	uint64_t sum = 0;
+	for (const char* s=path; *s != '\0'; ++s)
+		sum += sum*4 + *s;
+	return sum;
+}
+	
 
 template <typename A>
 void SharedCache<A>::assignNewBaseAddresses(bool verify)
@@ -1132,6 +1188,8 @@ void SharedCache<A>::assignNewBaseAddresses(bool verify)
 			MachOLayoutAbstraction::Segment& seg = segs[i];
 			seg.reset();
 			if ( seg.executable() && !seg.writable() ) {
+				// <rdar://problem/15947734> Some dylib require extra alignment
+				currentExecuteAddress = (currentExecuteAddress + seg.alignment() - 1) & (-seg.alignment());
 				// __TEXT segment
 				if ( it->info.address == 0 )
 					it->info.address = currentExecuteAddress;
@@ -1140,6 +1198,8 @@ void SharedCache<A>::assignNewBaseAddresses(bool verify)
 			}
 		}
 	}
+	// align __TEXT region
+	currentExecuteAddress = regionAlign(currentExecuteAddress);
 
 	// layout DATA for dylibs
 	const uint64_t startWritableAddress = sharedRegionStartWritableAddress(currentExecuteAddress);
@@ -1154,10 +1214,13 @@ void SharedCache<A>::assignNewBaseAddresses(bool verify)
 					throw "found writable and executable segment";
 				// __DATA segment
 				seg.setNewAddress(currentWritableAddress);
-				currentWritableAddress = pageAlign(seg.newAddress() + seg.size());
+				// <rdar://problem/13089366> always 4KB align data pages to allow padding to be removed
+				currentWritableAddress = pageAlign4KB(seg.newAddress() + seg.size());
 			}
 		}
 	}
+	// align __DATA region
+	currentWritableAddress = regionAlign(currentWritableAddress);
 
 	// layout all read-only (but not LINKEDIT) segments
 	const uint64_t startReadOnlyAddress = sharedRegionStartReadOnlyAddress(currentWritableAddress, currentExecuteAddress);
@@ -1175,6 +1238,7 @@ void SharedCache<A>::assignNewBaseAddresses(bool verify)
 	}	
 
 	// layout all LINKEDIT segments at end of all read-only segments
+	currentReadOnlyAddress = regionAlign(currentReadOnlyAddress); // <rdar://problem/16491435>
 	fLinkEditsStartAddress = currentReadOnlyAddress;
 	fFirstLinkEditSegment = NULL;
 	for(typename std::vector<LayoutInfo>::iterator it = fDylibs.begin(); it != fDylibs.end(); ++it) {
@@ -1283,7 +1347,7 @@ bool SharedCache<A>::notUpToDate(const void* cache, unsigned int aliasCount)
 	strcpy(&temp[15-strlen(archPairName)], archPairName);
 	if ( strcmp(header->magic(), temp) != 0 ) {
 		if ( fVerify ) {
-			fprintf(stderr, "update_dyld_shared_cache[%u] cannot verify %s because current cache file has invalid header\n", getpid(), archName());
+			fprintf(stderr, "update_dyld_shared_cache[%u] cannot verify %s because current cache file has invalid header\n", getpid(), archPairName);
 			return false;
 		}
 		else {
@@ -1294,11 +1358,11 @@ bool SharedCache<A>::notUpToDate(const void* cache, unsigned int aliasCount)
 	// not valid if count of images does not match current images needed
 	if ( header->imagesCount() != (fDylibs.size()+aliasCount) ) {
 		if ( fVerify ) {
-			fprintf(stderr, "update_dyld_shared_cache[%u] cannot verify %s because current cache file contains a different set of dylibs\n", getpid(), archName());
+			fprintf(stderr, "update_dyld_shared_cache[%u] cannot verify %s because current cache file contains a different set of dylibs\n", getpid(), archPairName);
 			return false;
 		}
 		else {
-			fprintf(stderr, "update_dyld_shared_cache[%u] updating %s cache because current cache file contains a different set of dylibs\n", getpid(), archName());
+			fprintf(stderr, "update_dyld_shared_cache[%u] updating %s cache because current cache file contains a different set of dylibs\n", getpid(), archPairName);
 			return true;
 		}
 	}
@@ -1317,7 +1381,7 @@ bool SharedCache<A>::notUpToDate(const void* cache, unsigned int aliasCount)
 			if ( fVerify ) {
 				if ( cacheEntry->pathFileOffset() > textSize ) {
 					throwf("update_dyld_shared_cache[%u]: for arch=%s, image entries corrupt, bad path offset in %s\n", 
-								getpid(), archName(), it->layout->getID().name);
+								getpid(), archPairName, it->layout->getID().name);
 				}
 				// in -verify mode, just match by path and warn if file looks different
 				if ( strcmp((char*)cache+cacheEntry->pathFileOffset(), it->layout->getID().name) == 0 ) {
@@ -1325,7 +1389,7 @@ bool SharedCache<A>::notUpToDate(const void* cache, unsigned int aliasCount)
 					sortingMap[it->layout] = cacheEntry-imagesStart;
 					if ( (cacheEntry->inode() != it->info.inode) || (cacheEntry->modTime() != it->info.modTime) ) {
 						fprintf(stderr, "update_dyld_shared_cache[%u] warning: for arch=%s, %s has changed since cache was built\n", 
-								getpid(), archName(), it->layout->getID().name);
+								getpid(), archPairName, it->layout->getID().name);
 					}
 					break;
 				}
@@ -1346,10 +1410,10 @@ bool SharedCache<A>::notUpToDate(const void* cache, unsigned int aliasCount)
 		}
 		if ( !found ) {
 			if ( fVerify ) {
-				throwf("update_dyld_shared_cache[%u] can't verify %s cache because %s is not in existing cache\n", getpid(), archName(), it->layout->getID().name);
+				throwf("update_dyld_shared_cache[%u] can't verify %s cache because %s is not in existing cache\n", getpid(), archPairName, it->layout->getID().name);
 			}
 			else {
-				fprintf(stderr, "update_dyld_shared_cache[%u] updating %s cache because dylib at %s has changed\n", getpid(), archName(), it->layout->getID().name);
+				fprintf(stderr, "update_dyld_shared_cache[%u] updating %s cache because dylib at %s has changed\n", getpid(), archPairName, it->layout->getID().name);
 				return true;
 			}
 		}
@@ -1762,7 +1826,7 @@ void LinkEditOptimizer<A>::copyIndirectSymbolTable(uint32_t& offset)
 }
 
 template <typename A>
-void LinkEditOptimizer<A>::updateLoadCommands(uint64_t newVMAddress, uint64_t size, uint32_t stringPoolOffset, 
+void LinkEditOptimizer<A>::updateLoadCommands(uint64_t newVMAddress, uint64_t leSize, uint32_t stringPoolOffset, 
 												uint32_t linkEditsFileOffset, bool keepSignatures)
 {
 	// set LINKEDIT segment commmand to new merged LINKEDIT
@@ -1774,16 +1838,31 @@ void LinkEditOptimizer<A>::updateLoadCommands(uint64_t newVMAddress, uint64_t si
 			macho_segment_command<P>* seg = (macho_segment_command<P>*)cmd;
 			if ( strcmp(seg->segname(), "__LINKEDIT") == 0 ) {
 				seg->set_vmaddr(newVMAddress);
-				seg->set_vmsize(size);
-				seg->set_filesize(size);
+				seg->set_vmsize(leSize);
+				seg->set_filesize(leSize);
 				seg->set_fileoff(linkEditsFileOffset);
 			}
-			// don't alter __TEXT until <rdar://problem/7022345> is fixed
-			else if ( strcmp(seg->segname(), "__TEXT") != 0 ) {
-				// update all other segments fileoff to be offset from start of cache file
+			else {
 				pint_t oldFileOff = seg->fileoff();
-				seg->set_fileoff(fSharedCache.cacheFileOffsetForVMAddress(seg->vmaddr()));
+				// don't alter __TEXT until <rdar://problem/7022345> is fixed
+				if ( strcmp(seg->segname(), "__TEXT") != 0 ) {
+					// update all other segments fileoff to be offset from start of cache file
+					seg->set_fileoff(fSharedCache.cacheFileOffsetForVMAddress(seg->vmaddr()));
+				}
 				pint_t fileOffsetDelta = seg->fileoff() - oldFileOff;
+				const MachOLayoutAbstraction::Segment* layoutSeg = fLayout.getSegment(seg->segname());
+				if ( layoutSeg != NULL ) {
+					//if ( seg->filesize() != layoutSeg->fileSize() ) {
+					//	fprintf(stderr, "LC filesize=0x%08llX, trimmed seg file size=0x%08llX, seg=%s, path=%s\n", 
+					//					seg->filesize(), layoutSeg->fileSize(), seg->segname(), fLayout.getFilePath());
+					//}
+					//if ( seg->vmsize() != layoutSeg->size() ) {
+					//	fprintf(stderr, "LC   vmsize=0x%08llX, trimmed seg      size=0x%08llX, seg=%s, path=%s\n", 
+					//					seg->vmsize(), layoutSeg->size(), seg->segname(), fLayout.getFilePath());
+					//}
+					seg->set_vmsize(layoutSeg->size());
+					seg->set_filesize(layoutSeg->fileSize());
+				}
 				// update all sections in this segment
 				macho_section<P>* const sectionsStart = (macho_section<P>*)((char*)seg + sizeof(macho_segment_command<P>));
 				macho_section<P>* const sectionsEnd = &sectionsStart[seg->nsects()];
@@ -1986,7 +2065,7 @@ uint8_t* SharedCache<A>::optimizeLINKEDIT(bool keepSignatures, bool dontMapLocal
 
 	// update load commands so that all dylibs shared different areas of the same LINKEDIT segment
 	for(typename std::vector<LinkEditOptimizer<A>*>::iterator it = optimizers.begin(); it != optimizers.end(); ++it) {
-		(*it)->updateLoadCommands(fLinkEditsStartAddress, fLinkEditsTotalUnoptimizedSize, fOffsetOfOldStringPoolInCombinedLinkedit, linkEditsFileOffset, keepSignatures);
+		(*it)->updateLoadCommands(fLinkEditsStartAddress, fLinkEditsTotalOptimizedSize, fOffsetOfOldStringPoolInCombinedLinkedit, linkEditsFileOffset, keepSignatures);
 	}
 
 	//fprintf(stderr, "fLinkEditsTotalUnoptimizedSize=%llu, fLinkEditsTotalOptimizedSize=%u\n", fLinkEditsTotalUnoptimizedSize, fLinkEditsTotalOptimizedSize);
@@ -2008,10 +2087,10 @@ uint8_t* SharedCache<A>::optimizeLINKEDIT(bool keepSignatures, bool dontMapLocal
 				seg.setFileOffset(linkEditsFileOffset);
 			}
 		}
-	}
-	
+	}	
+		
 	// return new end of cache
-	return (uint8_t*)fFirstLinkEditSegment->mappedAddress() + fLinkEditsTotalOptimizedSize;
+	return (uint8_t*)fFirstLinkEditSegment->mappedAddress() + regionAlign(fLinkEditsTotalOptimizedSize);
 }
 
 
@@ -2402,7 +2481,7 @@ static bool adhoc_codesign_share_cache(const char* path)
 template <>	 bool	SharedCache<x86_64>::addCacheSlideInfo(){ return true; }
 template <>	 bool	SharedCache<arm>::addCacheSlideInfo()	{ return true; }
 template <>	 bool	SharedCache<x86>::addCacheSlideInfo()	{ return false; }
-
+template <>	 bool	SharedCache<arm64>::addCacheSlideInfo()	{ return true; } 
 
 
 template <typename A>
@@ -2510,8 +2589,10 @@ bool SharedCache<A>::update(bool force, bool optimize, bool deleteExistingFirst,
 				struct stat stat_buf;
 				if ( fstat(src, &stat_buf) == -1)
 					throwf("can't stat open file %s, errno=%d", path, errno);
-				if ( (it->layout->getInode() != stat_buf.st_ino) || (it->layout->getLastModTime() != stat_buf.st_mtime) )
-					throwf("file modified during cache creation: %s", path);
+				if ( (it->layout->getInode() != stat_buf.st_ino) )
+					throwf("file inode changed from %llu to %llu during cache creation: %s", it->layout->getInode(), stat_buf.st_ino, path);
+				else if ( it->layout->getLastModTime() != stat_buf.st_mtime )
+					throwf("file mtime changed from 0x%lX to 0x%lX during cache creation: %s", it->layout->getLastModTime(), stat_buf.st_mtime, path);
 
 				if ( verbose )
 					fprintf(stderr, "update_dyld_shared_cache: copying %s to cache\n", it->layout->getFilePath());
@@ -2624,7 +2705,7 @@ bool SharedCache<A>::update(bool force, bool optimize, bool deleteExistingFirst,
 			if ( optimize ) {
 				//fprintf(stderr, "update_dyld_shared_cache: original cache file size %uMB\n", cacheFileSize/(1024*1024));
 				cacheFileSize = (this->optimizeLINKEDIT(keepSignatures, dontMapLocalSymbols) - inMemoryCache);
-				//fprintf(stderr, "update_dyld_shared_cache: optimized cache file size %uMB\n", cacheFileSize/(1024*1024));
+				//fprintf(stderr, "update_dyld_shared_cache: optimized cache file size 0x%08X %uMB\n", cacheFileSize, cacheFileSize/(1024*1024));
 				// update header to reduce mapping size
 				dyldCacheHeader<E>* cacheHeader = (dyldCacheHeader<E>*)inMemoryCache;
 				dyldCacheFileMapping<E>* mappings = (dyldCacheFileMapping<E>*)&inMemoryCache[sizeof(dyldCacheHeader<E>)];
@@ -2704,7 +2785,7 @@ bool SharedCache<A>::update(bool force, bool optimize, bool deleteExistingFirst,
 				}
 				slideInfo->set_entries_count(entry_count);
 	
-				int slideInfoPageSize = pageAlign(slideInfo->entries_offset() + entry_count*entry_size);
+				int slideInfoPageSize = regionAlign(slideInfo->entries_offset() + entry_count*entry_size);
 				cacheFileSize += slideInfoPageSize;
 			
 				// update mappings to increase RO size
@@ -2723,19 +2804,6 @@ bool SharedCache<A>::update(bool force, bool optimize, bool deleteExistingFirst,
 				
 				// copy compressed into into buffer
 				memcpy(&inMemoryCache[cacheHeader->slideInfoOffset()], slideInfo, slideInfoPageSize);	
-			}
-			
-			// make sure after all optimizations, that whole cache file fits into shared region address range
-			{
-				dyldCacheHeader<E>* cacheHeader = (dyldCacheHeader<E>*)inMemoryCache;
-				dyldCacheFileMapping<E>* mappings = (dyldCacheFileMapping<E>*)&inMemoryCache[cacheHeader->mappingOffset()];
-				for (int i=0; i < cacheHeader->mappingCount(); ++i) {
-					uint64_t endAddr = mappings[i].address() + mappings[i].size();
-					if ( endAddr > (sharedRegionStartAddress() + sharedRegionSize()) ) {
-						throwf("update_dyld_shared_cache[%u] for arch=%s, shared cache will not fit in address space: 0x%llX\n",
-							getpid(), fArchGraph->archName(), endAddr);
-					}
-				}
 			}
 			
 			// append local symbol info in an unmapped region
@@ -2773,13 +2841,28 @@ bool SharedCache<A>::update(bool force, bool optimize, bool deleteExistingFirst,
 				
 				// update state
 				fUnmappedLocalSymbolsSize = pageAlign(stringsOffset + stringsSize);
-				cacheFileSize = localSymbolsOffset + fUnmappedLocalSymbolsSize;
+				cacheFileSize = regionAlign(localSymbolsOffset + fUnmappedLocalSymbolsSize);
 				
 				// update header to show location of slidePointers
 				dyldCacheHeader<E>* cacheHeader = (dyldCacheHeader<E>*)inMemoryCache;
 				cacheHeader->set_localSymbolsOffset(localSymbolsOffset);
 				cacheHeader->set_localSymbolsSize(stringsOffset+stringsSize);
 				cacheHeader->set_codeSignatureOffset(cacheFileSize);
+			}
+			
+			// make sure after all optimizations, that whole cache file fits into shared region address range
+			{
+				dyldCacheHeader<E>* cacheHeader = (dyldCacheHeader<E>*)inMemoryCache;
+				dyldCacheFileMapping<E>* mappings = (dyldCacheFileMapping<E>*)&inMemoryCache[cacheHeader->mappingOffset()];
+				// <rdar://problem/16128830> incorporate code signature size into overflow check
+				uint32_t estCodeSigSize = regionAlign(cacheFileSize/200); // guess 0.5% for code signature
+				for (int i=0; i < cacheHeader->mappingCount(); ++i) {
+					uint64_t endAddr = mappings[i].address() + mappings[i].size() + estCodeSigSize;
+					if ( endAddr > (sharedRegionStartAddress() + sharedRegionSize()) ) {
+						throwf("update_dyld_shared_cache[%u] for arch=%s, shared cache will not fit in shared regionsaddress space.  Overflow amount: %lluKB\n",
+							getpid(), fArchGraph->archName(), (endAddr-(sharedRegionStartAddress() + sharedRegionSize()))/1024);
+					}
+				}
 			}
 			
 			// compute UUID of whole cache
@@ -3016,6 +3099,11 @@ bool SharedCache<A>::update(bool force, bool optimize, bool deleteExistingFirst,
 								fLinkEditsStartAddress+fOffsetOfOldStringPoolInCombinedLinkedit,
 								fLinkEditsStartAddress+fOffsetOfOldStringPoolInCombinedLinkedit+fSizeOfOldStringPoolInCombinedLinkedit);				
 					
+					dyldCacheHeader<E>* cacheHeader = (dyldCacheHeader<E>*)inMemoryCache;
+					if ( cacheHeader->slideInfoSize() != 0 ) {
+						fprintf(fmap, " linkedit   %4lluKB kernel slide info\n", (cacheHeader->slideInfoSize())/1024);				
+					}
+
 					fprintf(fmap, "unmapped -- %4uMB local symbol info\n", fUnmappedLocalSymbolsSize/(1024*1024));					
 					
 					uint64_t endMappingAddr = fMappings[2].sfm_address + fMappings[2].sfm_size;
@@ -3126,16 +3214,7 @@ static void parsePathsFile(const char* filePath, std::vector<const char*>& paths
 						*last = '\0';
 						--last;
 					}
-					// <rdar://problem/8305479> images in shared cache are bound against different IOKit than found at runtime
-					// HACK:  Just ignore the known bad IOKit
-					if ( strcmp(symbolStart, "/System/Library/Frameworks/IOKit.framework/IOKit") == 0 ) {
-						// Disable warning because after three years <rdar://problem/7089957> has still not been fixed...
-						//fprintf(stderr, "update_dyld_shared_cache: warning, ignoring /System/Library/Frameworks/IOKit.framework/IOKit\n");
-						//warnings.push_back("update_dyld_shared_cache: warning, ignoring /System/Library/Frameworks/IOKit.framework/IOKit\n");
-					}
-					else {
-						paths.push_back(symbolStart);
-					}
+					paths.push_back(symbolStart);
 					symbolStart = NULL;
 					state = lineStart;
 				}
@@ -3151,11 +3230,11 @@ static void parsePathsFile(const char* filePath, std::vector<const char*>& paths
 
 
 
-static void setSharedDylibs(const char* rootPath, const char* overlayPath, const std::set<ArchPair>& onlyArchs, std::vector<const char*> rootsPaths)
+static void setSharedDylibs(const char* rootPath, const std::vector<const char*>& overlayPaths, const std::set<ArchPair>& onlyArchs, std::vector<const char*> rootsPaths)
 {
 	// set file system root
 	ArchGraph::setFileSystemRoot(rootPath);
-	ArchGraph::setFileSystemOverlay(overlayPath);
+	ArchGraph::setFileSystemOverlay(overlayPaths);
 
 	// initialize all architectures requested
 	for(std::set<ArchPair>::iterator a = onlyArchs.begin(); a != onlyArchs.end(); ++a)
@@ -3171,7 +3250,7 @@ static void setSharedDylibs(const char* rootPath, const char* overlayPath, const
 }
 
 
-static void scanForSharedDylibs(const char* rootPath, const char* overlayPath, const char* dirOfPathFiles, const std::set<ArchPair>& onlyArchs)
+static void scanForSharedDylibs(const char* rootPath, const std::vector<const char*>& overlayPaths, const char* dirOfPathFiles, const std::set<ArchPair>& onlyArchs)
 {
 	char rootDirOfPathFiles[strlen(rootPath)+strlen(dirOfPathFiles)+2];
 	// in -root mode, look for roots in /rootpath/var/db/dyld
@@ -3216,14 +3295,14 @@ static void scanForSharedDylibs(const char* rootPath, const char* overlayPath, c
 	
 	if ( rootsPaths.size() == 0 )
 		fprintf(stderr, "update_dyld_shared_cache: warning, no entries found in shared_region_roots\n");
-	setSharedDylibs(rootPath, overlayPath, onlyArchs, rootsPaths);
+	setSharedDylibs(rootPath, overlayPaths, onlyArchs, rootsPaths);
 }
 
-static void setSharedDylibs(const char* rootPath, const char* overlayPath, const char* pathsFile, const std::set<ArchPair>& onlyArchs)
+static void setSharedDylibs(const char* rootPath, const std::vector<const char*>& overlayPaths, const char* pathsFile, const std::set<ArchPair>& onlyArchs)
 {
 	std::vector<const char*> rootsPaths;
 	parsePathsFile(pathsFile, rootsPaths);
-	setSharedDylibs(rootPath, overlayPath, onlyArchs, rootsPaths);
+	setSharedDylibs(rootPath, overlayPaths, onlyArchs, rootsPaths);
 }
 
 
@@ -3270,7 +3349,7 @@ static void deleteOrphanTempCacheFiles()
 
 
 
-static bool updateSharedeCacheFile(const char* rootPath, const char* overlayPath, const char* cacheDir, bool explicitCacheDir, const std::set<ArchPair>& onlyArchs, 
+static bool updateSharedeCacheFile(const char* rootPath, const std::vector<const char*>& overlayPaths, const char* cacheDir, bool explicitCacheDir, const std::set<ArchPair>& onlyArchs, 
 									bool force, bool alphaSort, bool optimize, bool deleteExistingFirst, bool verify, bool keepSignatures, bool dontMapLocalSymbols)
 {
 	bool didUpdate = false;
@@ -3298,19 +3377,25 @@ static bool updateSharedeCacheFile(const char* rootPath, const char* overlayPath
 		switch ( a->arch ) {
 			case CPU_TYPE_I386:
 				{
-					SharedCache<x86> cache(ArchGraph::graphForArchPair(*a), rootPath, overlayPath, cacheDir, explicitCacheDir, alphaSort, verify, optimize, dyldBaseAddress);
+					SharedCache<x86> cache(ArchGraph::graphForArchPair(*a), rootPath, overlayPaths, cacheDir, explicitCacheDir, alphaSort, verify, optimize, dyldBaseAddress);
 					didUpdate |= cache.update(force, optimize, deleteExistingFirst, index, archCount, keepSignatures, dontMapLocalSymbols);
 				}
 				break;
 			case CPU_TYPE_X86_64:
 				{
-					SharedCache<x86_64> cache(ArchGraph::graphForArchPair(*a), rootPath, overlayPath, cacheDir, explicitCacheDir, alphaSort, verify, optimize, dyldBaseAddress);
+					SharedCache<x86_64> cache(ArchGraph::graphForArchPair(*a), rootPath, overlayPaths, cacheDir, explicitCacheDir, alphaSort, verify, optimize, dyldBaseAddress);
 					didUpdate |= cache.update(force, optimize, deleteExistingFirst, index, archCount, keepSignatures, dontMapLocalSymbols);
 				}
 				break;
 			case CPU_TYPE_ARM:
 				{
-					SharedCache<arm> cache(ArchGraph::graphForArchPair(*a), rootPath, overlayPath, cacheDir, explicitCacheDir, alphaSort, verify, optimize, dyldBaseAddress);
+					SharedCache<arm> cache(ArchGraph::graphForArchPair(*a), rootPath, overlayPaths, cacheDir, explicitCacheDir, alphaSort, verify, optimize, dyldBaseAddress);
+					didUpdate |= cache.update(force, optimize, deleteExistingFirst, index, archCount, keepSignatures, dontMapLocalSymbols);
+				}
+				break;
+			case CPU_TYPE_ARM64:
+				{
+					SharedCache<arm64> cache(ArchGraph::graphForArchPair(*a), rootPath, overlayPaths, cacheDir, explicitCacheDir, alphaSort, verify, optimize, dyldBaseAddress);
 					didUpdate |= cache.update(force, optimize, deleteExistingFirst, index, archCount, keepSignatures, dontMapLocalSymbols);
 				}
 				break;
@@ -3334,7 +3419,7 @@ int main(int argc, const char* argv[])
 {
 	std::set<ArchPair> onlyArchs;
 	const char* rootPath = "";
-	const char* overlayPath = "";
+	std::vector<const char*> overlayPaths;
 	const char* dylibListFile = NULL;
 	bool force = false;
 	bool alphaSort = false;
@@ -3343,6 +3428,7 @@ int main(int argc, const char* argv[])
 	bool keepSignatures = false;
 	bool explicitCacheDir = false;
 	bool dontMapLocalSymbols = false;
+	bool relaunchForHaswell = false;
 	const char* cacheDir = NULL;
 	
 	try {
@@ -3389,9 +3475,10 @@ int main(int argc, const char* argv[])
 						throw "-root missing path argument";
 				}
 				else if ( strcmp(arg, "-overlay") == 0 ) {
-					overlayPath = argv[++i];
-					if ( overlayPath == NULL )
+					const char* path = argv[++i];
+					if ( path == NULL )
 						throw "-overlay missing path argument";
+					overlayPaths.push_back(path);
 				}
 				else if ( strcmp(arg, "-cache_dir") == 0 ) {
 					cacheDir = argv[++i];
@@ -3405,6 +3492,8 @@ int main(int argc, const char* argv[])
 						onlyArchs.insert(ArchPair(CPU_TYPE_I386, CPU_SUBTYPE_I386_ALL));
 					else if ( strcmp(arch, "x86_64") == 0 )
 						onlyArchs.insert(ArchPair(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL));
+					else if ( strcmp(arch, "x86_64h") == 0 )
+						onlyArchs.insert(ArchPair(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_H));
 					else if ( strcmp(arch, "armv4t") == 0 )
 						onlyArchs.insert(ArchPair(CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V4T));
 					else if ( strcmp(arch, "armv5") == 0 )
@@ -3419,12 +3508,15 @@ int main(int argc, const char* argv[])
 						onlyArchs.insert(ArchPair(CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7K));
 					else if ( strcmp(arch, "armv7s") == 0 )
 						onlyArchs.insert(ArchPair(CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7S));
+					else if ( strcmp(arch, "arm64") == 0 )
+						onlyArchs.insert(ArchPair(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL));
 					else 
 						throwf("unknown architecture %s", arch);
 				}
 				else if ( strcmp(arg, "-universal_boot") == 0 ) {
 					onlyArchs.insert(ArchPair(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL));
 					onlyArchs.insert(ArchPair(CPU_TYPE_I386, CPU_SUBTYPE_I386_ALL));
+					relaunchForHaswell = true;
 				}
 				else {
 					usage();
@@ -3447,11 +3539,11 @@ int main(int argc, const char* argv[])
 		}
 		
 		// strip tailing slashes on -overlay
-		if ( overlayPath[0] != '\0' ) {
+		for (std::vector<const char*>::iterator it=overlayPaths.begin(); it != overlayPaths.end(); ++it) {
 			char realOverlayPath[MAXPATHLEN];
-			if ( realpath(overlayPath, realOverlayPath) == NULL )
-				throwf("realpath() failed on %s\n", overlayPath);
-			overlayPath = strdup(realOverlayPath);
+			if ( realpath(*it, realOverlayPath) == NULL )
+				throwf("realpath() failed on %s\n", *it);
+			*it = strdup(realOverlayPath);
 		}
 
 		// set default location to write cache dir
@@ -3470,8 +3562,20 @@ int main(int argc, const char* argv[])
 			#if __i386__ || __x86_64__
 				onlyArchs.insert(ArchPair(CPU_TYPE_I386, CPU_SUBTYPE_I386_ALL));
 				// check system is capable of running 64-bit programs
-				if ( (sysctlbyname("hw.optional.x86_64", &available, &len, NULL, 0) == 0) && available )
-					onlyArchs.insert(ArchPair(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL));
+				if ( (sysctlbyname("hw.optional.x86_64", &available, &len, NULL, 0) == 0) && available ) {
+					// check system is capable of running x86_64h code
+					struct host_basic_info info;
+					mach_msg_type_number_t count = HOST_BASIC_INFO_COUNT;
+					mach_port_t hostPort = mach_host_self();
+					kern_return_t result = host_info(hostPort, HOST_BASIC_INFO, (host_info_t)&info, &count);
+					mach_port_deallocate(mach_task_self(), hostPort);
+					if ( result != KERN_SUCCESS )
+						throw "host_info() failed";
+					if ( info.cpu_subtype == CPU_SUBTYPE_X86_64_H )
+						onlyArchs.insert(ArchPair(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_H));
+					else
+						onlyArchs.insert(ArchPair(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_ALL));
+				}
 			#else
 				#error unsupported architecture
 			#endif
@@ -3483,10 +3587,10 @@ int main(int argc, const char* argv[])
 		
 		// build list of shared dylibs
 		if ( dylibListFile != NULL )
-			setSharedDylibs(rootPath, overlayPath, dylibListFile, onlyArchs);
+			setSharedDylibs(rootPath, overlayPaths, dylibListFile, onlyArchs);
 		else
-			scanForSharedDylibs(rootPath, overlayPath, "/var/db/dyld/shared_region_roots/", onlyArchs);
-		bool didUpdate = updateSharedeCacheFile(rootPath, overlayPath, cacheDir, explicitCacheDir, onlyArchs, force, alphaSort, optimize,
+			scanForSharedDylibs(rootPath, overlayPaths, "/var/db/dyld/shared_region_roots/", onlyArchs);
+		bool didUpdate = updateSharedeCacheFile(rootPath, overlayPaths, cacheDir, explicitCacheDir, onlyArchs, force, alphaSort, optimize,
 								false, verify, keepSignatures, dontMapLocalSymbols);
 								
 		if ( didUpdate && !iPhoneOS ) {
@@ -3495,14 +3599,32 @@ int main(int argc, const char* argv[])
 				typedef bool (*dscsym_proc_t)(const char *root);
 				dscsym_proc_t proc = (dscsym_proc_t)dlsym(handle, "dscsym_save_nuggets_for_current_caches");
 				const char* nuggetRootPath = "/";
-				if ( overlayPath[0] != '\0' ) 
-					nuggetRootPath = overlayPath;
+				if ( !overlayPaths.empty() ) 
+					nuggetRootPath = overlayPaths[0];
 				else if ( rootPath[0] != '\0' )
 					nuggetRootPath = rootPath;
 				(*proc)(nuggetRootPath);
 			}
 			dlclose(handle);
 		}
+
+		if ( relaunchForHaswell ) {
+			char cmd[2048];
+			strlcpy(cmd, argv[0], 2048);
+			strlcat(cmd, " -arch x86_64h", 2048);
+			if ( force )
+				strlcat(cmd, " -force", 2048);
+			if ( verify )
+				strlcat(cmd, " -verify", 2048);
+			if ( alphaSort )
+				strlcat(cmd, " -sort_by_name", 2048);
+			if ( (rootPath != NULL) && (rootPath[0] != '\0') ) {
+				strlcat(cmd, " -root ", 2048);
+				strlcat(cmd, rootPath, 2048);
+			}
+			return system(cmd);
+		}
+
 	}
 	catch (const char* msg) {
 		fprintf(stderr, "update_dyld_shared_cache failed: %s\n", msg);

@@ -55,7 +55,7 @@
 #include "mach-o/dyld_images.h"
 
 // in dyldStartup.s
-extern "C" void fast_stub_binding_helper_interface();
+extern "C" void stub_binding_helper_i386_old();
 
 
 #if __x86_64__
@@ -352,11 +352,11 @@ void ImageLoaderMachOClassic::prefetchLINKEDIT(const LinkContext& context)
 		end += fSymbolTable[fDynamicInfo->iextdefsym+fDynamicInfo->nextdefsym-1].n_un.n_strx;
 		
 	// round to whole pages
-	start = start & (-4096);
-	end = (end + 4095) & (-4096);
+	start = dyld_page_trunc(start);
+	end = dyld_page_round(end);
 	
 	// skip if there is only one page
-	if ( (end-start) > 4096 ) {
+	if ( (end-start) > dyld_page_size ) {
 		madvise((void*)start, end-start, MADV_WILLNEED);
 		fgTotalBytesPreFetched += (end-start);
 		if ( context.verboseMapping ) {
@@ -619,7 +619,7 @@ bool ImageLoaderMachOClassic::hasSubLibrary(const LinkContext& context, const Im
 			const char* lastSlash = strrchr(childInstallPath, '/');
 			if ( lastSlash != NULL ) {
 				const char* firstDot = strchr(lastSlash, '.');
-				int len;
+				size_t len;
 				if ( firstDot == NULL )
 					len = strlen(lastSlash);
 				else
@@ -1071,7 +1071,7 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 			// if reference is weak_import, then it is ok, just return 0
 			return 0;
 		}
-		throwSymbolNotFound(context, symbolName, this->getPath(), "flat namespace");
+		throwSymbolNotFound(context, symbolName, this->getPath(), "", "flat namespace");
 	}
 	else {
 		// symbol requires searching images with coalesced symbols (not done during prebinding)
@@ -1116,7 +1116,7 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 			if ( context.flatExportFinder(symbolName, &sym, foundIn) )
 				return (*foundIn)->getExportedSymbolAddress(sym, context, this);
 			
-			throwSymbolNotFound(context, symbolName, this->getPath(), "dynamic lookup");
+			throwSymbolNotFound(context, symbolName, this->getPath(), "", "dynamic lookup");
 		}
 		else if ( ord <= libraryCount() ) {
 			target = libImage(ord-1);
@@ -1150,7 +1150,7 @@ uintptr_t ImageLoaderMachOClassic::resolveUndefined(const LinkContext& context, 
 		}
 		
 		// nowhere to be found
-		throwSymbolNotFound(context, symbolName, this->getPath(), target->getPath());
+		throwSymbolNotFound(context, symbolName, this->getPath(), "", target->getPath());
 	}
 }
 
@@ -1402,11 +1402,11 @@ uintptr_t ImageLoaderMachOClassic::doBindLazySymbol(uintptr_t* lazyPointer, cons
 						const uint8_t type = sect->flags & SECTION_TYPE;
 						uint32_t symbolIndex = INDIRECT_SYMBOL_LOCAL;
 						if ( type == S_LAZY_SYMBOL_POINTERS ) {
-							const uint32_t pointerCount = sect->size / sizeof(uintptr_t);
+							const size_t pointerCount = sect->size / sizeof(uintptr_t);
 							uintptr_t* const symbolPointers = (uintptr_t*)(sect->addr + fSlide);
 							if ( (lazyPointer >= symbolPointers) && (lazyPointer < &symbolPointers[pointerCount]) ) {
 								const uint32_t indirectTableOffset = sect->reserved1;
-								const uint32_t lazyIndex = lazyPointer - symbolPointers;
+								const size_t lazyIndex = lazyPointer - symbolPointers;
 								symbolIndex = indirectTable[indirectTableOffset + lazyIndex];
 							}
 						}
@@ -1519,7 +1519,7 @@ uintptr_t ImageLoaderMachOClassic::getAddressCoalIterator(CoalIterator& it, cons
 		symbol_index = toc[it.curIndex-1].symbol_index;
 	}
 	else {
-		symbol_index = fDynamicInfo->iextdefsym+it.curIndex-1;
+		symbol_index = fDynamicInfo->iextdefsym + (uint32_t)it.curIndex - 1;
 	}	
 	const struct macho_nlist* sym = &fSymbolTable[symbol_index];
 	//dyld::log("getAddressCoalIterator() => 0x%llX, %s symbol_index=%d, in %s\n", (uint64_t)(sym->n_value + fSlide), &fStrings[sym->n_un.n_strx], symbol_index, this->getPath());
@@ -1554,7 +1554,7 @@ void ImageLoaderMachOClassic::updateUsesCoalIterator(CoalIterator& it, uintptr_t
 		symbol_index = toc[it.curIndex-1].symbol_index;
 	}
 	else {
-		symbol_index = fDynamicInfo->iextdefsym+it.curIndex-1;
+		symbol_index = fDynamicInfo->iextdefsym + (uint32_t)it.curIndex - 1;
 	}	
 
 	// if this image's copy of the symbol is not a weak definition nor a weak reference then nothing to coalesce here
@@ -1664,11 +1664,11 @@ void ImageLoaderMachOClassic::updateUsesCoalIterator(CoalIterator& it, uintptr_t
 					case S_NON_LAZY_SYMBOL_POINTERS:
 					case S_LAZY_SYMBOL_POINTERS:
 					{
-						uint32_t elementCount = sect->size / elementSize;
+						size_t elementCount = sect->size / elementSize;
 						const uint32_t indirectTableOffset = sect->reserved1;
 						uint8_t* ptrToBind = (uint8_t*)(sect->addr + fSlide);
 						//dyld::log(" scanning section %s of %s starting at %p\n", sect->sectname, this->getShortName(), ptrToBind);
-						for (uint32_t j=0; j < elementCount; ++j, ptrToBind += elementSize) {
+						for (size_t j=0; j < elementCount; ++j, ptrToBind += elementSize) {
 							if ( indirectTable[indirectTableOffset + j] == symbol_index ) {
 								//dyld::log("  found symbol index match at %d/%d, ptrToBind=%p\n", j, elementCount, ptrToBind);
 								// update pointer
@@ -1711,7 +1711,7 @@ void ImageLoaderMachOClassic::bindIndirectSymbolPointers(const LinkContext& cont
 						bool isLazySymbol = false;
 						const uint8_t type = sect->flags & SECTION_TYPE;
 						uint32_t elementSize = sizeof(uintptr_t);
-						uint32_t elementCount = sect->size / elementSize;
+						size_t elementCount = sect->size / elementSize;
 						if ( type == S_NON_LAZY_SYMBOL_POINTERS ) {
 							if ( ! bindNonLazys )
 								continue;
@@ -1739,7 +1739,7 @@ void ImageLoaderMachOClassic::bindIndirectSymbolPointers(const LinkContext& cont
 						}
 						const uint32_t indirectTableOffset = sect->reserved1;
 						uint8_t* ptrToBind = (uint8_t*)(sect->addr + fSlide);
-						for (uint32_t j=0; j < elementCount; ++j, ptrToBind += elementSize) {
+						for (size_t j=0; j < elementCount; ++j, ptrToBind += elementSize) {
 				#if LINKEDIT_USAGE_DEBUG
 							noteAccessedLinkEditAddress(&indirectTable[indirectTableOffset + j]);
 				#endif
@@ -1832,7 +1832,7 @@ void ImageLoaderMachOClassic::initializeLazyStubs(const LinkContext& context)
 							const uint32_t* const indirectTable = (uint32_t*)&fLinkEditBase[fDynamicInfo->indirectsymoff];
 							uint8_t* start = (uint8_t*)(sect->addr + this->fSlide);
 							uint8_t* end = start + sect->size;
-							uintptr_t dyldHandler = (uintptr_t)&fast_stub_binding_helper_interface;
+							uintptr_t dyldHandler = (uintptr_t)&stub_binding_helper_i386_old;
 							uint32_t entryIndex = 0;
 							for (uint8_t* entry = start; entry < end; entry += 5, ++entryIndex) {
 								bool installLazyHandler = true;
@@ -1950,19 +1950,12 @@ void ImageLoaderMachOClassic::doInterpose(const LinkContext& context)
 					for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
 						const uint8_t type = sect->flags & SECTION_TYPE;
 						if ( (type == S_NON_LAZY_SYMBOL_POINTERS) || (type == S_LAZY_SYMBOL_POINTERS) ) {
-							const uint32_t pointerCount = sect->size / sizeof(uintptr_t);
+							const size_t pointerCount = sect->size / sizeof(uintptr_t);
 							uintptr_t* const symbolPointers = (uintptr_t*)(sect->addr + fSlide);
-							for (uint32_t pointerIndex=0; pointerIndex < pointerCount; ++pointerIndex) {
-								for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
-									// replace all references to 'replacee' with 'replacement'
-									if ( (symbolPointers[pointerIndex] == it->replacee) && (this != it->replacementImage) ) {
-										if ( context.verboseInterposing ) {
-											dyld::log("dyld: interposing: at %p replace 0x%lX with 0x%lX in %s\n", 
-												&symbolPointers[pointerIndex], it->replacee, it->replacement, this->getPath());
-										}
-										symbolPointers[pointerIndex] = it->replacement;
-									}
-								}
+							for (size_t pointerIndex=0; pointerIndex < pointerCount; ++pointerIndex) {
+								uintptr_t newValue = interposedAddress(context, symbolPointers[pointerIndex], this);
+								if ( newValue != symbolPointers[pointerIndex] )
+									symbolPointers[pointerIndex] = newValue;
 							}
 						}
 				#if __i386__
@@ -1975,16 +1968,10 @@ void ImageLoaderMachOClassic::doInterpose(const LinkContext& context)
 								if ( entry[0] == 0xE9 ) { // 0xE9 == JMP 
 									uint32_t rel32 = *((uint32_t*)&entry[1]); // assume unaligned load of uint32_t is ok
 									uint32_t target = (uint32_t)&entry[5] + rel32;
-									for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
-										// replace all references to 'replacee' with 'replacement'
-										if ( (it->replacee == target) && (this != it->replacementImage) ) {
-											if ( context.verboseInterposing ) {
-												dyld::log("dyld: interposing: at %p replace JMP 0x%lX with JMP 0x%lX in %s\n", 
-													&entry[1], it->replacee, it->replacement, this->getPath());
-											}
-											uint32_t newRel32 = it->replacement - (uint32_t)&entry[5];
-											*((uint32_t*)&entry[1]) = newRel32; // assume unaligned store of uint32_t is ok
-										}
+									uint32_t newTarget = interposedAddress(context, target, this);
+									if ( newTarget != target ) {
+										uint32_t newRel32 = newTarget - (uint32_t)&entry[5];
+										*((uint32_t*)&entry[1]) = newRel32; // assume unaligned store of uint32_t is ok
 									}
 								}
 							}
@@ -2007,14 +1994,76 @@ void ImageLoaderMachOClassic::doInterpose(const LinkContext& context)
 				case POINTER_RELOC:
 					{
 						uintptr_t* location = ((uintptr_t*)(reloc->r_address + relocBase));
-						for (std::vector<InterposeTuple>::iterator it=fgInterposingTuples.begin(); it != fgInterposingTuples.end(); it++) {
-							// replace all references to 'replacee' with 'replacement'
-							if ( (*location == it->replacee) && (this != it->replacementImage) ) {
-								if ( context.verboseInterposing ) {
-									dyld::log("dyld: interposing: at %p replace 0x%lX with 0x%lX in %s\n", 
-										location, it->replacee, it->replacement, this->getPath());
+						uintptr_t value = *location;
+						uintptr_t newValue = interposedAddress(context, value, this);
+						if ( newValue != value )
+							*location = newValue;
+					}
+					break;
+			}
+		}
+	}
+}
+
+void ImageLoaderMachOClassic::dynamicInterpose(const LinkContext& context) 
+{
+	if ( context.verboseInterposing )
+		dyld::log("dyld: dynamic interposing %lu tuples onto image: %s\n", context.dynamicInterposeCount, this->getPath());
+
+	// scan indirect symbols
+	const uint32_t cmd_count = ((macho_header*)fMachOData)->ncmds;
+	const struct load_command* const cmds = (struct load_command*)&fMachOData[sizeof(macho_header)];
+	const struct load_command* cmd = cmds;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		switch (cmd->cmd) {
+			case LC_SEGMENT_COMMAND:
+				{
+					const struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+					const struct macho_section* const sectionsStart = (struct macho_section*)((char*)seg + sizeof(struct macho_segment_command));
+					const struct macho_section* const sectionsEnd = &sectionsStart[seg->nsects];
+					for (const struct macho_section* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+						const uint8_t type = sect->flags & SECTION_TYPE;
+						if ( (type == S_NON_LAZY_SYMBOL_POINTERS) || (type == S_LAZY_SYMBOL_POINTERS) ) {
+							const size_t pointerCount = sect->size / sizeof(uintptr_t);
+							uintptr_t* const symbolPointers = (uintptr_t*)(sect->addr + fSlide);
+							for (size_t pointerIndex=0; pointerIndex < pointerCount; ++pointerIndex) {
+								for(size_t i=0; i < context.dynamicInterposeCount; ++i) {
+									// replace all references to 'replacee' with 'replacement'
+									if ( symbolPointers[pointerIndex] == (uintptr_t)context.dynamicInterposeArray[i].replacee ) {
+										if ( context.verboseInterposing ) {
+											dyld::log("dyld: dynamic interposing: at %p replace %p with %p in %s\n", 
+												&symbolPointers[pointerIndex], context.dynamicInterposeArray[i].replacee, context.dynamicInterposeArray[i].replacement, this->getPath());
+										}
+										symbolPointers[pointerIndex] = (uintptr_t)context.dynamicInterposeArray[i].replacement;
+									}
 								}
-								*location = it->replacement;
+							}
+						}
+					}
+				}
+				break;
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+	
+	// scan external relocations 
+	const uintptr_t relocBase = this->getRelocBase();
+	const relocation_info* const relocsStart = (struct relocation_info*)(&fLinkEditBase[fDynamicInfo->extreloff]);
+	const relocation_info* const relocsEnd = &relocsStart[fDynamicInfo->nextrel];
+	for (const relocation_info* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
+		if (reloc->r_length == RELOC_SIZE) {
+			switch(reloc->r_type) {
+				case POINTER_RELOC:
+					{
+						uintptr_t* location = ((uintptr_t*)(reloc->r_address + relocBase));
+						for(size_t i=0; i < context.dynamicInterposeCount; ++i) {
+							// replace all references to 'replacee' with 'replacement'
+							if ( *location == (uintptr_t)context.dynamicInterposeArray[i].replacee ) {
+								if ( context.verboseInterposing ) {
+									dyld::log("dyld: dynamic interposing: at %p replace %p with %p in %s\n", 
+										location, context.dynamicInterposeArray[i].replacee, context.dynamicInterposeArray[i].replacement, this->getPath());
+								}
+								*location = (uintptr_t)context.dynamicInterposeArray[i].replacement;
 							}
 						}
 					}

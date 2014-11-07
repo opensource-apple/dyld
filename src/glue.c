@@ -43,6 +43,20 @@
 #include <pthread.h>
 #if TARGET_IPHONE_SIMULATOR
 	#include "dyldSyscallInterface.h"
+	#include "dyld_images.h"
+	#include <mach-o/loader.h>
+	#include <mach-o/nlist.h>
+	#if __LP64__
+		#define LC_SEGMENT_COMMAND			LC_SEGMENT_64
+		typedef struct segment_command_64	macho_segment_command;
+		typedef struct mach_header_64		macho_header;
+		typedef struct nlist_64				macho_nlist;
+	#else
+		#define LC_SEGMENT_COMMAND			LC_SEGMENT
+		typedef struct segment_command		macho_segment_command;
+		typedef struct mach_header			macho_header;
+		typedef struct nlist				macho_nlist;
+	#endif
 #endif
 
 // from _simple.h in libc
@@ -108,10 +122,12 @@ void __assert_rtn(const char* func, const char* file, int line, const char* fail
 }
 
 
+int	myfprintf(FILE* file, const char* format, ...) __asm("_fprintf");
+
 // called by libuwind code before aborting
 size_t fwrite(const void* ptr, size_t size, size_t nitme, FILE* stream)
 {
-	return fprintf(stream, "%s", (char*)ptr); 
+	return myfprintf(stream, "%s", (char*)ptr); 
 }
 
 // called by libuwind code before aborting
@@ -447,6 +463,109 @@ uint64_t mach_absolute_time(void) {
 	return gSyscallHelpers->mach_absolute_time();
 } 
 
+DIR* opendir(const char* path) {
+	if ( gSyscallHelpers->version < 3 )
+		return NULL;
+	return gSyscallHelpers->opendir(path);
+}
+
+int	readdir_r(DIR* dirp, struct dirent* entry, struct dirent **result) {
+	if ( gSyscallHelpers->version < 3 )
+		return EPERM;
+	return gSyscallHelpers->readdir_r(dirp, entry, result);
+}
+
+int closedir(DIR* dirp) {
+	if ( gSyscallHelpers->version < 3 )
+		return EPERM;
+	return gSyscallHelpers->closedir(dirp);
+}
+
+
+typedef void (*LoadFuncPtr)(void* shm, void* image, uint64_t timestamp);
+typedef void (*UnloadFuncPtr)(void* shm, void* image);
+
+static LoadFuncPtr   sLoadPtr = NULL;
+static UnloadFuncPtr sUnloadPtr = NULL;
+
+// Lookup of coresymbolication functions in host dyld.
+static void findCSProcs() {
+	struct dyld_all_image_infos* imageInfo = (struct dyld_all_image_infos*)(gSyscallHelpers->getProcessInfo());
+	const struct mach_header* hostDyldMH = imageInfo->dyldImageLoadAddress;
+
+	// find symbol table and slide of host dyld
+	uintptr_t slide = 0;
+	const macho_nlist* symbolTable = NULL;
+	const char* symbolTableStrings = NULL;
+	const struct dysymtab_command* dynSymbolTable = NULL;
+	const uint32_t cmd_count = hostDyldMH->ncmds;
+	const struct load_command* const cmds = (struct load_command*)(((char*)hostDyldMH)+sizeof(macho_header));
+	const struct load_command* cmd = cmds;
+	const uint8_t* linkEditBase = NULL;
+	for (uint32_t i = 0; i < cmd_count; ++i) {
+		switch (cmd->cmd) {
+			case LC_SEGMENT_COMMAND:
+				{
+					const macho_segment_command* seg = (macho_segment_command*)cmd;
+					if ( (seg->fileoff == 0) && (seg->filesize != 0) )
+						slide = (uintptr_t)hostDyldMH - seg->vmaddr;
+					if ( strcmp(seg->segname, "__LINKEDIT") == 0 )
+						linkEditBase = (uint8_t*)(seg->vmaddr - seg->fileoff + slide);
+				}
+				break;
+			case LC_SYMTAB:
+				{
+					const struct symtab_command* symtab = (struct symtab_command*)cmd;
+					if ( linkEditBase == NULL )
+						return;
+					symbolTableStrings = (const char*)&linkEditBase[symtab->stroff];
+					symbolTable = (macho_nlist*)(&linkEditBase[symtab->symoff]);
+				}
+				break;
+			case LC_DYSYMTAB:
+				dynSymbolTable = (struct dysymtab_command*)cmd;
+				break;
+		}
+		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
+	}
+	if ( symbolTableStrings == NULL )
+		return;
+	if ( dynSymbolTable == NULL )
+		return;
+
+	// scan local symbols in host dyld looking for load/unload functions
+	const macho_nlist* const localsStart = &symbolTable[dynSymbolTable->ilocalsym];
+	const macho_nlist* const localsEnd= &localsStart[dynSymbolTable->nlocalsym];
+	for (const macho_nlist* s = localsStart; s < localsEnd; ++s) {
+ 		if ( ((s->n_type & N_TYPE) == N_SECT) && ((s->n_type & N_STAB) == 0) ) {
+			const char* name = &symbolTableStrings[s->n_un.n_strx];
+			if ( strcmp(name, "__Z28coresymbolication_load_imageP25CSCppDyldSharedMemoryPagePK11ImageLoadery") == 0 )
+				sLoadPtr = (LoadFuncPtr)(s->n_value + slide);
+			else if ( strcmp(name, "__Z30coresymbolication_unload_imageP25CSCppDyldSharedMemoryPagePK11ImageLoader") == 0 )
+				sUnloadPtr = (UnloadFuncPtr)(s->n_value + slide);
+		}
+	}
+}
+
+//void coresymbolication_unload_image(void*, const ImageLoader*);
+void _Z28coresymbolication_load_imagePvPK11ImageLoadery(void* shm, void* image, uint64_t time) {
+	// look up function in host dyld just once
+	if ( sLoadPtr == NULL ) 
+		findCSProcs();
+	if ( sLoadPtr != NULL ) 
+		(*sLoadPtr)(shm, image, time);
+} 
+
+//void coresymbolication_load_image(void**, const ImageLoader*, uint64_t);
+void _Z30coresymbolication_unload_imagePvPK11ImageLoader(void* shm, void* image) {
+	// look up function in host dyld just once
+	if ( sUnloadPtr == NULL ) 
+		findCSProcs();
+	if ( sUnloadPtr != NULL ) 
+		(*sUnloadPtr)(shm, image);
+}
+
+
 int* __error(void) {
 	return gSyscallHelpers->errnoAddress();
 } 
@@ -454,7 +573,6 @@ int* __error(void) {
 void mach_init() {
 	mach_task_self_ = task_self_trap();
 	//_task_reply_port = _mach_reply_port();
-	
 }
 
 mach_port_t mach_task_self_ = MACH_PORT_NULL;

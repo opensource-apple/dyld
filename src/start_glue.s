@@ -68,5 +68,19 @@ Lstart:
  
 #endif /* __arm__ */
 
+
+#if __arm64__
+ 
+    .align 2
+    .globl _start
+    .private_extern _start
+_start:
+	nop
+Lstart:
+	bl	_exit			// result in x0 already in param reg x0
+	brk	#3
+
+#endif /* __arm64__ */
+
 	.subsections_via_symbols
 	

@@ -40,12 +40,6 @@ extern "C" {
 //
 extern int _dyld_func_lookup(const char* dyld_func_name, void **address);
 
-
-//
-// _dyld_moninit() is a private interface between libSystem.dylib and dyld
-//
-extern void _dyld_moninit(void (*monaddition)(char *lowpc, char *highpc));
-
 //
 // private interface between libSystem.dylib and dyld
 //
@@ -185,6 +179,7 @@ extern const char* dyld_image_path_containing_address(const void* addr);
 #define DYLD_MACOSX_VERSION_10_7		0x000A0700
 #define DYLD_MACOSX_VERSION_10_8		0x000A0800
 #define DYLD_MACOSX_VERSION_10_9		0x000A0900
+#define DYLD_MACOSX_VERSION_10_10		0x000A0A00
 
 #define DYLD_IOS_VERSION_2_0		0x00020000
 #define DYLD_IOS_VERSION_2_1		0x00020100
@@ -201,6 +196,8 @@ extern const char* dyld_image_path_containing_address(const void* addr);
 #define DYLD_IOS_VERSION_6_0		0x00060000
 #define DYLD_IOS_VERSION_6_1		0x00060100
 #define DYLD_IOS_VERSION_7_0		0x00070000
+#define DYLD_IOS_VERSION_7_1		0x00070100
+#define DYLD_IOS_VERSION_8_0		0x00080000
 
 //
 // This is finds the SDK version a binary was built against.
@@ -240,15 +237,14 @@ extern uint32_t dyld_get_program_min_os_version();
 
 
 
-#if __IPHONE_OS_VERSION_MIN_REQUIRED	
 //
 // Returns if any OS dylib has overridden its copy in the shared cache
 //
 // Exists in iPhoneOS 3.1 and later 
+// Exists in Mac OS X 10.10 and later
 extern bool dyld_shared_cache_some_image_overridden();
-#endif
 
-	
+
 	
 //
 // Returns if the process is setuid or is code signed with entitlements.
@@ -262,6 +258,20 @@ extern bool dyld_process_is_restricted();
 //
 // Exists in Mac OS X 10.9 and later
 #define NSLINKMODULE_OPTION_CAN_UNLOAD                  0x20
+
+
+//
+// Update all bindings on specified image. 
+// Looks for uses of 'replacement' and changes it to 'replacee'.
+// NOTE: this is less safe than using static interposing via DYLD_INSERT_LIBRARIES
+// because the running program may have already copy the pointer values to other
+// locations that dyld does not know about.
+//
+struct dyld_interpose_tuple {
+	const void* replacement;
+	const void* replacee;
+};
+extern void dyld_dynamic_interpose(const struct mach_header* mh, const struct dyld_interpose_tuple array[], size_t count);
 
 
 

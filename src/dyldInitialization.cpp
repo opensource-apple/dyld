@@ -154,7 +154,7 @@ static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 						const uint8_t type = sect->flags & SECTION_TYPE;
 						if ( type == S_NON_LAZY_SYMBOL_POINTERS ) {
 							// rebase non-lazy pointers (which all point internal to dyld, since dyld uses no shared libraries)
-							const uint32_t pointerCount = sect->size / sizeof(uintptr_t);
+							const uint32_t pointerCount = (uint32_t)(sect->size / sizeof(uintptr_t));
 							uintptr_t* const symbolPointers = (uintptr_t*)(sect->addr + slide);
 							for (uint32_t j=0; j < pointerCount; ++j) {
 								symbolPointers[j] += slide;

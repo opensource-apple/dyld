@@ -66,6 +66,7 @@ public:
 
 protected:
 	virtual void						doInterpose(const LinkContext& context);
+	virtual void						dynamicInterpose(const LinkContext& context);
 	virtual void						setDyldInfo(const dyld_info_command*) {}
 	virtual void						setSymbolTableInfo(const macho_nlist*, const char*, const dysymtab_command*);
 	virtual	bool						isSubframeworkOf(const LinkContext& context, const ImageLoader* image) const;

@@ -28,6 +28,8 @@
 
 #include <stdint.h>
 
+struct __cxa_range_t { const void* addr; size_t length; };
+
 #if __cplusplus
 namespace dyld {
 #endif
@@ -41,7 +43,7 @@ namespace dyld {
 		uintptr_t	version;
 		void		(*acquireGlobalDyldLock)();
 		void		(*releaseGlobalDyldLock)();
-		char*		(*getThreadBufferFor_dlerror)(uint32_t sizeRequired);
+		char*		(*getThreadBufferFor_dlerror)(size_t sizeRequired);
 		// addded in version 2
 		void*		(*malloc)(size_t);
 		void		(*free)(void*);
@@ -70,6 +72,8 @@ namespace dyld {
 		// added in version 12
 		kern_return_t (*vm_alloc)(vm_map_t task, vm_address_t* addr, vm_size_t size, int flags);
 		void*		(*mmap)(void* addr, size_t len, int prot, int flags, int fd, off_t offset);
+		// added in version 13
+		void		(*cxa_finalize_ranges)(const struct __cxa_range_t ranges[], int count);
 	};
 #if __cplusplus
 }

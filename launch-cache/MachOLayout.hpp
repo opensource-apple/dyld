@@ -69,11 +69,11 @@ public:
 	struct Segment
 	{
 	public:
-					Segment(uint64_t addr, uint64_t vmsize, uint64_t offset, uint64_t file_size, 
+					Segment(uint64_t addr, uint64_t vmsize, uint64_t offset, uint64_t file_size, uint64_t align,
 							uint32_t prot, const char* segName) : fOrigAddress(addr), fOrigSize(vmsize),
 							fOrigFileOffset(offset),  fOrigFileSize(file_size), fOrigPermissions(prot), 
-							fSize(vmsize), fFileOffset(offset), fFileSize(file_size), fPermissions(prot),
-							fNewAddress(0), fMappedAddress(NULL) {
+							fSize(vmsize), fFileOffset(offset), fFileSize(file_size), fAlignment(align),
+							fPermissions(prot), fNewAddress(0), fMappedAddress(NULL) {
 								strlcpy(fOrigName, segName, 16);
 							}
 							
@@ -85,6 +85,7 @@ public:
 		bool		readable() const	{ return fPermissions & VM_PROT_READ; }
 		bool		writable() const	{ return fPermissions & VM_PROT_WRITE; }
 		bool		executable() const	{ return fPermissions & VM_PROT_EXECUTE; }
+		uint64_t	alignment() const	{ return fAlignment; }
 		const char* name() const		{ return fOrigName; }
 		uint64_t	newAddress() const	{ return fNewAddress; }
 		void*		mappedAddress() const			{ return fMappedAddress; }
@@ -105,6 +106,7 @@ public:
 		uint64_t		fSize;
 		uint64_t		fFileOffset;
 		uint64_t		fFileSize;
+		uint64_t		fAlignment;
 		uint32_t		fPermissions;
 		uint64_t		fNewAddress;
 		void*			fMappedAddress;
@@ -134,11 +136,13 @@ public:
 	virtual bool								hasMainExecutableLookupLinkage() const = 0;
 	virtual bool								isTwoLevelNamespace() const	= 0;
 	virtual bool								hasDyldInfo() const	= 0;
+	virtual bool								hasMultipleReadWriteSegments() const = 0;
 	virtual	uint32_t							getNameFileOffset() const = 0;
 	virtual time_t								getLastModTime() const = 0;
 	virtual ino_t								getInode() const = 0;
 	virtual std::vector<Segment>&				getSegments() = 0;
 	virtual const std::vector<Segment>&			getSegments() const = 0;
+	virtual const Segment*						getSegment(const char* name) const = 0;
 	virtual const std::vector<Library>&			getLibraries() const = 0;
 	virtual uint64_t							getBaseAddress() const = 0;
 	virtual uint64_t							getVMSize() const = 0;
@@ -180,11 +184,13 @@ public:
 	virtual bool								hasMainExecutableLookupLinkage() const { return fMainExecutableLookupLinkage; }
 	virtual bool								isTwoLevelNamespace() const	{ return (fFlags & MH_TWOLEVEL); }
 	virtual bool								hasDyldInfo() const		{ return fHasDyldInfo; }
+	virtual bool								hasMultipleReadWriteSegments() const { return fHasTooManyWritableSegments; }
 	virtual	uint32_t							getNameFileOffset() const{ return fNameFileOffset; }
 	virtual time_t								getLastModTime() const	{ return fMTime; }
 	virtual ino_t								getInode() const		{ return fInode; }
 	virtual std::vector<Segment>&				getSegments()			{ return fSegments; }
 	virtual const std::vector<Segment>&			getSegments() const		{ return fSegments; }
+	virtual const Segment*						getSegment(const char* name) const;
 	virtual const std::vector<Library>&			getLibraries() const	{ return fLibraries; }
 	virtual uint64_t							getBaseAddress() const	{ return fLowSegment->address(); }
 	virtual uint64_t							getVMSize() const		{ return fVMSize; }
@@ -202,6 +208,11 @@ private:
 	typedef typename A::P					P;
 	typedef typename A::P::E				E;
 	typedef typename A::P::uint_t			pint_t;
+	
+	uint64_t									segmentSize(const macho_segment_command<typename A::P>* segCmd) const;
+	uint64_t									segmentFileSize(const macho_segment_command<typename A::P>* segCmd) const;
+	uint64_t									segmentAlignment(const macho_segment_command<typename A::P>* segCmd) const;
+	bool										validReadWriteSeg(const Segment& seg) const;
 	
 	static cpu_type_t							arch();
 
@@ -231,6 +242,7 @@ private:
 	bool										fMainExecutableLookupLinkage;
 	bool										fIsDylib;
 	bool										fHasDyldInfo;
+	bool										fHasTooManyWritableSegments;
 	mutable const uint8_t*						fDyldInfoExports;
 	uuid_t										fUUID;
 };
@@ -282,13 +294,19 @@ const MachOLayoutAbstraction* UniversalMachOLayout::getSlice(ArchPair ap) const
 		if ( layout->getArchPair().arch == ap.arch ) {
             switch ( ap.arch ) {
                 case CPU_TYPE_ARM:
-                    if ( layout->getArchPair().subtype == ap.subtype ) 
+				case CPU_TYPE_X86_64:
+                   if ( (layout->getArchPair().subtype & ~CPU_SUBTYPE_MASK) == (ap.subtype & ~CPU_SUBTYPE_MASK) )
                         return layout;
                     break;
-                default:
+                 default:
                     return layout;
             }
         }
+	}
+	// if requesting x86_64h and it did not exist, try x86_64 as a fallback
+	if ((ap.arch == CPU_TYPE_X86_64) && (ap.subtype == CPU_SUBTYPE_X86_64_H)) {
+		ap.subtype = CPU_SUBTYPE_X86_64_ALL;
+		return this->getSlice(ap);
 	}
 	return NULL;
 }
@@ -385,6 +403,9 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<Arch
 							case CPU_TYPE_ARM:
 								fLayouts.push_back(new MachOLayout<arm>(&p[fileOffset], fileOffset, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
 								break;
+							case CPU_TYPE_ARM64:
+								fLayouts.push_back(new MachOLayout<arm64>(&p[fileOffset], fileOffset, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
+								break;
 							default:
 								throw "unknown slice in fat file";
 						}
@@ -397,7 +418,7 @@ UniversalMachOLayout::UniversalMachOLayout(const char* path, const std::set<Arch
 		}
 		else {
 			try {
-if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_I386)) {
+				if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_I386)) {
 					if ( requestedSlice(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
 						fLayouts.push_back(new MachOLayout<x86>(mh, 0, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
 				}
@@ -408,6 +429,10 @@ if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt3
 				else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_ARM)) {
 					if ( requestedSlice(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
 						fLayouts.push_back(new MachOLayout<arm>(mh, 0, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
+				}
+				else if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC_64) && (OSSwapLittleToHostInt32(mh->cputype) == CPU_TYPE_ARM64)) {
+					if ( requestedSlice(onlyArchs, OSSwapLittleToHostInt32(mh->cputype), OSSwapLittleToHostInt32(mh->cpusubtype)) ) 
+						fLayouts.push_back(new MachOLayout<arm64>(mh, 0, fPath, stat_buf.st_ino, stat_buf.st_mtime, stat_buf.st_uid));
 				}
 				else {
 					throw "unknown file format";
@@ -426,10 +451,67 @@ if ( (OSSwapLittleToHostInt32(mh->magic) == MH_MAGIC) && (OSSwapLittleToHostInt3
 
 
 template <typename A>
+uint64_t MachOLayout<A>::segmentSize(const macho_segment_command<typename A::P>* segCmd) const
+{
+	// <rdar://problem/13089366> segments may have 16KB alignment padding at end, if so we can remove that in cache
+	if ( segCmd->nsects() > 0 ) {
+		const macho_section<P>* const sectionsStart = (macho_section<P>*)((uint8_t*)segCmd + sizeof(macho_segment_command<P>));
+		const macho_section<P>* const lastSection = &sectionsStart[segCmd->nsects()-1];
+		uint64_t endSectAddr = lastSection->addr() + lastSection->size();
+		uint64_t endSectAddrPage = (endSectAddr + 4095) & (-4096);
+		if ( endSectAddrPage < (segCmd->vmaddr() + segCmd->vmsize()) ) {
+			uint64_t size =  endSectAddrPage - segCmd->vmaddr();
+			//if ( size != segCmd->vmsize() )
+			//	fprintf(stderr, "trim %s size=0x%08llX instead of 0x%08llX for %s\n", 
+			//		segCmd->segname(), size, segCmd->vmsize(), getFilePath());
+			return size;
+		}
+	}
+	return segCmd->vmsize();
+}
+
+template <typename A>
+uint64_t MachOLayout<A>::segmentAlignment(const macho_segment_command<typename A::P>* segCmd) const
+{
+	int p2align = 12;
+	if ( segCmd->nsects() > 0 ) {
+		const macho_section<P>* const sectionsStart = (macho_section<P>*)((uint8_t*)segCmd + sizeof(macho_segment_command<P>));
+		const macho_section<P>* const sectionsEnd = &sectionsStart[segCmd->nsects()-1];
+		for (const macho_section<P>*  sect=sectionsStart; sect < sectionsEnd; ++sect) {
+			if ( sect->align() > p2align )
+				p2align = sect->align();
+		}
+	}
+	return (1 << p2align);
+}
+
+template <typename A>
+uint64_t MachOLayout<A>::segmentFileSize(const macho_segment_command<typename A::P>* segCmd) const
+{
+	// <rdar://problem/13089366> segments may have 16KB alignment padding at end, if so we can remove that in cache
+	if ( segCmd->nsects() > 0 ) {
+		uint64_t endOffset = segCmd->fileoff();
+		const macho_section<P>* const sectionsStart = (macho_section<P>*)((uint8_t*)segCmd + sizeof(macho_segment_command<P>));
+		const macho_section<P>* const sectionsEnd = &sectionsStart[segCmd->nsects()];
+		for (const macho_section<P>* sect=sectionsStart; sect < sectionsEnd; ++sect) {
+			if ( sect->offset() != 0 )
+				endOffset = sect->offset() + sect->size();
+		}
+		uint64_t size = (endOffset - segCmd->fileoff() + 4095) & (-4096);
+		//if ( size != segCmd->filesize() )
+		//	fprintf(stderr, "trim %s filesize=0x%08llX instead of 0x%08llX for %s\n", 
+		//		segCmd->segname(), size, segCmd->filesize(), getFilePath());
+		return size;
+	}
+	return segCmd->filesize();
+}
+
+
+template <typename A>
 MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char* path, ino_t inode, time_t modTime, uid_t uid)
  : fPath(path), fOffset(offset), fArchPair(0,0), fMTime(modTime), fInode(inode), fHasSplitSegInfo(false), fRootOwned(uid==0),
    fShareableLocation(false), fDynamicLookupLinkage(false), fMainExecutableLookupLinkage(false), fIsDylib(false), 
-	fHasDyldInfo(false), fDyldInfoExports(NULL)
+	fHasDyldInfo(false), fHasTooManyWritableSegments(false), fDyldInfoExports(NULL)
 {
 	fDylibID.name = NULL;
 	fDylibID.currentVersion = 0;
@@ -493,9 +575,9 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 				break;
 			case macho_segment_command<P>::CMD:
 				{
-					macho_segment_command<P>* segCmd = (macho_segment_command<P>*)cmd;
-					fSegments.push_back(Segment(segCmd->vmaddr(), segCmd->vmsize(), segCmd->fileoff(), 
-								segCmd->filesize(), segCmd->initprot(), segCmd->segname()));
+					const macho_segment_command<P>* segCmd = (macho_segment_command<P>*)cmd;
+					fSegments.push_back(Segment(segCmd->vmaddr(), segmentSize(segCmd), segCmd->fileoff(), 
+								segmentFileSize(segCmd), segmentAlignment(segCmd), segCmd->initprot(), segCmd->segname()));
 				}
 				break;
 			case LC_SYMTAB:
@@ -543,6 +625,9 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 			if ( (fLowWritableSegment == NULL) || (seg.address() < fLowWritableSegment->address()) )
 				fLowWritableSegment = &seg;
 			fVMWritablSize += seg.size();
+			if ( !validReadWriteSeg(seg) ) {
+				fHasTooManyWritableSegments = true;
+			}
 		}
 		else {
 			if ( (fLowReadOnlySegment == NULL) || (seg.address() < fLowReadOnlySegment->address()) )
@@ -552,7 +637,7 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 	}
 	if ( (highSegment != NULL) && (fLowSegment != NULL) )
 		fVMSize = (highSegment->address() + highSegment->size() - fLowSegment->address() + 4095) & (-4096);			
-	
+
 	// scan undefines looking, for magic ordinals
 	if ( (symbolTableCmd != NULL) && (dynamicSymbolTableCmd != NULL) ) {
 		const macho_nlist<P>* symbolTable = (macho_nlist<P>*)((uint8_t*)machHeader + symbolTableCmd->symoff());
@@ -578,6 +663,19 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 template <> cpu_type_t MachOLayout<x86>::arch()     { return CPU_TYPE_I386; }
 template <> cpu_type_t MachOLayout<x86_64>::arch()  { return CPU_TYPE_X86_64; }
 template <> cpu_type_t MachOLayout<arm>::arch()		{ return CPU_TYPE_ARM; }
+template <> cpu_type_t MachOLayout<arm64>::arch()	{ return CPU_TYPE_ARM64; }
+
+template <>
+bool MachOLayout<x86>::validReadWriteSeg(const Segment& seg) const
+{
+	return (strcmp(seg.name(), "__DATA") == 0) || (strcmp(seg.name(), "__OBJC") == 0);
+}
+
+template <typename A>
+bool MachOLayout<A>::validReadWriteSeg(const Segment& seg) const
+{
+	return (strcmp(seg.name(), "__DATA") == 0);
+}
 
 
 template <>
@@ -597,6 +695,18 @@ bool MachOLayout<A>::isSplitSeg() const
 {
 	return false;
 }
+
+template <typename A>
+const MachOLayoutAbstraction::Segment* MachOLayout<A>::getSegment(const char* name) const
+{
+	for(std::vector<Segment>::const_iterator it = fSegments.begin(); it != fSegments.end(); ++it) {
+		const Segment& seg = *it;
+		if ( strcmp(seg.name(), name) == 0 )
+			return &seg;
+	}
+	return NULL;
+}
+
 
 
 #endif // __MACHO_LAYOUT__

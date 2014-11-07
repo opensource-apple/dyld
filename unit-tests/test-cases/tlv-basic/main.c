@@ -26,6 +26,9 @@
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
+__attribute__((weak))
+void foobar() {
+}
 
 __thread int a;
 __thread int b = 5;
@@ -35,45 +38,82 @@ __thread static int d = 5;
 
 static void* work(void* arg)
 {
+  uintptr_t offset = (uintptr_t)arg;
 	//fprintf(stderr, "self=%p, &a=%p\n", pthread_self(), get_a());
+  void* result = malloc(10);
 	if ( a != 0 ) {
-		FAIL("tlv-basic: get_a() non-zero");
+		FAIL("tlv-basic: a non-zero on slow-path");
 		exit(0);
 	}
 	if ( b != 5 ) {
-		FAIL("tlv-basic: get_b() not five");
+		FAIL("tlv-basic: b not five");
 		exit(0);
 	}
+  
 	if ( c != 0 ) {
-		FAIL("tlv-basic: get_c() non-zero");
+		FAIL("tlv-basic: c non-zero");
 		exit(0);
 	}
+  
 	if ( d != 5 ) {
-		FAIL("tlv-basic: get_d() not five");
+		FAIL("tlv-basic: gd not five");
 		exit(0);
 	}
-	return NULL;
+  
+  for(int i=0; i < 10000; ++i) {
+    a = 3 + offset + i;
+    b = 7 + offset + i;
+    c = 11 + offset + i;
+    d = 13 + offset + i;
+    foobar();
+    if ( a != 3 + offset + i ) {
+      FAIL("tlv-basic: a not three");
+      exit(0);
+    }
+    if ( b != 7 + offset + i ) {
+      FAIL("tlv-basic: b not seven");
+      exit(0);
+    }
+    if ( c != 11 + offset + i ) {
+      FAIL("tlv-basic: c not eleven");
+      exit(0);
+    }
+    if ( d != 13 + offset + i ) {
+      FAIL("tlv-basic: d not thirteen");
+      exit(0);
+    }
+  }
+
+	return result;
 }
 
 int main()
 {
 	pthread_t worker1;
-	if ( pthread_create(&worker1, NULL, work, NULL) != 0 ) {
+	if ( pthread_create(&worker1, NULL, work, (void*)1) != 0 ) {
 		FAIL("pthread_create failed");
 		exit(0);
 	}
 
 	pthread_t worker2;
-	if ( pthread_create(&worker2, NULL, work, NULL) != 0 ) {
+	if ( pthread_create(&worker2, NULL, work, (void*)10) != 0 ) {
 		FAIL("pthread_create failed");
 		exit(0);
 	}
 
+	pthread_t worker3;
+	if ( pthread_create(&worker3, NULL, work, (void*)100) != 0 ) {
+		FAIL("pthread_create failed");
+		exit(0);
+	}
+  
 	void* result;
 	//fprintf(stderr, "waiting for worker 1\n");
 	pthread_join(worker1, &result);
 	//fprintf(stderr, "waiting for worker 2\n");
 	pthread_join(worker2, &result);
+	//fprintf(stderr, "waiting for worker 3\n");
+	pthread_join(worker3, &result);
 
 	work(NULL);
 

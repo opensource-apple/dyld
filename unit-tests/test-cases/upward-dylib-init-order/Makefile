@@ -40,14 +40,15 @@ check_1:
 
 all_1: 
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib common.c -o libcommon.dylib  
-	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib u.c libcommon.dylib -o libu.dylib  
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib u2.c libcommon.dylib -o libu2.dylib
+	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib u.c libcommon.dylib -o libu.dylib -Wl,-upward_library,libu2.dylib
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib c.c libcommon.dylib -o libc.dylib -Wl,-upward_library,libu.dylib
 	${CC} ${CCFLAGS} -I${TESTROOT}/include -dynamiclib b.c libcommon.dylib -o libb.dylib libc.dylib
-	${CC} ${CCFLAGS} -I${TESTROOT}/include main.c  libb.dylib libu.dylib libcommon.dylib -o main
+	${CC} ${CCFLAGS} -I${TESTROOT}/include main.c  libb.dylib libcommon.dylib -o main
 
 
 clean:
-	${RM} ${RMFLAGS} *~ main libu.dylib libb.dylib libc.dylib libcommon.dylib
+	${RM} ${RMFLAGS} *~ main libu.dylib libu2.dylib libb.dylib libc.dylib libcommon.dylib
 
 
 	

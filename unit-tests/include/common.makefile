@@ -24,7 +24,7 @@ IOSROOT	=
 
 ifeq "$(OS_NAME)" "iPhoneOS"
 	#IOSROOT		= $(shell xcodebuild -version -sdk iphoneos.internal Path)
-	IOSROOT		= /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS7.0.Internal.sdk
+	IOSROOT		= /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS8.0.Internal.sdk
 	CC			= $(shell xcrun -sdk iphoneos.internal -find cc)  -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot $(IOSROOT)
 	CXX			= $(shell xcrun -sdk iphoneos.internal -find c++) -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot $(IOSROOT)
 	LIPO		= $(shell xcrun -sdk iphoneos.internal -find lipo)

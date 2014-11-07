@@ -14,6 +14,8 @@ DYLD_FALLBACK_LIBRARY_PATH
 .br
 DYLD_VERSIONED_LIBRARY_PATH
 .br
+DYLD_PRINT_TO_FILE
+.br
 DYLD_ROOT_PATH
 .br
 DYLD_SHARED_REGION
@@ -33,8 +35,6 @@ DYLD_PRINT_LIBRARIES
 DYLD_PRINT_LIBRARIES_POST_LAUNCH
 .br
 DYLD_BIND_AT_LAUNCH
-.br
-DYLD_NO_FIX_PREBINDING
 .br
 DYLD_DISABLE_DOFS
 .br
@@ -146,6 +146,12 @@ Whichever has the larger current_version value will be used in the process whene
 a dylib with that install name is required.  This is similar to DYLD_LIBRARY_PATH
 except instead of always overriding, it only overrides is the supplied library is newer.
 .TP
+.B DYLD_PRINT_TO_FILE
+This is a path to a (writable) file. Normally, the dynamic linker writes all
+logging output (triggered by DYLD_PRINT_* settings) to file descriptor 2 
+(which is usually stderr).  But this setting causes the dynamic linker to
+write logging output to the specified file.  
+.TP
 .B DYLD_ROOT_PATH
 This is a colon separated list of directories.  The dynamic linker will prepend each of
 this directory paths to every image access until a file is found.    
@@ -210,13 +216,6 @@ lazily bound at the time of their first call.
 .B DYLD_PRINT_STATISTICS
 Right before the process's main() is called, dyld prints out information about how
 dyld spent its time.  Useful for analyzing launch performance.
-.TP
-.B DYLD_NO_FIX_PREBINDING
-Normally, dyld will trigger the dyld shared cache to be regenerated if it notices
-the cache is out of date while launching a process.  If this environment variable
-is set, dyld will not trigger a cache rebuild.  This is useful to set while installing
-a large set of OS dylibs, to ensure the cache is not regenerated until the install
-is complete.
 .TP
 .B DYLD_DISABLE_DOFS 
 Causes dyld not register dtrace static probes with the kernel.

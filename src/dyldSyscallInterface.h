@@ -26,6 +26,7 @@
 #ifndef __DYLD_SYSCALL_HELPERS__
 #define __DYLD_SYSCALL_HELPERS__
 
+#include <dirent.h>
 
 #if __cplusplus
 namespace dyld {
@@ -67,6 +68,12 @@ namespace dyld {
 		void*			(*getProcessInfo)(void); // returns dyld_all_image_infos*;
 		int*			(*errnoAddress)();
 		uint64_t		(*mach_absolute_time)();
+		// Added in version 2
+		kern_return_t	(*thread_switch)(mach_port_name_t, int, mach_msg_timeout_t);
+		// Added in version 3
+		DIR*			(*opendir)(const char* path);
+		int 			(*readdir_r)(DIR* dirp, struct dirent* entry, struct dirent **result);
+		int 			(*closedir)(DIR* dirp);
 	};
 
 	extern const struct SyscallHelpers* gSyscallHelpers;

@@ -41,7 +41,7 @@ extern "C" void* __dso_handle;
 
 #if __LP64__
 	// room for about ~1000 initial dylibs
-	#define DYLD_POOL_CHUNK_SIZE 224*1024
+	#define DYLD_POOL_CHUNK_SIZE 200*1024
 #else
 	// room for about ~900 initial dylibs
 	#define DYLD_POOL_CHUNK_SIZE 150*1024
@@ -102,8 +102,8 @@ void free(void* ptr)
 	// ignore any pointer within dyld (i.e. stuff from pool or static strings)
 	if ( (dyld::gLibSystemHelpers != NULL) && ((ptr < &__dso_handle) || (ptr >= &initialPoolContent[DYLD_POOL_CHUNK_SIZE])) ) {
 		// ignore stuff in any dynamically alloated dyld pools
-		for (dyld_static_pool* p = initialPool.previousPool; p != NULL; p = p->previousPool) {
-			if ( (p->pool < ptr) && (ptr < p->end) ) {
+		for (dyld_static_pool* p = currentPool; p != NULL; p = p->previousPool) {
+			if ( (p->pool <= ptr) && (ptr < p->end) ) {
 				// do nothing, pool entries can't be reclaimed
 				//dyld::log("free(%p) from dynamic pool\n", ptr);
 				return;

@@ -35,6 +35,7 @@
 #include "mach-o/dyld_priv.h"
 #include "dyldLibSystemInterface.h"
 
+
 extern void _ZN4dyld3logEPKcz(const char*, ...);
 extern struct LibSystemHelpers* _ZN4dyld17gLibSystemHelpersE;
 
@@ -95,11 +96,10 @@ char* __cxa_get_globals_fast()
 
 
 
-
-#if !__arm__
+#if !__USING_SJLJ_EXCEPTIONS__
 //
-//  The intel versions of dyld uses zero-cost exceptions which are handled by
-//  linking with a special copy of libunwind.a
+//  When dyld uses zero-cost exceptions it just needs to implement 
+//  _dyld_find_unwind_sections to return sections inside dyld proper.
 //
 
 extern void*  ehStart  __asm("section$start$__TEXT$__eh_frame");
@@ -128,10 +128,11 @@ bool _dyld_find_unwind_sections(void* addr, struct dyld_unwind_sections* info)
 	}
 }
 
-#endif // !__arm__
-
-
-#if __arm__
+#else
+//
+//  When dyld uses setjump-longjump exceptions it needs to implement 
+//  routines to push and pop a stack of _Unwind_FunctionContext.
+//
 
 struct _Unwind_FunctionContext
 {

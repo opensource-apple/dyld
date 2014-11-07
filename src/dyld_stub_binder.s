@@ -25,9 +25,6 @@
  
 #include <System/machine/cpu_capabilities.h>
 
-// simulator does not have full libdyld.dylib - just a small libdyld_sim.dylib
-#if ! TARGET_IPHONE_SIMULATOR
-
 
 #ifdef __i386__
 
@@ -93,112 +90,164 @@ dyld_stub_binder_:
 
 #if __x86_64__
 
-#define MH_PARAM_BP			8
-#define LP_PARAM_BP			16
+#define RET_ADDR_RBP			24
+#define LP_PARAM_RBP			16
+#define MH_PARAM_RBP			8
+#define OLD_RBP_RBP				0
 
-#define RDI_SAVE			0
-#define RSI_SAVE			8
-#define RDX_SAVE			16
-#define RCX_SAVE			24
-#define R8_SAVE				32
-#define R9_SAVE				40
-#define RAX_SAVE			48
-#define XMM0_SAVE			64    /* 16-byte align */
-#define XMM1_SAVE			80
-#define XMM2_SAVE			96
-#define XMM3_SAVE			112
-#define XMM4_SAVE			128
-#define XMM5_SAVE			144
-#define XMM6_SAVE			160
-#define XMM7_SAVE			176
-#define YMM0_SAVE			64
-#define YMM1_SAVE			96
-#define YMM2_SAVE			128
-#define YMM3_SAVE			160
-#define YMM4_SAVE			192
-#define YMM5_SAVE			224
-#define YMM6_SAVE			256
-#define YMM7_SAVE			288
-#define STACK_SIZE			320 
- 
+#define RDI_SAVE_RBP			-8
+#define RSI_SAVE_RBP			-16
+#define RDX_SAVE_RBP			-24
+#define RCX_SAVE_RBP			-32
+#define RBX_SAVE_RBP			-40
+#define RAX_SAVE_RBP			-48
+#define R8_SAVE_RBP 			-56
+#define R9_SAVE_RBP 			-64
+#define STATIC_STACK_SIZE		256	// extra padding to allow it to be 64-byte aligned
+
+#define XMM0_SAVE_RSP			0x00
+#define XMM1_SAVE_RSP			0x10
+#define XMM2_SAVE_RSP			0x20
+#define XMM3_SAVE_RSP			0x30
+#define XMM4_SAVE_RSP			0x40
+#define XMM5_SAVE_RSP			0x50
+#define XMM6_SAVE_RSP			0x60
+#define XMM7_SAVE_RSP			0x70
+
 
  /*    
- * sp+4	lazy binding info offset
- * sp+0	address of ImageLoader cache
+ * sp+16 return address
+ * sp+8  lazy binding info offset
+ * sp+0	 address of ImageLoader cache
  */
     .align 2,0x90
     .globl dyld_stub_binder
 dyld_stub_binder:
 	pushq		%rbp
+	test		$0xF,%rsp				# at this point stack should be 16-byte aligned
+	jne			_stack_not_16_byte_aligned_error
 	movq		%rsp,%rbp
-	subq		$STACK_SIZE,%rsp	# at this point stack is 16-byte aligned because two meta-parameters where pushed
-	movq		%rdi,RDI_SAVE(%rsp)	# save registers that might be used as parameters
-	movq		%rsi,RSI_SAVE(%rsp)
-	movq		%rdx,RDX_SAVE(%rsp)
-	movq		%rcx,RCX_SAVE(%rsp)
-	movq		%r8,R8_SAVE(%rsp)
-	movq		%r9,R9_SAVE(%rsp)
-	movq		%rax,RAX_SAVE(%rsp)
-misaligned_stack_error_entering_dyld_stub_binder:
-	movq		$(_COMM_PAGE_CPU_CAPABILITIES), %rax
-	movl		(%rax), %eax
-	testl		$kHasAVX1_0, %eax
-	jne		L2
-	movdqa		%xmm0,XMM0_SAVE(%rsp)
-	movdqa		%xmm1,XMM1_SAVE(%rsp)
-	movdqa		%xmm2,XMM2_SAVE(%rsp)
-	movdqa		%xmm3,XMM3_SAVE(%rsp)
-	movdqa		%xmm4,XMM4_SAVE(%rsp)
-	movdqa		%xmm5,XMM5_SAVE(%rsp)
-	movdqa		%xmm6,XMM6_SAVE(%rsp)
-	movdqa		%xmm7,XMM7_SAVE(%rsp)
-	jmp		L3
-L2:	vmovdqu		%ymm0,YMM0_SAVE(%rsp)	# stack is only 16-byte aligned, so must use unaligned stores for avx registers
-	vmovdqu		%ymm1,YMM1_SAVE(%rsp)
-	vmovdqu		%ymm2,YMM2_SAVE(%rsp)
-	vmovdqu		%ymm3,YMM3_SAVE(%rsp)
-	vmovdqu		%ymm4,YMM4_SAVE(%rsp)
-	vmovdqu		%ymm5,YMM5_SAVE(%rsp)
-	vmovdqu		%ymm6,YMM6_SAVE(%rsp)
-	vmovdqu		%ymm7,YMM7_SAVE(%rsp)
-L3:
-dyld_stub_binder_:
-	movq		MH_PARAM_BP(%rbp),%rdi	# call fastBindLazySymbol(loadercache, lazyinfo)
-	movq		LP_PARAM_BP(%rbp),%rsi
+	subq		$STATIC_STACK_SIZE,%rsp
+	movq		%rdi,RDI_SAVE_RBP(%rbp)	# save registers that might be used as parameters
+	movq		%rsi,RSI_SAVE_RBP(%rbp)
+	movq		%rdx,RDX_SAVE_RBP(%rbp)
+	movq		%rcx,RCX_SAVE_RBP(%rbp)
+	movq		%rbx,RBX_SAVE_RBP(%rbp)
+	movq		%rax,RAX_SAVE_RBP(%rbp)
+	movq		%r8, R8_SAVE_RBP(%rbp)
+	movq		%r9, R9_SAVE_RBP(%rbp)
+
+	cmpl		$0, _inited(%rip)
+	jne			Linited
+	movl		$0x01,%eax
+	cpuid		# get cpu features to check on xsave instruction support
+	andl		$0x08000000,%ecx		# check OSXSAVE bit
+	movl		%ecx,_hasXSave(%rip)
+	cmpl		$0, %ecx
+	jne			LxsaveInfo
+	movl		$1, _inited(%rip)
+	jmp			Lsse
+
+LxsaveInfo:
+	movl		$0x0D,%eax
+	movl		$0x00,%ecx
+	cpuid		# get xsave parameter info
+	movl		%eax,_features_lo32(%rip)
+	movl		%edx,_features_hi32(%rip)
+	movl		%ecx,_bufferSize32(%rip)
+	movl		$1, _inited(%rip)
+
+Linited:
+	cmpl		$0, _hasXSave(%rip)
+	jne			Lxsave
+
+Lsse:
+	subq		$128, %rsp
+	movdqa      %xmm0, XMM0_SAVE_RSP(%rsp)
+	movdqa      %xmm1, XMM1_SAVE_RSP(%rsp)
+	movdqa      %xmm2, XMM2_SAVE_RSP(%rsp)
+	movdqa      %xmm3, XMM3_SAVE_RSP(%rsp)
+	movdqa      %xmm4, XMM4_SAVE_RSP(%rsp)
+	movdqa      %xmm5, XMM5_SAVE_RSP(%rsp)
+	movdqa      %xmm6, XMM6_SAVE_RSP(%rsp)
+	movdqa      %xmm7, XMM7_SAVE_RSP(%rsp)
+	jmp			Lbind
+
+Lxsave:
+	movl		_bufferSize32(%rip),%eax
+	movq		%rsp, %rdi
+	subq		%rax, %rdi				# stack alloc buffer
+	andq		$-64, %rdi				# 64-byte align stack
+	movq		%rdi, %rsp
+	# xsave requires buffer to be zero'ed out
+	movq		$0, %rcx
+	movq		%rdi, %r8
+	movq		%rdi, %r9
+	addq		%rax, %r9
+Lz:	movq		%rcx, (%r8)
+	addq		$8, %r8
+	cmpq		%r8,%r9
+	ja			Lz
+
+	movl		_features_lo32(%rip),%eax
+	movl		_features_hi32(%rip),%edx
+	# call xsave with buffer on stack and eax:edx flag bits
+	# note: do not use xsaveopt, it assumes you are using the same
+	# buffer as previous xsaves, and this thread is on the same cpu.
+	xsave		(%rsp)
+
+Lbind:
+	movq		MH_PARAM_RBP(%rbp),%rdi	# call fastBindLazySymbol(loadercache, lazyinfo)
+	movq		LP_PARAM_RBP(%rbp),%rsi
 	call		__Z21_dyld_fast_stub_entryPvl
-	movq		%rax,%r11		# save target
-	movq		$(_COMM_PAGE_CPU_CAPABILITIES), %rax
-	movl		(%rax), %eax
-	testl		$kHasAVX1_0, %eax
-	jne		L4
-	movdqa		XMM0_SAVE(%rsp),%xmm0
-	movdqa		XMM1_SAVE(%rsp),%xmm1
-	movdqa		XMM2_SAVE(%rsp),%xmm2
-	movdqa		XMM3_SAVE(%rsp),%xmm3
-	movdqa		XMM4_SAVE(%rsp),%xmm4
-	movdqa		XMM5_SAVE(%rsp),%xmm5
-	movdqa		XMM6_SAVE(%rsp),%xmm6
-	movdqa		XMM7_SAVE(%rsp),%xmm7
-	jmp		L5
-L4:	vmovdqu		YMM0_SAVE(%rsp),%ymm0
-	vmovdqu		YMM1_SAVE(%rsp),%ymm1
-	vmovdqu		YMM2_SAVE(%rsp),%ymm2
-	vmovdqu		YMM3_SAVE(%rsp),%ymm3
-	vmovdqu		YMM4_SAVE(%rsp),%ymm4
-	vmovdqu		YMM5_SAVE(%rsp),%ymm5
-	vmovdqu		YMM6_SAVE(%rsp),%ymm6
-	vmovdqu		YMM7_SAVE(%rsp),%ymm7
-L5: movq		RDI_SAVE(%rsp),%rdi
-	movq		RSI_SAVE(%rsp),%rsi
-	movq		RDX_SAVE(%rsp),%rdx
-	movq		RCX_SAVE(%rsp),%rcx
-	movq		R8_SAVE(%rsp),%r8
-	movq		R9_SAVE(%rsp),%r9
-	movq		RAX_SAVE(%rsp),%rax
-	addq		$STACK_SIZE,%rsp
+	movq		%rax,%r11		# copy jump target
+
+	cmpl		$0, _hasXSave(%rip)
+	jne			Lxrstror
+
+	movdqa      XMM0_SAVE_RSP(%rsp),%xmm0
+	movdqa      XMM1_SAVE_RSP(%rsp),%xmm1
+	movdqa      XMM2_SAVE_RSP(%rsp),%xmm2
+	movdqa      XMM3_SAVE_RSP(%rsp),%xmm3
+	movdqa      XMM4_SAVE_RSP(%rsp),%xmm4
+	movdqa      XMM5_SAVE_RSP(%rsp),%xmm5
+	movdqa      XMM6_SAVE_RSP(%rsp),%xmm6
+	movdqa      XMM7_SAVE_RSP(%rsp),%xmm7
+	jmp			Ldone
+
+Lxrstror:
+	movl		_features_lo32(%rip),%eax
+	movl		_features_hi32(%rip),%edx
+	# call xsave with buffer on stack and eax:edx flag bits
+	xrstor		(%rsp)
+
+Ldone:
+	movq		RDI_SAVE_RBP(%rbp),%rdi
+	movq		RSI_SAVE_RBP(%rbp),%rsi
+	movq		RDX_SAVE_RBP(%rbp),%rdx
+	movq		RCX_SAVE_RBP(%rbp),%rcx
+	movq		RBX_SAVE_RBP(%rbp),%rbx
+	movq		RAX_SAVE_RBP(%rbp),%rax
+	movq		R8_SAVE_RBP(%rbp),%r8
+	movq		R9_SAVE_RBP(%rbp),%r9
+	movq		%rbp,%rsp
 	popq		%rbp
 	addq		$16,%rsp		# remove meta-parameters
-	jmp		*%r11			# jmp to target
+	jmp			*%r11			# jmp to target
+
+_stack_not_16_byte_aligned_error:
+	movdqa      %xmm0, 0(%rsp)
+	int3
+
+	.data
+# Cached info from cpuid.  These must be lazily evaluated.
+# You cannot initalize these from _dyld_initializer() because
+# that function is called from another dylib...
+_inited:			.long 0
+_features_lo32:		.long 0
+_features_hi32:		.long 0
+_bufferSize32:		.long 0
+_hasXSave:			.long 0
 
 #endif
 
@@ -219,9 +268,16 @@ dyld_stub_binder:
 	ldr	r0, [sp, #24]			// move address ImageLoader cache to 1st parameter
 	ldr	r1, [sp, #28]			// move lazy info offset 2nd parameter
 
+#if __ARM_ARCH_7K__
+	vpush	{d0, d1, d2, d3, d4, d5, d6, d7}
+#endif
 	// call dyld::fastBindLazySymbol(loadercache, lazyinfo)
 	bl	__Z21_dyld_fast_stub_entryPvl
 	mov	ip, r0				// move the symbol`s address into ip
+
+#if __ARM_ARCH_7K__
+	vpop	{d0, d1, d2, d3, d4, d5, d6, d7}
+#endif
 
 	ldmfd	sp!, {r0,r1,r2,r3,r7,lr}	// restore registers
 	add	sp, sp, #8			// remove meta-parameters
@@ -230,7 +286,50 @@ dyld_stub_binder:
 
 #endif /* __arm__ */
 
+
+#if __arm64__
+ /*    
+  * sp+0	lazy binding info offset
+  * sp+8	address of ImageLoader cache
+  */
+	.text
+	.align 2
+	.globl	dyld_stub_binder
+dyld_stub_binder:
+	stp		fp, lr, [sp, #-16]!
+	mov		fp, sp
+	sub		sp, sp, #240
+	stp		x0,x1, [fp, #-16]	; x0-x7 are int parameter registers
+	stp		x2,x3, [fp, #-32]
+	stp		x4,x5, [fp, #-48]
+	stp		x6,x7, [fp, #-64]
+	stp		x8,x9, [fp, #-80]	; x8 is used for struct returns
+	stp		q0,q1, [fp, #-128]	; q0-q7 are vector/fp parameter registers
+	stp		q2,q3, [fp, #-160]
+	stp		q4,q5, [fp, #-192]
+	stp		q6,q7, [fp, #-224]
+
+	ldr		x0, [fp, #24]	; move address ImageLoader cache to 1st parameter
+	ldr		x1, [fp, #16]	; move lazy info offset 2nd parameter
+	; call dyld::fastBindLazySymbol(loadercache, lazyinfo)
+	bl		__Z21_dyld_fast_stub_entryPvl
+	mov		x16,x0			; save target function address in lr
 	
+	; restore parameter registers
+	ldp		x0,x1, [fp, #-16]
+	ldp		x2,x3, [fp, #-32]
+	ldp		x4,x5, [fp, #-48]
+	ldp		x6,x7, [fp, #-64]
+	ldp		x8,x9, [fp, #-80]
+	ldp		q0,q1, [fp, #-128]
+	ldp		q2,q3, [fp, #-160]
+	ldp		q4,q5, [fp, #-192]
+	ldp		q6,q7, [fp, #-224]
 	
-// simulator does not have full libdyld.dylib - just a small libdyld_sim.dylib
-#endif // ! TARGET_IPHONE_SIMULATOR
+	mov		sp, fp
+	ldp		fp, lr, [sp], #16
+	add		sp, sp, #16	; remove meta-parameters
+	br		x16
+
+#endif
+

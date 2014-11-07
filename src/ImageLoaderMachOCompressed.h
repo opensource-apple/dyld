@@ -68,6 +68,7 @@ public:
 	
 protected:
 	virtual void						doInterpose(const LinkContext& context);
+	virtual void						dynamicInterpose(const LinkContext& context);
 	virtual void						setDyldInfo(const dyld_info_command* dyldInfo) { fDyldInfo = dyldInfo; }
 	virtual void						setSymbolTableInfo(const macho_nlist*, const char*, const dysymtab_command*) {}
 	virtual	bool						isSubframeworkOf(const LinkContext& context, const ImageLoader* image) const { return false; }
@@ -90,11 +91,11 @@ protected:
 
 		
 private:
-	struct LastLookup { int ordinal; uint8_t flags; const char* name; uintptr_t result; const ImageLoader* foundIn; };
+	struct LastLookup { long ordinal; uint8_t flags; const char* name; uintptr_t result; const ImageLoader* foundIn; };
 
 
 	typedef uintptr_t (ImageLoaderMachOCompressed::*bind_handler)(const LinkContext& context, uintptr_t addr, uint8_t type, 
-											const char* symbolName, uint8_t symboFlags, intptr_t addend, int libraryOrdinal, 
+											const char* symbolName, uint8_t symboFlags, intptr_t addend, long libraryOrdinal, 
 											const char* msg, LastLookup* last, bool runResolver);
 
 	void								eachLazyBind(const LinkContext& context, bind_handler);
@@ -113,13 +114,13 @@ private:
 	void								throwBadRebaseAddress(uintptr_t address, uintptr_t segmentEndAddress, int segmentIndex, 
 												const uint8_t* startOpcodes, const uint8_t* endOpcodes, const uint8_t* pos);
 	uintptr_t							bindAt(const LinkContext& context, uintptr_t addr, uint8_t type, const char* symbolName, 
-												uint8_t symboFlags, intptr_t addend, int libraryOrdinal, const char* msg,
+												uint8_t symboFlags, intptr_t addend, long libraryOrdinal, const char* msg,
 												LastLookup* last, bool runResolver=false);
 	void								bindCompressed(const LinkContext& context);
 	void								throwBadBindingAddress(uintptr_t address, uintptr_t segmentEndAddress, int segmentIndex, 
 												const uint8_t* startOpcodes, const uint8_t* endOpcodes, const uint8_t* pos);
 	uintptr_t							resolve(const LinkContext& context, const char* symbolName, 
-												uint8_t symboFlags, int libraryOrdinal, const ImageLoader** targetImage, 
+												uint8_t symboFlags, long libraryOrdinal, const ImageLoader** targetImage, 
 												LastLookup* last = NULL, bool runResolver=false);
 	uintptr_t							resolveFlat(const LinkContext& context, const char* symbolName, bool weak_import, bool runResolver,
 													const ImageLoader** foundIn);
@@ -127,7 +128,9 @@ private:
 	uintptr_t							resolveTwolevel(const LinkContext& context, const ImageLoader* targetImage, bool weak_import, 
 														const char* symbolName, bool runResolver, const ImageLoader** foundIn);
 	uintptr_t							interposeAt(const LinkContext& context, uintptr_t addr, uint8_t type, const char*, 
-												uint8_t, intptr_t, int, const char*, LastLookup*, bool runResolver);
+												uint8_t, intptr_t, long, const char*, LastLookup*, bool runResolver);
+	uintptr_t							dynamicInterposeAt(const LinkContext& context, uintptr_t addr, uint8_t type, const char*, 
+												uint8_t, intptr_t, long, const char*, LastLookup*, bool runResolver);
 	static const uint8_t*				trieWalk(const uint8_t* start, const uint8_t* end, const  char* s);
     void                                updateOptimizedLazyPointers(const LinkContext& context);
     void                                updateAlternateLazyPointer(uint8_t* stub, void** originalLazyPointerAddr, const LinkContext& context);

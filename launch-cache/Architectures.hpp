@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2005-2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -48,6 +48,11 @@ struct arm
 	
 };
 
+struct arm64
+{
+	typedef Pointer64<LittleEndian>		P;
+
+};
 
 
 

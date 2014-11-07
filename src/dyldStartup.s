@@ -69,33 +69,7 @@
 	.globl __dyld_start
 
 #ifdef __i386__
-#if !TARGET_IPHONE_SIMULATOR
-	.data
-__dyld_start_static_picbase: 
-	.long   L__dyld_start_picbase
-Lmh:	.long	___dso_handle
-#endif
 
-	.text
-	.align 2
-# stable entry points into dyld
-	.globl	_stub_binding_helper
-_stub_binding_helper:
-	jmp	_stub_binding_helper_interface
-	nop
-	nop
-	nop
-	.globl	_dyld_func_lookup
-_dyld_func_lookup:
-	jmp	__Z18lookupDyldFunctionPKcPm
-	nop
-	nop
-	nop
-
-	# space for future stable entry points
-	.space	32
-
-	
 #if !TARGET_IPHONE_SIMULATOR
 	.text
 	.align	4, 0x90
@@ -151,11 +125,15 @@ Lapple:	movl	(%ebx),%ecx	# look for NULL ending env[] array
 	pushl	%edx		# simulate return address into _start in libdyld
 	jmp	*%eax		# jump to main(argc,argv,env,apple) with return address set to _start
 #endif	
-	
-	.globl dyld_stub_binding_helper
-dyld_stub_binding_helper:
-	hlt
-L_end:
+
+#if !TARGET_IPHONE_SIMULATOR
+	.data
+__dyld_start_static_picbase: 
+	.long   L__dyld_start_picbase
+Lmh:	.long	___dso_handle
+#endif
+
+
 #endif /* __i386__ */
 
 
@@ -168,24 +146,6 @@ __dyld_start_static:
 	.quad   __dyld_start
 #endif
 
-# stable entry points into dyld
-	.text
-	.align 2
-	.globl	_stub_binding_helper
-_stub_binding_helper:
-	jmp	_stub_binding_helper_interface
-	nop
-	nop
-	nop
-	.globl	_dyld_func_lookup
-_dyld_func_lookup:
-	jmp	__Z18lookupDyldFunctionPKcPm
-	nop
-	nop
-	nop
-
-	# space for future stable entry points
-	.space	24
 
 #if !TARGET_IPHONE_SIMULATOR
 	.text
@@ -242,21 +202,6 @@ Lapple: movq	(%rcx),%r8
 __dyld_start_static_picbase: 
 	.long	L__dyld_start_picbase
 
-	.text
-	.align 2
-	.globl	_stub_binding_helper
-_stub_binding_helper:
-	b	_stub_binding_helper_interface
-	nop 
-	
-	.globl	_dyld_func_lookup
-_dyld_func_lookup:
-	b       _branch_to_lookupDyldFunction
-	nop
-	
-	# space for future stable entry points
-	.space	24
-    
     
 	// Hack to make ___dso_handle work
 	// Without this local symbol, assembler will error out about in subtraction expression
@@ -319,28 +264,65 @@ Lapple:	ldr	r4, [r3]
 L__dyld_start_picbase_ptr:
 	.long	__dyld_start_static_picbase-L__dyld_start_picbase
 Lmh:	.long   ___dso_handle-L3-8
-	
-	.text
-	.align 2
-_branch_to_lookupDyldFunction:
-	// arm has no "bx label" instruction, so need this island in case lookupDyldFunction() is in thumb
-	ldr ip, L2
-L1:	ldr pc, [pc, ip]
-L2:	.long   _lookupDyldFunction_ptr-8-L1
-       
- 	.data
-	.align 2
-_lookupDyldFunction_ptr:
-	.long	__Z18lookupDyldFunctionPKcPm
-	
-      
-	.text
-	.globl dyld_stub_binding_helper
-dyld_stub_binding_helper:
-	trap
 
-L_end:
 #endif /* __arm__ */
+
+
+
+
+#if __arm64__
+	.data
+	.align 3
+__dso_static: 
+	.quad   ___dso_handle
+
+	.text
+	.align 2
+	.globl __dyld_start
+__dyld_start:
+	mov 	x28, sp
+	and     sp, x28, #~15		// force 16-byte alignment of stack
+	mov	x0, #0
+	mov	x1, #0
+	stp	x1, x0, [sp, #-16]!	// make aligned terminating frame
+	mov	fp, sp			// set up fp to point to terminating frame
+	sub	sp, sp, #16             // make room for local variables
+	ldr     x0, [x28]		// get app's mh into x0
+ 	ldr     x1, [x28, #8]           // get argc into x1 (kernel passes 32-bit int argc as 64-bits on stack to keep alignment)
+	add     x2, x28, #16		// get argv into x2
+	adrp	x4,___dso_handle@page
+	add 	x4,x4,___dso_handle@pageoff // get dyld's mh in to x4
+	adrp	x3,__dso_static@page
+	ldr 	x3,[x3,__dso_static@pageoff] // get unslid start of dyld
+	sub 	x3,x4,x3		// x3 now has slide of dyld
+	mov	x5,sp                   // x5 has &startGlue
+	
+	// call dyldbootstrap::start(app_mh, argc, argv, slide, dyld_mh, &startGlue)
+	bl	__ZN13dyldbootstrap5startEPK12macho_headeriPPKclS2_Pm
+	mov	x16,x0                  // save entry point address in x16
+	ldr     x1, [sp]
+	cmp	x1, #0
+	b.ne	Lnew
+
+	// LC_UNIXTHREAD way, clean up stack and jump to result
+	add	sp, x28, #8		// restore unaligned stack pointer without app mh
+	br	x16			// jump to the program's entry point
+
+	// LC_MAIN case, set up stack for call to main()
+Lnew:	mov	lr, x1		    // simulate return address into _start in libdyld.dylib
+	ldr     x0, [x28, #8] 	    // main param1 = argc
+	add     x1, x28, #16	    // main param2 = argv
+	add	x2, x1, x0, lsl #3  
+	add	x2, x2, #8	    // main param3 = &env[0]
+	mov	x3, x2
+Lapple:	ldr	x4, [x3]
+	add	x3, x3, #8
+	cmp	x4, #0
+	b.ne	Lapple		    // main param4 = apple
+	br	x16
+
+#endif // __arm64__
+
 
 /*
  * dyld calls this function to terminate a process.
@@ -357,6 +339,8 @@ _dyld_fatal_error:
 #elif __x86_64__ || __i386__
     int3
     nop
+#elif __arm64__
+    brk	#3
 #else
     #error unknown architecture
 #endif

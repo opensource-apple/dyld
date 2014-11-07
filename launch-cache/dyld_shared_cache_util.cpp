@@ -33,15 +33,16 @@
 #include <sys/syslimits.h>
 #include <mach-o/arch.h>
 #include <mach-o/loader.h>
+#include <mach/mach.h>
 
 #include <map>
+#include <vector>
 
 #include "dsc_iterator.h"
 #include "dyld_cache_format.h"
 #include "Architectures.hpp"
 #include "MachOFileAbstraction.hpp"
 #include "CacheFileAbstraction.hpp"
-
 
 enum Mode {
 	modeNone,
@@ -50,7 +51,8 @@ enum Mode {
 	modeDependencies,
 	modeSlideInfo,
 	modeLinkEdit,
-	modeInfo
+	modeInfo,
+	modeSize
 };
 
 struct Options {
@@ -60,21 +62,47 @@ struct Options {
 	bool		printUUIDs;
 	bool		printVMAddrs;
     bool		printDylibVersions;
+	bool		printInodes;
+};
+
+struct TextInfo {
+	uint64_t		textSize;
+	const char*		path;
+};
+
+struct TextInfoSorter {
+	bool operator()(const TextInfo& left, const TextInfo& right) {
+		return (left.textSize > right.textSize);
+	}
 };
 
 struct Results {
 	std::map<uint32_t, const char*>	pageToContent;
 	uint64_t						linkeditBase;
 	bool							dependentTargetFound;
+	std::vector<TextInfo>			textSegments;
 };
-
-
 
 
 
 void usage() {
 	fprintf(stderr, "Usage: dyld_shared_cache_util -list [ -uuid ] [-vmaddr] | -dependents <dylib-path> [ -versions ] | -linkedit | -map [ shared-cache-file ] | -slide_info | -info\n");
 }
+
+#if __x86_64__
+static bool isHaswell()
+{
+	// check system is capable of running x86_64h code
+	struct host_basic_info info;
+	mach_msg_type_number_t count = HOST_BASIC_INFO_COUNT;
+	mach_port_t hostPort = mach_host_self();
+	kern_return_t result = host_info(hostPort, HOST_BASIC_INFO, (host_info_t)&info, &count);
+	mach_port_deallocate(mach_task_self(), hostPort);
+	if ( result != KERN_SUCCESS )
+		return false;
+	return ( info.cpu_subtype == CPU_SUBTYPE_X86_64_H );
+}
+#endif
 
 /*
  * Get the path to the native shared cache for this host
@@ -83,19 +111,24 @@ static const char* default_shared_cache_path() {
 #if __i386__
 	return MACOSX_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "i386";
 #elif __x86_64__ 
-	return MACOSX_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "x86_64";
+	if ( isHaswell() )
+		return MACOSX_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "x86_64h";
+	else
+		return MACOSX_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "x86_64";
 #elif __ARM_ARCH_5TEJ__ 
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv5";
 #elif __ARM_ARCH_6K__ 
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv6";
+#elif __ARM_ARCH_7K__ 
+	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7k";
 #elif __ARM_ARCH_7A__ 
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7";
 #elif __ARM_ARCH_7F__ 
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7f";
 #elif __ARM_ARCH_7S__ 
 	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7s";
-#elif __ARM_ARCH_7K__ 
-	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "armv7k";
+#elif __arm64__ 
+	return IPHONE_DYLD_SHARED_CACHE_DIR DYLD_SHARED_CACHE_BASE_NAME "arm64";
 #else
 	#error unsupported architecture
 #endif
@@ -173,6 +206,8 @@ void print_list(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared
 
 	if ( options.printVMAddrs )
 		printf("0x%08llX ", segInfo->address);
+	if ( options.printInodes )
+		printf("0x%08llX 0x%08llX ", dylibInfo->inode, dylibInfo->modTime);
 	if ( options.printUUIDs ) {
 		if ( dylibInfo->uuid != NULL ) {
 			const uint8_t* uuid = (uint8_t*)dylibInfo->uuid;;
@@ -189,6 +224,23 @@ void print_list(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared
 		printf("[alias] %s\n", dylibInfo->path);
 	else
 		printf("%s\n", dylibInfo->path);
+}
+
+
+template <typename A>
+void collect_size(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared_cache_segment_info* segInfo, 
+																		const Options& options, Results& results) 
+{
+	if ( strcmp(segInfo->name, "__TEXT") != 0 )
+		return;
+	if ( dylibInfo->isAlias )
+		return;
+		
+	TextInfo info;
+	info.textSize = segInfo->fileSize;
+	info.path = dylibInfo->path;
+	results.textSegments.push_back(info);
+	size_t size = segInfo->fileSize;
 }
 
 
@@ -279,7 +331,7 @@ void print_map(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared_
 
 static void checkMode(Mode mode) {
 	if ( mode != modeNone ) {
-		fprintf(stderr, "Error: select one of: -list, -dependents, -info, -slide_info, -linkedit, or -map\n");
+		fprintf(stderr, "Error: select one of: -list, -dependents, -info, -slide_info, -linkedit, -map, or -size\n");
 		usage();
 		exit(1);
 	}
@@ -294,6 +346,7 @@ int main (int argc, const char* argv[]) {
     options.printUUIDs = false;
 	options.printVMAddrs = false;
     options.printDylibVersions = false;
+	options.printInodes = false;
     options.dependentsOfPath = NULL;
     
     for (uint32_t i = 1; i < argc; i++) {
@@ -329,8 +382,15 @@ int main (int argc, const char* argv[]) {
 				checkMode(options.mode);
 				options.mode = modeMap;
             } 
+			else if (strcmp(opt, "-size") == 0) {
+				checkMode(options.mode);
+				options.mode = modeSize;
+            } 
 			else if (strcmp(opt, "-uuid") == 0) {
                 options.printUUIDs = true;
+            } 
+			else if (strcmp(opt, "-inode") == 0) {
+                options.printInodes = true;
             } 
 			else if (strcmp(opt, "-versions") == 0) {
                 options.printDylibVersions = true;
@@ -430,11 +490,16 @@ int main (int argc, const char* argv[]) {
 		const dyldCacheFileMapping<LittleEndian>* mappings = (dyldCacheFileMapping<LittleEndian>*)((char*)options.mappedCache + header->mappingOffset());
 		for (uint32_t i=0; i < header->mappingCount(); ++i) {
 			if ( mappings[i].init_prot() & VM_PROT_EXECUTE )
-				printf("    __TEXT     %lluMB\n", mappings[i].size()/(1024*1024));
+				printf("    __TEXT      %3lluMB,  0x%08llX -> 0x%08llX\n", mappings[i].size()/(1024*1024), mappings[i].address(), mappings[i].address() + mappings[i].size());
 			else if ( mappings[i]. init_prot() & VM_PROT_WRITE )
-				printf("    __DATA      %lluMB\n", mappings[i].size()/(1024*1024));
+				printf("    __DATA      %3lluMB,  0x%08llX -> 0x%08llX\n", mappings[i].size()/(1024*1024), mappings[i].address(), mappings[i].address() + mappings[i].size());
 			else if ( mappings[i].init_prot() & VM_PROT_READ )
-				printf("    __LINKEDIT  %lluMB\n", mappings[i].size()/(1024*1024));
+				printf("    __LINKEDIT  %3lluMB,  0x%08llX -> 0x%08llX\n", mappings[i].size()/(1024*1024), mappings[i].address(), mappings[i].address() + mappings[i].size());
+		}
+		if ( header->codeSignatureOffset() != 0 ) {
+			uint64_t size = statbuf.st_size - header->codeSignatureOffset(); 
+			uint64_t csAddr = mappings[header->mappingCount()-1].address() + mappings[header->mappingCount()-1].size();
+				printf("    code sign   %3lluMB,  0x%08llX -> 0x%08llX\n", size/(1024*1024), csAddr, csAddr + size);
 		}
 	}
 	else {
@@ -453,13 +518,17 @@ int main (int argc, const char* argv[]) {
 				case modeLinkEdit:
 					callback = process_linkedit<x86>;
 					break;
+				case modeSize:
+					callback = collect_size<x86>;
+					break;
 				case modeNone:
 				case modeInfo:
 				case modeSlideInfo:
 					break;
 			}
 		}		
-		else if ( strcmp((char*)options.mappedCache, "dyld_v1  x86_64") == 0 ) {
+		else if (  (strcmp((char*)options.mappedCache, "dyld_v1  x86_64") == 0)
+				|| (strcmp((char*)options.mappedCache, "dyld_v1 x86_64h") == 0) ) {
 			switch ( options.mode ) {
 				case modeList:
 					callback = print_list<x86_64>;
@@ -472,6 +541,9 @@ int main (int argc, const char* argv[]) {
 					break;
 				case modeLinkEdit:
 					callback = process_linkedit<x86_64>;
+					break;
+				case modeSize:
+					callback = collect_size<x86_64>;
 					break;
 				case modeNone:
 				case modeInfo:
@@ -494,6 +566,32 @@ int main (int argc, const char* argv[]) {
 				case modeLinkEdit:
 					callback = process_linkedit<arm>;
 					break;
+				case modeSize:
+					callback = collect_size<arm>;
+					break;
+				case modeNone:
+				case modeInfo:
+				case modeSlideInfo:
+					break;
+			}
+		}		
+		else if ( strcmp((char*)options.mappedCache, "dyld_v1   arm64") == 0 ) {
+			switch ( options.mode ) {
+				case modeList:
+					callback = print_list<arm64>;
+					break;
+				case modeMap:
+					callback = print_map<arm64>;
+					break;
+				case modeDependencies:
+					callback = print_dependencies<arm64>;
+					break;
+				case modeLinkEdit:
+					callback = process_linkedit<arm64>;
+					break;
+				case modeSize:
+					callback = collect_size<arm64>;
+					break;
 				case modeNone:
 				case modeInfo:
 				case modeSlideInfo:
@@ -504,10 +602,10 @@ int main (int argc, const char* argv[]) {
 			fprintf(stderr, "Error: unrecognized dyld shared cache magic.\n");
 			exit(1);
 		}
-		 		
+		
 		__block Results results;
 		results.dependentTargetFound = false;
-		int iterateResult = dyld_shared_cache_iterate(options.mappedCache, statbuf.st_size, 
+		int iterateResult = dyld_shared_cache_iterate(options.mappedCache, (uint32_t)statbuf.st_size, 
 										   ^(const dyld_shared_cache_dylib_info* dylibInfo, const dyld_shared_cache_segment_info* segInfo ) {
 											   (callback)(dylibInfo, segInfo, options, results);
 										   });
@@ -520,6 +618,12 @@ int main (int argc, const char* argv[]) {
 			// dump -linkedit information
 			for (std::map<uint32_t, const char*>::iterator it = results.pageToContent.begin(); it != results.pageToContent.end(); ++it) {
 				printf("0x%08X %s\n", it->first, it->second);
+			}
+		}
+		else if ( options.mode == modeSize ) {
+			std::sort(results.textSegments.begin(), results.textSegments.end(), TextInfoSorter()); 
+			for (std::vector<TextInfo>::iterator it = results.textSegments.begin(); it != results.textSegments.end(); ++it) {
+				printf(" 0x%08llX  %s\n", it->textSize, it->path);
 			}
 		}
 		

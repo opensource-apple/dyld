@@ -34,8 +34,8 @@ check:
 	./main
 
 all:  
-	clang -arch ${ARCH} ${CCFLAGS} -I${TESTROOT}/include foo.c -dynamiclib -o libfoo.dylib 
-	clang -arch ${ARCH} ${CCFLAGS} -I${TESTROOT}/include main.c libfoo.dylib -o main 
+	${CC} -arch ${ARCH} ${CCFLAGS} -I${TESTROOT}/include foo.c -dynamiclib -o libfoo.dylib 
+	${CC} -arch ${ARCH} ${CCFLAGS} -I${TESTROOT}/include main.c libfoo.dylib -o main 
 
 
 clean:

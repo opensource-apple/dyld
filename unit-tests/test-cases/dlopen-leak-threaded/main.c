@@ -75,7 +75,7 @@ int main()
 
 	// execute leaks command on myself
 	char cmd[512];
-	sprintf(cmd, "leaks %u > /dev/null\n", getpid());
+	sprintf(cmd, "sudo leaks %u > /dev/null\n", getpid());
 	int status = system(cmd);
 	if ( status == EXIT_SUCCESS )
 		PASS("dlopen-leak-threaded");

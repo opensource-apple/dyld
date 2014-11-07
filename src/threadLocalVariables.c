@@ -78,7 +78,7 @@ typedef void (*TermFunc)(void*);
 
 
 
-#if __has_feature(tls)
+#if __has_feature(tls) || __arm64__
 
 typedef struct TLVHandler {
 	struct TLVHandler *next;
@@ -237,8 +237,8 @@ void* tlv_allocate_and_initialize_for_key(pthread_key_t key)
 					if ( (sect->flags & SECTION_TYPE) == S_THREAD_LOCAL_INIT_FUNCTION_POINTERS ) {
 						typedef void (*InitFunc)(void);
 						InitFunc* funcs = (InitFunc*)(sect->addr + slide);
-						const uint32_t count = sect->size / sizeof(uintptr_t);
-						for (uint32_t i=count; i > 0; --i) {
+						const size_t count = sect->size / sizeof(uintptr_t);
+						for (size_t i=count; i > 0; --i) {
 							InitFunc func = funcs[i-1];
 							func();
 						}
@@ -401,7 +401,7 @@ void _tlv_atexit(TermFunc func, void* objAddr)
         if ( list->allocCount == list->allocCount ) {
             // handle resizing allocation 
             uint32_t newAllocCount = list->allocCount * 2;
-            uint32_t newAllocSize = offsetof(struct TLVTerminatorList, entries[newAllocCount]);
+            size_t newAllocSize = offsetof(struct TLVTerminatorList, entries[newAllocCount]);
             struct TLVTerminatorList* newlist = (struct TLVTerminatorList*)malloc(newAllocSize);
             newlist->allocCount = newAllocCount;
             newlist->useCount = list->useCount;

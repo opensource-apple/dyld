@@ -70,6 +70,7 @@ extern void addImagesToAllImages(uint32_t infoCount, const dyld_image_info info[
 	#define DEPRECATED_APIS_SUPPORTED 1
 #endif
 
+static bool sDynamicInterposing = false;
 
 #if DEPRECATED_APIS_SUPPORTED
 static char sLastErrorFilePath[1024];
@@ -100,7 +101,7 @@ static void _dyld_call_module_initializers_for_dylib(const struct mach_header* m
 static void		client_dyld_lookup_and_bind(const char* symbolName, void** address, NSModule* module);
 static bool		client_NSIsSymbolNameDefined(const char* symbolName);
 #endif // DEPRECATED_APIS_SUPPORTED
-#if !__arm__
+#if SUPPORT_ZERO_COST_EXCEPTIONS
 static bool client_dyld_find_unwind_sections(void* addr, dyld_unwind_sections* info);
 #endif
 
@@ -134,20 +135,18 @@ static struct dyld_func dyld_funcs[] = {
 	{"__dyld_dyld_register_image_state_change_handler",	(void*)dyld_register_image_state_change_handler },
   	{"__dyld_register_thread_helpers",					(void*)registerThreadHelpers },
 	{"__dyld_fork_child",								(void*)_dyld_fork_child },
-    {"__dyld_moninit",									(void*)_dyld_moninit },
     {"__dyld_make_delayed_module_initializer_calls",	(void*)_dyld_make_delayed_module_initializer_calls },
 	{"__dyld_get_all_image_infos",						(void*)_dyld_get_all_image_infos },
-#if !__arm__
+#if SUPPORT_ZERO_COST_EXCEPTIONS
 	{"__dyld_find_unwind_sections",						(void*)client_dyld_find_unwind_sections },
 #endif
-#if __i386__ || __x86_64__ || __arm__
+#if __i386__ || __x86_64__ || __arm__ || __arm64__
 	{"__dyld_fast_stub_entry",							(void*)dyld::fastBindLazySymbol },
 #endif
 	{"__dyld_image_path_containing_address",			(void*)dyld_image_path_containing_address },
-#if __IPHONE_OS_VERSION_MIN_REQUIRED	
 	{"__dyld_shared_cache_some_image_overridden",		(void*)dyld_shared_cache_some_image_overridden },
-#endif
 	{"__dyld_process_is_restricted",					(void*)dyld::processIsRestricted },
+	{"__dyld_dynamic_interpose",						(void*)dyld_dynamic_interpose },
 
 	// deprecated
 #if DEPRECATED_APIS_SUPPORTED
@@ -283,7 +282,7 @@ int _NSGetExecutablePath(char* buf, uint32_t *bufsize)
 		dyld::log("%s(...)\n", __func__);
 	const char* exePath = dyld::getExecutablePath();
 	if(*bufsize < strlen(exePath) + 1){
-	    *bufsize = strlen(exePath) + 1;
+	    *bufsize = (uint32_t)(strlen(exePath) + 1);
 	    return -1;
 	}
 	strcpy(buf, exePath);
@@ -1114,7 +1113,19 @@ bool NSUnLinkModule(NSModule module, uint32_t options)
 	ImageLoader* image = NSModuleToImageLoader(module);
 	if ( image == NULL ) 
 		return false;
-	dyld::runImageTerminators(image);
+	dyld::runImageStaticTerminators(image);
+	if ( (dyld::gLibSystemHelpers != NULL) && (dyld::gLibSystemHelpers->version >= 13) ) {
+		__cxa_range_t ranges[3];
+		int rangeCount = 0;
+		for (unsigned int j=0; j < image->segmentCount(); ++j) {
+			if ( !image->segExecutable(j) )
+				continue;
+			ranges[rangeCount].addr = (const void*)image->segActualLoadAddress(j);
+			ranges[rangeCount].length = image->segSize(j);
+			++rangeCount;
+		}
+		(*dyld::gLibSystemHelpers->cxa_finalize_ranges)(ranges, rangeCount);
+	}
 	dyld::removeImage(image);
 	
 	if ( (options & NSUNLINKMODULE_OPTION_KEEP_MEMORY_MAPPED) != 0 )
@@ -1195,27 +1206,6 @@ void _dyld_fork_child()
 	dyld::gProcessInfo->systemOrderFlag = 0;
 }
 
-typedef void (*MonitorProc)(char *lowpc, char *highpc);
-
-static void monInitCallback(ImageLoader* image, void* userData)
-{
-	MonitorProc proc = (MonitorProc)userData;
-	void* start;
-	size_t length;
-	if ( image->getSectionContent("__TEXT", "__text", &start, &length) ) {
-		proc((char*)start, (char*)start+length);
-	}
-}
-
-//
-// _dyld_moninit is called from profiling runtime routine moninit().
-// dyld calls back with the range of each __TEXT/__text section in every
-// linked image.
-//
-void _dyld_moninit(MonitorProc proc)
-{
-	dyld::forEachImageDo(&monInitCallback, (void*)proc);
-}
 
 #if DEPRECATED_APIS_SUPPORTED
 // returns true if prebinding was used in main executable
@@ -1250,13 +1240,13 @@ static bool NSMakePrivateModulePublic(NSModule module)
 
 #endif // DEPRECATED_APIS_SUPPORTED
 
-bool lookupDyldFunction(const char* name, uintptr_t* address)
+int _dyld_func_lookup(const char* name, void** address)
 {
 	for (const dyld_func* p = dyld_funcs; p->name != NULL; ++p) {
 	    if ( strcmp(p->name, name) == 0 ) {
 			if( p->implementation == unimplemented )
 				dyld::log("unimplemented dyld function: %s\n", p->name);
-			*address = (uintptr_t)p->implementation;
+			*address = p->implementation;
 			return true;
 	    }
 	}
@@ -1272,7 +1262,7 @@ static void registerThreadHelpers(const dyld::LibSystemHelpers* helpers)
 	// let gdb know it is safe to run code in inferior that might call malloc()
 	dyld::gProcessInfo->libSystemInitialized = true;	
 	
-#if __arm__
+#if !SUPPORT_ZERO_COST_EXCEPTIONS
 	if ( helpers->version >= 5 )  {
 		// create key use by dyld exception handling
 		pthread_key_t key;
@@ -1744,7 +1734,13 @@ void* dlsym(void* handle, const char* symbolName)
 		
 		if ( sym != NULL ) {
 			CRSetCrashLogMessage(NULL);
-			return (void*)image->getExportedSymbolAddress(sym, dyld::gLinkContext);
+			ImageLoader* callerImage = NULL;
+			if ( sDynamicInterposing ) {
+				// only take time to look up caller, if dynamic interposing in use
+				void* callerAddress = __builtin_return_address(1); // note layers: 1: real client, 0: libSystem glue
+				callerImage = dyld::findImageContainingAddress(callerAddress);
+			}
+			return (void*)image->getExportedSymbolAddress(sym, dyld::gLinkContext, callerImage);
 		}
 		const char* str = dyld::mkstringf("dlsym(%p, %s): symbol not found", handle, symbolName);
 		dlerrorSet(str);
@@ -1771,7 +1767,7 @@ const struct dyld_all_image_infos* _dyld_get_all_image_infos()
 	return dyld::gProcessInfo;
 }
 
-#if !__arm__
+#if SUPPORT_ZERO_COST_EXCEPTIONS
 static bool client_dyld_find_unwind_sections(void* addr, dyld_unwind_sections* info)
 {
 	//if ( dyld::gLogAPIs )
@@ -1811,7 +1807,6 @@ const char* dyld_image_path_containing_address(const void* address)
 
 
 
-#if __IPHONE_OS_VERSION_MIN_REQUIRED	
 bool dyld_shared_cache_some_image_overridden()
 {
  #if DYLD_SHARED_CACHE_SUPPORT
@@ -1820,7 +1815,32 @@ bool dyld_shared_cache_some_image_overridden()
     return true;
  #endif
 }
-#endif
+
+
+void dyld_dynamic_interpose(const struct mach_header* mh, const struct dyld_interpose_tuple array[], size_t count)
+{
+	if ( mh == NULL )
+		return;
+	if ( array == NULL )
+		return;
+	if ( count == 0 )
+		return;
+	ImageLoader* image = dyld::findImageByMachHeader(mh);
+	if ( image == NULL )
+		return;
+	
+	// make pass at bound references in this image and update them
+	dyld::gLinkContext.dynamicInterposeArray = array;
+	dyld::gLinkContext.dynamicInterposeCount = count;
+		image->dynamicInterpose(dyld::gLinkContext);
+	dyld::gLinkContext.dynamicInterposeArray = NULL;
+	dyld::gLinkContext.dynamicInterposeCount = 0;
+	
+	// leave interposing info so any future (lazy) binding will get it too
+	image->addDynamicInterposingTuples(array, count);
+	
+	sDynamicInterposing = true;
+}
 
 
 

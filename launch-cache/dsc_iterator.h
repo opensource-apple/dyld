@@ -26,12 +26,15 @@
 #include <uuid/uuid.h>
 
 struct dyld_shared_cache_dylib_info {
-	uint32_t		version;		// initial version 1
+	uint32_t		version;		// current version 2
+	// following fields all exist in version 1
 	uint32_t		isAlias;		// this is alternate path (symlink)
 	const void*		machHeader;		// of dylib in mapped cached file
 	const char*		path;			// of dylib
 	const uuid_t*	uuid;			// of dylib, or NULL is missing
-	// above fields all exist in version 1
+	// following fields all exist in version 2
+	uint64_t		inode;			// of dylib file or path hash
+	uint64_t		modTime;		// of dylib file
 };
 typedef struct dyld_shared_cache_dylib_info dyld_shared_cache_dylib_info;
 
