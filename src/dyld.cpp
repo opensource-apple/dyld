@@ -1585,9 +1585,18 @@ void processDyldEnvironmentVariable(const char* key, const char* value, const ch
 		appendParsedColonList(value, mainExecutableDir, &sEnv.DYLD_VERSIONED_FRAMEWORK_PATH);
 	}
 #endif
-	else if ( strcmp(key, "DYLD_PRINT_TO_FILE") == 0 ) {
-		// handled in _main()
+#if !TARGET_IPHONE_SIMULATOR
+	else if ( (strcmp(key, "DYLD_PRINT_TO_FILE") == 0) && (mainExecutableDir == NULL) ) {
+		int fd = open(value, O_WRONLY | O_CREAT | O_APPEND, 0644);
+		if ( fd != -1 ) {
+			sLogfile = fd;
+			sLogToFile = true;
+		}
+		else {
+			dyld::log("dyld: could not open DYLD_PRINT_TO_FILE='%s', errno=%d\n", value, errno);
+		}
 	}
+#endif
 	else {
 		dyld::warn("unknown environment variable: %s\n", key);
 	}
@@ -4466,8 +4475,6 @@ static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, 
 	struct stat sb;
 	if ( fstat(fd, &sb) == -1 )
 		return 0;
-	if ( sb.st_uid != 0 )
-		return 0;
 
 	// read first page of dyld file
 	uint8_t firstPage[4096];
@@ -4547,17 +4554,19 @@ static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, 
 		cmd = (const struct load_command*)(((char*)cmd)+cmd->cmdsize);
 	}
 	
-	if ( codeSigCmd != NULL ) {
-		fsignatures_t siginfo;
-		siginfo.fs_file_start=fileOffset;							// start of mach-o slice in fat file 
-		siginfo.fs_blob_start=(void*)(long)(codeSigCmd->dataoff);	// start of code-signature in mach-o file
-		siginfo.fs_blob_size=codeSigCmd->datasize;					// size of code-signature
-		int result = fcntl(fd, F_ADDFILESIGS, &siginfo);
-		if ( result == -1 ) {
-			if ( (errno == EPERM) || (errno == EBADEXEC) )
-				return 0;
-		}
+	if ( codeSigCmd == NULL )
+		return 0;
+
+	fsignatures_t siginfo;
+	siginfo.fs_file_start=fileOffset;							// start of mach-o slice in fat file 
+	siginfo.fs_blob_start=(void*)(long)(codeSigCmd->dataoff);	// start of code-signature in mach-o file
+	siginfo.fs_blob_size=codeSigCmd->datasize;					// size of code-signature
+	int result = fcntl(fd, F_ADDFILESIGS_FOR_DYLD_SIM, &siginfo);
+	if ( result == -1 ) {
+		dyld::log("fcntl(F_ADDFILESIGS_FOR_DYLD_SIM) failed with errno=%d\n", errno);
+		return 0;
 	}
+
 	close(fd);
 
 	// notify debugger that dyld_sim is loaded
@@ -4593,19 +4602,6 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide,
 {
 	uintptr_t result = 0;
 	sMainExecutableMachHeader = mainExecutableMH;
-#if !TARGET_IPHONE_SIMULATOR
-	const char* loggingPath = _simple_getenv(envp, "DYLD_PRINT_TO_FILE");
-	if ( loggingPath != NULL ) {
-		int fd = open(loggingPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
-		if ( fd != -1 ) {
-			sLogfile = fd;
-			sLogToFile = true;
-		}
-		else {
-			dyld::log("dyld: could not open DYLD_PRINT_TO_FILE='%s', errno=%d\n", loggingPath, errno);
-		}
-	}
-#endif
 #if __MAC_OS_X_VERSION_MIN_REQUIRED
 	// if this is host dyld, check to see if iOS simulator is being run
 	const char* rootPath = _simple_getenv(envp, "DYLD_ROOT_PATH");
