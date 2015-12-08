@@ -151,6 +151,7 @@ template <typename A, typename V>
 class LegacySelectorUpdater {
 
     typedef typename A::P P;
+    typedef typename A::P::uint_t pint_t;
 
     static void visitMethodList(objc_method_list<A> *mlist, V& visitor)
     {
@@ -224,10 +225,10 @@ public:
 
         // Message refs
         PointerSection<A, const char *> selrefs(cache, header, "__OBJC", "__message_refs");
-        for (uint64_t s = 0; s < selrefs.count(); s++) {
-            uint64_t oldValue = selrefs.getUnmapped(s);
-            uint64_t newValue = visitor.visit(oldValue);
-            selrefs.set(s, newValue);
+        for (pint_t s = 0; s < selrefs.count(); s++) {
+            pint_t oldValue = selrefs.getVMAddress(s);
+            pint_t newValue = visitor.visit(oldValue);
+            selrefs.setVMAddress(s, newValue);
         }
     }
 };

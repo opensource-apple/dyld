@@ -23,18 +23,21 @@
  */
 
 
+#if __arm__ || __arm64__
+  #include <System/sys/mman.h>
+#else
+  #include <sys/mman.h>
+#endif
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/fcntl.h>
 #include <sys/stat.h> 
-#include <sys/mman.h>
 #include <sys/param.h>
 #include <mach/mach.h>
 #include <mach/thread_status.h>
 #include <mach-o/loader.h> 
-
 #include "ImageLoaderMachOCompressed.h"
 #include "mach-o/dyld_images.h"
 
@@ -112,10 +115,11 @@ ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateMainExecutabl
 	// for PIE record end of program, to know where to start loading dylibs
 	if ( slide != 0 )
 		fgNextPIEDylibAddress = (uintptr_t)image->getEnd();
-	
+
+	image->disableCoverageCheck();
 	image->instantiateFinish(context);
 	image->setMapped(context);
-	
+
 	if ( context.verboseMapping ) {
 		dyld::log("dyld: Main executable mapped %s\n", path);
 		for(unsigned int i=0, e=image->segmentCount(); i < e; ++i) {
@@ -131,10 +135,12 @@ ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateMainExecutabl
 }
 
 // create image by mapping in a mach-o file
-ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateFromFile(const char* path, int fd, const uint8_t* fileData, 
+ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateFromFile(const char* path, int fd, const uint8_t* fileData, size_t lenFileData,
 															uint64_t offsetInFat, uint64_t lenInFat, const struct stat& info, 
 															unsigned int segCount, unsigned int libCount, 
-															const struct linkedit_data_command* codeSigCmd, const LinkContext& context)
+															const struct linkedit_data_command* codeSigCmd, 
+															const struct encryption_info_command* encryptCmd, 
+															const LinkContext& context)
 {
 	ImageLoaderMachOCompressed* image = ImageLoaderMachOCompressed::instantiateStart((macho_header*)fileData, path, segCount, libCount);
 
@@ -145,9 +151,15 @@ ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateFromFile(cons
 		// if this image is code signed, let kernel validate signature before mapping any pages from image
 		image->loadCodeSignature(codeSigCmd, fd, offsetInFat, context);
 		
+		// Validate that first data we read with pread actually matches with code signature
+		image->validateFirstPages(codeSigCmd, fd, fileData, lenFileData, offsetInFat, context);
+
 		// mmap segments
 		image->mapSegments(fd, offsetInFat, lenInFat, info.st_size, context);
 
+		// if framework is FairPlay encrypted, register with kernel
+		image->registerEncryption(encryptCmd, context);
+		
 		// probe to see if code signed correctly
 		image->crashIfInvalidCodeSignature();
 
@@ -209,6 +221,7 @@ ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateFromCache(con
 		image->fInSharedCache = true;
 		image->setNeverUnload();
 		image->setSlide(slide);
+		image->disableCoverageCheck();
 
 		// segments already mapped in cache
 		if ( context.verboseMapping ) {
@@ -246,6 +259,8 @@ ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateFromMemory(co
 		
 		// for compatibility, never unload dylibs loaded from memory
 		image->setNeverUnload();
+
+		image->disableCoverageCheck();
 
 		// bundle loads need path copied
 		if ( moduleName != NULL ) 
@@ -297,7 +312,7 @@ ImageLoaderMachOCompressed* ImageLoaderMachOCompressed::instantiateStart(const m
 void ImageLoaderMachOCompressed::instantiateFinish(const LinkContext& context)
 {
 	// now that segments are mapped in, get real fMachOData, fLinkEditBase, and fSlide
-	this->parseLoadCmds();
+	this->parseLoadCmds(context);
 }
 
 uint32_t* ImageLoaderMachOCompressed::segmentCommandOffsets() const
@@ -1690,5 +1705,34 @@ void ImageLoaderMachOCompressed::updateOptimizedLazyPointers(const LinkContext& 
 	
 #endif
 }
+
+
+void ImageLoaderMachOCompressed::registerEncryption(const encryption_info_command* encryptCmd, const LinkContext& context)
+{
+#if __arm__ || __arm64__
+	if ( encryptCmd == NULL )
+		return;
+	const mach_header* mh = NULL;
+	for(unsigned int i=0; i < fSegmentsCount; ++i) {
+		if ( (segFileOffset(i) == 0) && (segFileSize(i) != 0) ) {
+			mh = (mach_header*)segActualLoadAddress(i);
+			break;
+		}
+	}
+	void* start = ((uint8_t*)mh) + encryptCmd->cryptoff;
+	size_t len = encryptCmd->cryptsize;
+	uint32_t cputype = mh->cputype;
+	uint32_t cpusubtype = mh->cpusubtype;
+	uint32_t cryptid = encryptCmd->cryptid;
+	if (context.verboseMapping) {
+		 dyld::log("                      0x%08lX->0x%08lX configured for FairPlay decryption\n", (long)start, (long)start+len);
+	}
+	int result = mremap_encrypted(start, len, cryptid, cputype, cpusubtype);
+	if ( result != 0 ) {
+		dyld::throwf("mremap_encrypted() => %d, errno=%d for %s\n", result, errno, this->getPath());
+	}
+#endif
+}
+
 
 

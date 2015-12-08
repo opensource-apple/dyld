@@ -17,4 +17,4 @@ PRODUCT_NAME[sdk=*simulator*] = dyld_sim
 PRODUCT_NAME[sdk=iphoneos*]   = dyld
 PRODUCT_NAME[sdk=macosx*]     = dyld
 
-INSTALL_PATH_ACTUAL   = /usr/lib
+INSTALL_PATH   = /usr/lib

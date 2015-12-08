@@ -114,6 +114,7 @@ namespace dyld {
 	extern void					logBindings(const char* format, ...);
 #endif
 	extern bool					processIsRestricted();
+	extern const char*			getStandardSharedCacheFilePath();
 	extern int					my_stat(const char* path, struct stat* buf);
 	extern int					my_open(const char* path, int flag, int other);
 }

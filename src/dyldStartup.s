@@ -217,7 +217,7 @@ ___dso_handle:	.long 0
 __dyld_start:
 	mov	r8, sp		// save stack pointer
 	sub	sp, #16		// make room for outgoing parameters
-	bic     sp, sp, #7	// force 8-byte alignment
+	bic     sp, sp, #15	// force 16-byte alignment
 
 	// call dyldbootstrap::start(app_mh, argc, argv, slide, dyld_mh, &startGlue)
 

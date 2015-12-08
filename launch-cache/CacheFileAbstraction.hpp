@@ -70,6 +70,9 @@ public:
 
 	const uint8_t*	uuid() const							INLINE { return fields.uuid; }
 	void			set_uuid(const uint8_t value[16])		INLINE { memcpy(fields.uuid, value, 16); }
+	
+	uint64_t		cacheType() const				INLINE { return E::get64(fields.cacheType); }
+	void			set_cacheType(uint64_t value)	INLINE { E::set64(fields.cacheType, value); }
 
 private:
 	dyld_cache_header			fields;

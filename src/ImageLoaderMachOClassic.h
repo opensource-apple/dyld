@@ -39,7 +39,7 @@ class ImageLoaderMachOClassic : public ImageLoaderMachO {
 public:
 	static ImageLoaderMachOClassic*		instantiateMainExecutable(const macho_header* mh, uintptr_t slide, const char* path, 
 																	unsigned int segCount, unsigned int libCount, const LinkContext& context);
-	static ImageLoaderMachOClassic*		instantiateFromFile(const char* path, int fd, const uint8_t* fileData, 
+	static ImageLoaderMachOClassic*		instantiateFromFile(const char* path, int fd, const uint8_t* fileData, size_t lenFileData, 
 															uint64_t offsetInFat, uint64_t lenInFat, const struct stat& info, 
 															unsigned int segCount, unsigned int libCount, 
 															const struct linkedit_data_command* codeSigCmd, const LinkContext& context);

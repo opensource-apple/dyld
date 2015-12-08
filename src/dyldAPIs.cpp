@@ -147,10 +147,13 @@ static struct dyld_func dyld_funcs[] = {
 	{"__dyld_shared_cache_some_image_overridden",		(void*)dyld_shared_cache_some_image_overridden },
 	{"__dyld_process_is_restricted",					(void*)dyld::processIsRestricted },
 	{"__dyld_dynamic_interpose",						(void*)dyld_dynamic_interpose },
+#if DYLD_SHARED_CACHE_SUPPORT
+	{"__dyld_shared_cache_file_path",					(void*)dyld::getStandardSharedCacheFilePath },
+#endif
+    {"__dyld_get_image_header_containing_address",		(void*)dyld_image_header_containing_address },
 
 	// deprecated
 #if DEPRECATED_APIS_SUPPORTED
-    {"__dyld_get_image_header_containing_address",		(void*)_dyld_get_image_header_containing_address },
     {"__dyld_lookup_and_bind",						(void*)client_dyld_lookup_and_bind },
     {"__dyld_lookup_and_bind_with_hint",			(void*)_dyld_lookup_and_bind_with_hint },
     {"__dyld_lookup_and_bind_fully",				(void*)_dyld_lookup_and_bind_fully },
@@ -341,7 +344,7 @@ const char* _dyld_get_image_name(uint32_t image_index)
 		return NULL;
 }
 
-const struct mach_header * _dyld_get_image_header_containing_address(const void* address)
+const struct mach_header * dyld_image_header_containing_address(const void* address)
 {
 	if ( dyld::gLogAPIs )
 		dyld::log("%s(%p)\n", __func__, address);
@@ -1115,7 +1118,7 @@ bool NSUnLinkModule(NSModule module, uint32_t options)
 		return false;
 	dyld::runImageStaticTerminators(image);
 	if ( (dyld::gLibSystemHelpers != NULL) && (dyld::gLibSystemHelpers->version >= 13) ) {
-		__cxa_range_t ranges[3];
+		__cxa_range_t ranges[image->segmentCount()];
 		int rangeCount = 0;
 		for (unsigned int j=0; j < image->segmentCount(); ++j) {
 			if ( !image->segExecutable(j) )
@@ -1417,15 +1420,16 @@ void* dlopen(const char* path, int mode)
 	void* result = NULL;
 	ImageLoader* image = NULL;
 	std::vector<const char*> rpathsFromCallerImage;
+	ImageLoader::RPathChain callersRPaths(NULL, &rpathsFromCallerImage);
 	try {
 		void* callerAddress = __builtin_return_address(1); // note layers: 1: real client, 0: libSystem glue
 		ImageLoader* callerImage = dyld::findImageContainingAddress(callerAddress);
-		// for dlopen, use rpath from caller image and from main executable
-		if ( callerImage != NULL )
-			callerImage->getRPaths(dyld::gLinkContext, rpathsFromCallerImage);
-		ImageLoader::RPathChain callersRPaths(NULL, &rpathsFromCallerImage);
-		if ( callerImage != dyld::mainExecutable() ) {
-			dyld::mainExecutable()->getRPaths(dyld::gLinkContext, rpathsFromCallerImage);
+		if ( (mode & RTLD_NOLOAD) == 0 ) {
+			// for dlopen, use rpath from caller image and from main executable
+			if ( callerImage != NULL )
+				callerImage->getRPaths(dyld::gLinkContext, rpathsFromCallerImage);
+			if ( callerImage != dyld::mainExecutable() )
+				dyld::mainExecutable()->getRPaths(dyld::gLinkContext, rpathsFromCallerImage);
 		}
  
 		const bool leafName = (strchr(path, '/') == NULL);

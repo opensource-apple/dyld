@@ -27,6 +27,7 @@
 #define __DYLD_SYSCALL_HELPERS__
 
 #include <dirent.h>
+#include <mach-o/loader.h>
 
 #if __cplusplus
 namespace dyld {
@@ -74,6 +75,9 @@ namespace dyld {
 		DIR*			(*opendir)(const char* path);
 		int 			(*readdir_r)(DIR* dirp, struct dirent* entry, struct dirent **result);
 		int 			(*closedir)(DIR* dirp);
+		// Added in version 4
+		void			(*coresymbolication_load_notifier)(void *connection, uint64_t load_timestamp, const char *image_path, const struct mach_header *mach_header);
+		void			(*coresymbolication_unload_notifier)(void *connection, uint64_t unload_timestamp, const char *image_path, const struct mach_header *mach_header);
 	};
 
 	extern const struct SyscallHelpers* gSyscallHelpers;

@@ -17,7 +17,7 @@ echo "#!/bin/sh" > /var/root/testing/run-all-tests
 chmod +x /var/root/testing/run-all-tests
 
 # do every combination of OS version and architectures
-for os in "7.0" 
+for os in "8.0" 
 do
 	for arch in armv7 arm64
 	do

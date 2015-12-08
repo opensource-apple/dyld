@@ -77,7 +77,7 @@ public:
 	typedef std::unordered_map<const char*, class Binder<A>*, CStringHash, CStringEquals> Map;
 
 
-												Binder(const MachOLayoutAbstraction&, uint64_t dyldBaseAddress);
+												Binder(const MachOLayoutAbstraction&);
 	virtual										~Binder() {}
 	
 	const char*									getDylibID() const;
@@ -93,14 +93,10 @@ private:
 	struct SymbolReExport { const char* exportName; int dylibOrdinal; const char* importName; };
 	typedef std::unordered_map<const char*, pint_t, CStringHash, CStringEquals> NameToAddrMap;
 	typedef std::unordered_set<const char*, CStringHash, CStringEquals> NameSet;
-    struct ClientAndSymbol { Binder<A>* client; const char* symbolName; };
-    struct SymbolAndLazyPointer { const char* symbolName; pint_t lpVMAddr; };
+	typedef std::unordered_map<const char*, std::set<Binder<A>*>, CStringHash, CStringEquals> ResolverClientsMap;
+
 	
 	static bool									isPublicLocation(const char* pth);
-	void										doBindExternalRelocations();
-	void										doBindIndirectSymbols();
-	void										doSetUpDyldSection();
-	void										doSetPreboundUndefines();
 	void										hoistPrivateRexports();
 	int											ordinalOfDependentBinder(Binder<A>* dep);
 	void										doBindDyldInfo(std::vector<void*>& pointersInData);
@@ -109,15 +105,14 @@ private:
 																int libraryOrdinal, int64_t addend, 
 																const char* symbolName, bool lazyPointer, bool weakImport,
 																std::vector<void*>& pointersInData);
-	pint_t										resolveUndefined(const macho_nlist<P>* undefinedSymbol);
 	bool										findExportedSymbolAddress(const char* name, pint_t* result, Binder<A>** foundIn, 
 																			bool* isResolverSymbol, bool* isAbsolute);
-	void										bindStub(uint8_t elementSize, uint8_t* location, pint_t vmlocation, pint_t value);
 	const char*									parentUmbrella();
 	pint_t										runtimeAddressFromNList(const macho_nlist<P>* sym);
-    void                                        optimizeStub(const char* symbolName, pint_t lpVMAddr);
-    void                                        optimizeStub(uint8_t* stubMappedAddress, pint_t stubVMAddress, uint32_t stubSize, pint_t lpVMAddr);
+    void                                        switchStubToUseSharedLazyPointer(const char* symbolName, pint_t lpVMAddr);
+    void                                        switchStubsLazyPointer(uint8_t* stubMappedAddress, pint_t stubVMAddress, uint32_t stubSize, pint_t lpVMAddr);
     pint_t                                      findLazyPointerFor(const char* symbolName);
+	void										shareLazyPointersToResolvers();
 
 
 	static uint8_t								pointerRelocSize();
@@ -128,7 +123,6 @@ private:
 	NameSet										fSymbolResolvers;
 	NameSet										fAbsoluteSymbols;
 	std::vector<SymbolReExport>					fReExportedSymbols;
-	uint64_t									fDyldBaseAddress;
 	const macho_nlist<P>*						fSymbolTable;
 	const char*									fStrings;
 	const macho_dysymtab_command<P>*			fDynamicInfo;
@@ -138,8 +132,7 @@ private:
 	const macho_dyld_info_command<P>*			fDyldInfo;
 	bool										fOriginallyPrebound;
 	bool										fReExportedSymbolsResolved;
-    std::vector<ClientAndSymbol>                fClientAndSymbols;
-	NameToAddrMap								fResolverLazyPointers;
+	ResolverClientsMap							fResolverInfo;
 };
 
 template <> 
@@ -159,8 +152,8 @@ typename A::P::uint_t	Binder<A>::runtimeAddressFromNList(const macho_nlist<P>* s
 
 
 template <typename A>
-Binder<A>::Binder(const MachOLayoutAbstraction& layout, uint64_t dyldBaseAddress)
-	: Rebaser<A>(layout), fDyldBaseAddress(dyldBaseAddress),
+Binder<A>::Binder(const MachOLayoutAbstraction& layout)
+	: Rebaser<A>(layout),
 	  fSymbolTable(NULL), fStrings(NULL), fDynamicInfo(NULL),
 	  fFristWritableSegment(NULL), fDylibID(NULL), fDyldInfo(NULL),
 	  fParentUmbrella(NULL), fReExportedSymbolsResolved(false)
@@ -202,7 +195,7 @@ Binder<A>::Binder(const MachOLayoutAbstraction& layout, uint64_t dyldBaseAddress
 				fDyldInfo = (macho_dyld_info_command<P>*)cmd;
 				break;
 			case LC_RPATH:
-				throwf("dyld shared cache does not support LC_RPATH found in %s", layout.getFilePath());
+				fprintf(stderr, "update_dyld_shared_cache: warning: dyld shared cache does not support LC_RPATH found in %s\n", layout.getFilePath());
 				break;
 			default:
 				if ( cmd->cmd() & LC_REQ_DYLD )
@@ -214,72 +207,48 @@ Binder<A>::Binder(const MachOLayoutAbstraction& layout, uint64_t dyldBaseAddress
 		throw "no LC_DYSYMTAB";
 	if ( fSymbolTable == NULL )	
 		throw "no LC_SYMTAB";
+	if ( fDyldInfo == NULL )	
+		throw "no LC_DYLD_INFO";
 	// build hash table
-//	fprintf(stderr, "exports for %s\n", layout.getFilePath());
-	if ( fDyldInfo != NULL ) {
-		std::vector<mach_o::trie::Entry> exports;
-		const uint8_t* exportsStart = layout.getDyldInfoExports(); 
-		const uint8_t* exportsEnd = &exportsStart[fDyldInfo->export_size()];
-		mach_o::trie::parseTrie(exportsStart, exportsEnd, exports);
-		pint_t baseAddress = layout.getSegments()[0].newAddress();
-		for(std::vector<mach_o::trie::Entry>::iterator it = exports.begin(); it != exports.end(); ++it) {
-			switch ( it->flags & EXPORT_SYMBOL_FLAGS_KIND_MASK ) {
-				case EXPORT_SYMBOL_FLAGS_KIND_REGULAR:
-					if ( (it->flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) ) {
-						fSymbolResolvers.insert(it->name);
-					}
-					if ( it->flags & EXPORT_SYMBOL_FLAGS_REEXPORT ) {
-						//fprintf(stderr, "found re-export %s in %s\n", sym.exportName, this->getDylibID());
-						SymbolReExport sym;
-						sym.exportName = it->name;
-						sym.dylibOrdinal = it->other;
-						sym.importName = it->importName;
-						if ( (sym.importName == NULL) || (sym.importName[0] == '\0') ) 
-							sym.importName = sym.exportName;
-						fReExportedSymbols.push_back(sym);
-						// fHashTable entry will be added in first call to findExportedSymbolAddress() 
-					}
-					else {
-						fHashTable[it->name] = it->address + baseAddress;
-					}
-					break;
-				case EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL:
+	//fprintf(stderr, "exports for %s\n", layout.getFilePath());
+	std::vector<mach_o::trie::Entry> exports;
+	const uint8_t* exportsStart = layout.getDyldInfoExports(); 
+	const uint8_t* exportsEnd = &exportsStart[fDyldInfo->export_size()];
+	mach_o::trie::parseTrie(exportsStart, exportsEnd, exports);
+	pint_t baseAddress = layout.getSegments()[0].newAddress();
+	for(std::vector<mach_o::trie::Entry>::iterator it = exports.begin(); it != exports.end(); ++it) {
+		switch ( it->flags & EXPORT_SYMBOL_FLAGS_KIND_MASK ) {
+			case EXPORT_SYMBOL_FLAGS_KIND_REGULAR:
+				if ( (it->flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) ) {
+					fSymbolResolvers.insert(it->name);
+				}
+				if ( it->flags & EXPORT_SYMBOL_FLAGS_REEXPORT ) {
+					//fprintf(stderr, "found re-export %s in %s\n", sym.exportName, this->getDylibID());
+					SymbolReExport sym;
+					sym.exportName = it->name;
+					sym.dylibOrdinal = it->other;
+					sym.importName = it->importName;
+					if ( (sym.importName == NULL) || (sym.importName[0] == '\0') ) 
+						sym.importName = sym.exportName;
+					fReExportedSymbols.push_back(sym);
+					// fHashTable entry will be added in first call to findExportedSymbolAddress() 
+				}
+				else {
 					fHashTable[it->name] = it->address + baseAddress;
-					break;
-				case EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE:
-					fHashTable[it->name] = it->address;
-					fAbsoluteSymbols.insert(it->name);
-					break;
-				default:
-					throwf("non-regular symbol binding not supported for %s in %s", it->name, layout.getFilePath());
-					break;
-			}
-			//fprintf(stderr, "0x%08llX %s\n", it->address + baseAddress, it->name);
+				}
+				break;
+			case EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL:
+				fHashTable[it->name] = it->address + baseAddress;
+				break;
+			case EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE:
+				fHashTable[it->name] = it->address;
+				fAbsoluteSymbols.insert(it->name);
+				break;
+			default:
+				throwf("non-regular symbol binding not supported for %s in %s", it->name, layout.getFilePath());
+				break;
 		}
-	}
-	else {
-		if ( fDynamicInfo->tocoff() == 0 ) {
-			const macho_nlist<P>* start = &fSymbolTable[fDynamicInfo->iextdefsym()];
-			const macho_nlist<P>* end = &start[fDynamicInfo->nextdefsym()];
-			fHashTable.reserve(fDynamicInfo->nextdefsym()); // set initial bucket count
-			for (const macho_nlist<P>* sym=start; sym < end; ++sym) {
-				const char* name = &fStrings[sym->n_strx()];
-				fHashTable[name] = runtimeAddressFromNList(sym);
-				//fprintf(stderr, " 0x%08llX %s\n", sym->n_value(), name);
-			}
-		}
-		else {
-			int32_t count = fDynamicInfo->ntoc();
-			fHashTable.reserve(count); // set initial bucket count
-			const struct dylib_table_of_contents* toc = (dylib_table_of_contents*)&this->fLinkEditBase[fDynamicInfo->tocoff()];
-			for (int32_t i = 0; i < count; ++i) {
-				const uint32_t index = E::get32(toc[i].symbol_index);
-				const macho_nlist<P>* sym = &fSymbolTable[index];
-				const char* name = &fStrings[sym->n_strx()];
-				fHashTable[name] = runtimeAddressFromNList(sym);
-				//fprintf(stderr, "- 0x%08llX %s\n", sym->n_value(), name);
-			}
-		}
+		//fprintf(stderr, "0x%08llX %s\n", it->address + baseAddress, it->name);
 	}
 }
 
@@ -341,7 +310,7 @@ bool Binder<A>::isPublicLocation(const char* pth)
 template <typename A>
 void Binder<A>::setDependentBinders(const Map& map)
 {
-	// first pass to build vector of dylibs
+	// build vector of dependent dylibs
 	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)this->fHeader + sizeof(macho_header<P>));
 	const uint32_t cmd_count = this->fHeader->ncmds();
 	const macho_load_command<P>* cmd = cmds;
@@ -400,64 +369,7 @@ void Binder<A>::setDependentBinders(const Map& map)
 				break;
 		}
 		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
-	}
-	// handle pre-10.5 re-exports 
-	if ( (this->fHeader->flags() & MH_NO_REEXPORTED_DYLIBS) == 0 ) {
-		cmd = cmds;
-		// LC_SUB_LIBRARY means re-export one with matching leaf name
-		const char* dylibBaseName;
-		const char* frameworkLeafName;
-		for (uint32_t i = 0; i < cmd_count; ++i) {
-			switch ( cmd->cmd() ) {
-				case LC_SUB_LIBRARY:
-					dylibBaseName = ((macho_sub_library_command<P>*)cmd)->sub_library();
-					for (typename std::vector<BinderAndReExportFlag>::iterator it = fDependentDylibs.begin(); it != fDependentDylibs.end(); ++it) {
-						const char* dylibName = it->binder->getDylibID();
-						const char* lastSlash = strrchr(dylibName, '/');
-						const char* leafStart = &lastSlash[1];
-						if ( lastSlash == NULL )
-							leafStart = dylibName;
-						const char* firstDot = strchr(leafStart, '.');
-						int len = strlen(leafStart);
-						if ( firstDot != NULL )
-							len = firstDot - leafStart;
-						if ( strncmp(leafStart, dylibBaseName, len) == 0 )
-							it->reExport = true;
-					}
-					break;
-				case LC_SUB_UMBRELLA:
-					frameworkLeafName = ((macho_sub_umbrella_command<P>*)cmd)->sub_umbrella();
-					for (typename std::vector<BinderAndReExportFlag>::iterator it = fDependentDylibs.begin(); it != fDependentDylibs.end(); ++it) {
-						const char* dylibName = it->binder->getDylibID();
-						const char* lastSlash = strrchr(dylibName, '/');
-						if ( (lastSlash != NULL) && (strcmp(&lastSlash[1], frameworkLeafName) == 0) )
-							it->reExport = true;
-					}
-					break;
-			}
-			cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
-		}
-		// ask dependents if they re-export through me
-		const char* thisName = this->getDylibID();
-		if ( thisName != NULL ) {
-			const char* thisLeafName = strrchr(thisName, '/');
-			if ( thisLeafName != NULL )
-				++thisLeafName;
-			for (typename std::vector<BinderAndReExportFlag>::iterator it = fDependentDylibs.begin(); it != fDependentDylibs.end(); ++it) {
-				if ( ! it->reExport ) {
-					Binder<A>* dep = it->binder;
-					if ( dep != NULL ) {
-						const char* parentUmbrellaName = dep->parentUmbrella();
-						if ( parentUmbrellaName != NULL ) {
-							if ( strcmp(parentUmbrellaName, thisLeafName) == 0 )
-								it->reExport = true;
-						}
-					}
-				}
-			}	
-		}
-	}
-	
+	}	
 }
 
 template <typename A>
@@ -523,47 +435,9 @@ void Binder<A>::hoistPrivateRexports()
 template <typename A>
 void Binder<A>::bind(std::vector<void*>& pointersInData)
 {
-	this->doSetUpDyldSection();
-	if ( fDyldInfo != NULL ) {
-		this->doBindDyldInfo(pointersInData);
-		this->doBindDyldLazyInfo(pointersInData);
-		this->hoistPrivateRexports();
-		// weak bind info is processed at launch time
-	}
-	else {
-		this->doBindExternalRelocations();
-		this->doBindIndirectSymbols();
-		this->doSetPreboundUndefines();
-	}
-}
-
-
-template <typename A>
-void Binder<A>::doSetUpDyldSection()
-{
-	// find __DATA __dyld section 
-	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)this->fHeader + sizeof(macho_header<P>));
-	const uint32_t cmd_count = this->fHeader->ncmds();
-	const macho_load_command<P>* cmd = cmds;
-	for (uint32_t i = 0; i < cmd_count; ++i) {
-		if ( cmd->cmd() == macho_segment_command<P>::CMD ) {
-			const macho_segment_command<P>* seg = (macho_segment_command<P>*)cmd;
-			if ( strcmp(seg->segname(), "__DATA") == 0 ) {
-				const macho_section<P>* const sectionsStart = (macho_section<P>*)((uint8_t*)seg + sizeof(macho_segment_command<P>));
-				const macho_section<P>* const sectionsEnd = &sectionsStart[seg->nsects()];
-				for (const macho_section<P>* sect=sectionsStart; sect < sectionsEnd; ++sect) {
-					if ( (strcmp(sect->sectname(), "__dyld") == 0) && (sect->size() >= 2*sizeof(pint_t)) ) {
-						// set two values in __dyld section to point into dyld
-						pint_t* lazyBinder = this->mappedAddressForNewAddress(sect->addr());
-						pint_t* dyldFuncLookup = this->mappedAddressForNewAddress(sect->addr()+sizeof(pint_t));
-						A::P::setP(*lazyBinder, fDyldBaseAddress + 0x1000);
-						A::P::setP(*dyldFuncLookup, fDyldBaseAddress + 0x1008);
-					}
-				}
-			}
-		}
-		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
-	}
+	this->doBindDyldInfo(pointersInData);
+	this->doBindDyldLazyInfo(pointersInData);
+	// weak bind info is processed at launch time
 }
 
 template <typename A>
@@ -793,232 +667,6 @@ void Binder<A>::doBindDyldInfo(std::vector<void*>& pointersInData)
 			default:
 				throwf("bad bind opcode %d", *p);
 		}
-	}	
-
-	
-
-}
-
-
-template <typename A>
-void Binder<A>::doSetPreboundUndefines()
-{
-	const macho_dysymtab_command<P>* dysymtab = NULL;
-	macho_nlist<P>* symbolTable = NULL;
-
-	// get symbol table info
-	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)this->fHeader + sizeof(macho_header<P>));
-	const uint32_t cmd_count = this->fHeader->ncmds();
-	const macho_load_command<P>* cmd = cmds;
-	for (uint32_t i = 0; i < cmd_count; ++i) {
-		switch (cmd->cmd()) {
-			case LC_SYMTAB:
-				{
-					const macho_symtab_command<P>* symtab = (macho_symtab_command<P>*)cmd;
-					symbolTable = (macho_nlist<P>*)(&this->fLinkEditBase[symtab->symoff()]);
-				}
-				break;
-			case LC_DYSYMTAB:
-				dysymtab = (macho_dysymtab_command<P>*)cmd;
-				break;
-		}
-		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
-	}	
-	
-	// walk all undefines and set their prebound n_value
-	macho_nlist<P>* const lastUndefine = &symbolTable[dysymtab->iundefsym()+dysymtab->nundefsym()];
-	for (macho_nlist<P>* entry = &symbolTable[dysymtab->iundefsym()]; entry < lastUndefine; ++entry) {
-		if ( entry->n_type() & N_EXT ) {
-			//fprintf(stderr, "doSetPreboundUndefines: r_sym=%s, pbaddr=0x%08X, in %s\n", 
-			//	&fStrings[entry->n_strx()], pbaddr, this->getDylibID());
-			pint_t pbaddr = this->resolveUndefined(entry);
-			entry->set_n_value(pbaddr);
-		}
-	}
-}
-
-
-template <typename A>
-void Binder<A>::doBindExternalRelocations()
-{
-	// get where reloc addresses start
-	// these address are always relative to first writable segment because they are in cache which always
-	// has writable segments far from read-only segments
-	pint_t firstWritableSegmentBaseAddress = 0;
-	const std::vector<MachOLayoutAbstraction::Segment>& segments = this->fLayout.getSegments();
-	for(std::vector<MachOLayoutAbstraction::Segment>::const_iterator it = segments.begin(); it != segments.end(); ++it) {
-		const MachOLayoutAbstraction::Segment& seg = *it;
-		if ( seg.writable() ) {
-			firstWritableSegmentBaseAddress = seg.newAddress();
-			break;
-		}
-	}	
-	
-	// loop through all external relocation records and bind each
-	const macho_relocation_info<P>* const relocsStart = (macho_relocation_info<P>*)(&this->fLinkEditBase[fDynamicInfo->extreloff()]);
-	const macho_relocation_info<P>* const relocsEnd = &relocsStart[fDynamicInfo->nextrel()];
-	for (const macho_relocation_info<P>* reloc=relocsStart; reloc < relocsEnd; ++reloc) {
-		if ( reloc->r_length() != pointerRelocSize() ) 
-			throw "bad external relocation length";
-		if ( reloc->r_type() != pointerRelocType() ) 
-			throw "unknown external relocation type";
-		if ( reloc->r_pcrel() ) 
-			throw "r_pcrel external relocaiton not supported";
-
-		const macho_nlist<P>* undefinedSymbol = &fSymbolTable[reloc->r_symbolnum()];
-		pint_t* location;
-		try {
-			location = this->mappedAddressForNewAddress(reloc->r_address() + firstWritableSegmentBaseAddress);
-		}
-		catch (const char* msg) {
-			throwf("%s processesing external relocation r_address 0x%08X", msg, reloc->r_address());
-		}
-		pint_t addend =  P::getP(*location);
-		if ( fOriginallyPrebound ) {
-			// in a prebound binary, the n_value field of an undefined symbol is set to the address where the symbol was found when prebound
-			// so, subtracting that gives the initial displacement which we need to add to the newly found symbol address
-			// if mach-o relocation structs had an "addend" field this complication would not be necessary.
-			addend -= undefinedSymbol->n_value();
-			// To further complicate things, if this is defined symbol, then its n_value has already been adjust to the
-			// new base address, so we need to back off the slide too..
-			if ( (undefinedSymbol->n_type() & N_TYPE) == N_SECT ) {
-				addend += this->getSlideForNewAddress(undefinedSymbol->n_value());
-			}
-		}
-		pint_t symbolAddr = this->resolveUndefined(undefinedSymbol);
-		//fprintf(stderr, "external reloc: r_address=0x%08X, r_sym=%s, symAddr=0x%08llX, addend=0x%08llX in %s\n", 
-		//		reloc->r_address(), &fStrings[undefinedSymbol->n_strx()], (uint64_t)symbolAddr, (uint64_t)addend, this->getDylibID());
-		P::setP(*location, symbolAddr + addend); 
-	}
-}
-
-
-// most architectures use pure code, unmodifiable stubs
-template <typename A>
-void Binder<A>::bindStub(uint8_t elementSize, uint8_t* location, pint_t vmlocation, pint_t value)
-{
-	// do nothing
-}
-
-// x86 supports fast stubs
-template <>
-void Binder<x86>::bindStub(uint8_t elementSize, uint8_t* location, pint_t vmlocation, pint_t value)
-{
-	// if the stub is not 5-bytes, it is an old slow stub
-	if ( elementSize == 5 ) {
-		uint32_t rel32 = value - (vmlocation + 5);
-		location[0] = 0xE9; // JMP rel32
-		location[1] = rel32 & 0xFF;
-		location[2] = (rel32 >> 8) & 0xFF;
-		location[3] = (rel32 >> 16) & 0xFF;
-		location[4] = (rel32 >> 24) & 0xFF;
-	}
-}
-
-template <typename A>
-void Binder<A>::doBindIndirectSymbols()
-{
-	const uint32_t* const indirectTable = (uint32_t*)&this->fLinkEditBase[fDynamicInfo->indirectsymoff()];
-	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)this->fHeader + sizeof(macho_header<P>));
-	const uint32_t cmd_count = this->fHeader->ncmds();
-	const macho_load_command<P>* cmd = cmds;
-	//fprintf(stderr, "doBindIndirectSymbols() %s\n", this->fLayout.getFilePath());
-	for (uint32_t i = 0; i < cmd_count; ++i) {
-		if ( cmd->cmd() == macho_segment_command<P>::CMD ) {
-			const macho_segment_command<P>* seg = (macho_segment_command<P>*)cmd;
-			const macho_section<P>* const sectionsStart = (macho_section<P>*)((uint8_t*)seg + sizeof(macho_segment_command<P>));
-			const macho_section<P>* const sectionsEnd = &sectionsStart[seg->nsects()];
-			for (const macho_section<P>* sect=sectionsStart; sect < sectionsEnd; ++sect) {
-				uint8_t elementSize = 0;
-				uint8_t sectionType = sect->flags() & SECTION_TYPE;
-				switch ( sectionType ) {
-					case S_SYMBOL_STUBS:
-						elementSize = sect->reserved2();
-						break;
-					case S_NON_LAZY_SYMBOL_POINTERS:
-					case S_LAZY_SYMBOL_POINTERS:
-						elementSize = sizeof(pint_t);
-						break;
-				}
-				if ( elementSize != 0 ) {
-					uint32_t elementCount = sect->size() / elementSize;
-					const uint32_t indirectTableOffset = sect->reserved1();
-					uint8_t* location = NULL; 
-					if ( sect->size() != 0 )
-						location = (uint8_t*)this->mappedAddressForNewAddress(sect->addr());
-					pint_t vmlocation = sect->addr();
-					for (uint32_t j=0; j < elementCount; ++j, location += elementSize, vmlocation += elementSize) {
-						uint32_t symbolIndex = E::get32(indirectTable[indirectTableOffset + j]); 
-						switch ( symbolIndex ) {
-							case INDIRECT_SYMBOL_ABS:
-							case INDIRECT_SYMBOL_LOCAL:
-								break;
-							default:
-								const macho_nlist<P>* undefinedSymbol = &fSymbolTable[symbolIndex];
-								//fprintf(stderr, " sect=%s, index=%d, symbolIndex=%d, sym=%s\n", sect->sectname(), j, symbolIndex, &fStrings[undefinedSymbol->n_strx()]);
-								pint_t symbolAddr = this->resolveUndefined(undefinedSymbol);
-								switch ( sectionType ) {
-									case S_NON_LAZY_SYMBOL_POINTERS:
-									case S_LAZY_SYMBOL_POINTERS:
-										P::setP(*((pint_t*)location), symbolAddr); 
-										break;
-									case S_SYMBOL_STUBS:
-										this->bindStub(elementSize, location, vmlocation, symbolAddr);
-											break;
-								}
-								break;
-						}
-					}
-				}
-			}
-		}
-		cmd = (const macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
-	}
-}
-
-
-
-
-template <typename A>
-typename A::P::uint_t Binder<A>::resolveUndefined(const macho_nlist<P>* undefinedSymbol)
-{
-	if ( (undefinedSymbol->n_type() & N_TYPE) == N_SECT ) {
-		if ( (undefinedSymbol->n_type() & N_PEXT) != 0 ) {
-			// is a multi-module private_extern internal reference that the linker did not optimize away
-			return runtimeAddressFromNList(undefinedSymbol);
-		}
-		if ( (undefinedSymbol->n_desc() & N_WEAK_DEF) != 0 ) {
-			// is a weak definition, we should prebind to this one in the same linkage unit
-			return runtimeAddressFromNList(undefinedSymbol);
-		}
-	}
-	const char* symbolName = &fStrings[undefinedSymbol->n_strx()];
-	if ( (this->fHeader->flags() & MH_TWOLEVEL) == 0 ) {
-		// flat namespace binding
-		throw "flat namespace not supported";
-	}
-	else {
-		uint8_t ordinal = GET_LIBRARY_ORDINAL(undefinedSymbol->n_desc());
-		Binder<A>* binder = NULL;
-		switch ( ordinal ) {
-			case EXECUTABLE_ORDINAL:
-			case DYNAMIC_LOOKUP_ORDINAL:
-				throw "magic ordineal not supported";
-			case SELF_LIBRARY_ORDINAL:
-				binder = this;
-				break;
-			default:
-				if ( ordinal > fDependentDylibs.size() )
-					throw "two-level ordinal out of range";
-				binder = fDependentDylibs[ordinal-1].binder;
-		}	
-		pint_t addr;
-		bool isResolver;
-		bool isAbsolute;
-        Binder<A>* foundIn;
-		if ( ! binder->findExportedSymbolAddress(symbolName, &addr, &foundIn, &isResolver, &isAbsolute) )
-			throwf("could not resolve undefined symbol %s in %s expected in %s", symbolName, this->getDylibID(), binder->getDylibID());
-		return addr;
 	}
 }
 
@@ -1084,10 +732,7 @@ bool Binder<A>::findExportedSymbolAddress(const char* name, pint_t* result, Bind
 template <typename A>
 void Binder<A>::addResolverClient(Binder<A>* clientDylib, const char* symbolName)
 {
-    ClientAndSymbol x;
-    x.client = clientDylib;
-    x.symbolName = symbolName;
-    fClientAndSymbols.push_back(x);
+	fResolverInfo[symbolName].insert(clientDylib);
 }                                        
 
 
@@ -1095,15 +740,8 @@ template <typename A>
 typename A::P::uint_t Binder<A>::findLazyPointerFor(const char* symbolName)
 {
 	static const bool log = false;
-	
-	// first check cache
-	typename NameToAddrMap::iterator pos = fResolverLazyPointers.find(symbolName);
-	if ( pos != fResolverLazyPointers.end() ) {
-		if ( log ) fprintf(stderr, "found cached shared lazy pointer at 0x%llX for %s in %s\n", (uint64_t)(pos->second), symbolName, this->getDylibID());
-		return pos->second;
-	}
-	
-	// do slow lookup in lazy pointer section
+
+	// lookup in lazy pointer section
 	const uint32_t* const indirectTable = (uint32_t*)&this->fLinkEditBase[fDynamicInfo->indirectsymoff()];
 	const macho_load_command<P>* const cmds = (macho_load_command<P>*)((uint8_t*)this->fHeader + sizeof(macho_header<P>));
 	const uint32_t cmd_count = this->fHeader->ncmds();
@@ -1130,8 +768,7 @@ typename A::P::uint_t Binder<A>::findLazyPointerFor(const char* symbolName)
 								const char* aName = &fStrings[aSymbol->n_strx()];
 								//fprintf(stderr, " sect=%s, index=%d, symbolIndex=%d, sym=%s\n", sect->sectname(), j, symbolIndex, &fStrings[undefinedSymbol->n_strx()]);
 								if ( strcmp(aName, symbolName) == 0 ) { 
-									fResolverLazyPointers[symbolName] = vmlocation;
-									if ( log ) fprintf(stderr, "found slow-path shared lazy pointer at 0x%llX for %s in %s\n", (uint64_t)vmlocation, symbolName, this->getDylibID());
+									if ( log ) fprintf(stderr, "found shared lazy pointer at 0x%llX for %s in %s\n", (uint64_t)vmlocation, symbolName, this->getDylibID());
 									return vmlocation;
 								}
 								break;
@@ -1172,20 +809,30 @@ typename A::P::uint_t Binder<A>::findLazyPointerFor(const char* symbolName)
 template <typename A>
 void Binder<A>::optimize()
 {
-    for (typename std::vector<ClientAndSymbol>::iterator it = fClientAndSymbols.begin(); it != fClientAndSymbols.end(); ++it) {
-        pint_t lpVMAddr = findLazyPointerFor(it->symbolName);
-        if ( lpVMAddr != 0 ) {
-            it->client->optimizeStub(it->symbolName, lpVMAddr);
-        }
-        else {
-			fprintf(stderr, "not able to optimize lazy pointer for %s in %s\n", it->symbolName, it->client->getDylibID());
-        }
-        
-    }
+	hoistPrivateRexports();
+	shareLazyPointersToResolvers();
 }
 
+template <typename A>
+void Binder<A>::shareLazyPointersToResolvers()
+{
+	for (const auto &entry : fResolverInfo) {
+		const char* resolverSymbolName = entry.first;
+        if ( pint_t lpVMAddr = findLazyPointerFor(resolverSymbolName) ) {
+			for (Binder<A>* clientDylib : entry.second) {
+				clientDylib->switchStubToUseSharedLazyPointer(resolverSymbolName, lpVMAddr);
+			}
+		}
+		else {
+			fprintf(stderr, "not able to optimize lazy pointer for %s in %s\n", resolverSymbolName, this->getDylibID());
+		}
+	}
+}
+
+
+
 template <>
-void Binder<arm>::optimizeStub(uint8_t* stubMappedAddress, pint_t stubVMAddress, uint32_t stubSize, pint_t lpVMAddr)
+void Binder<arm>::switchStubsLazyPointer(uint8_t* stubMappedAddress, pint_t stubVMAddress, uint32_t stubSize, pint_t lpVMAddr)
 {
     if ( stubSize != 16 ) {
         fprintf(stderr, "could not optimize ARM stub to resolver function in %s because it is wrong size\n", this->getDylibID());
@@ -1207,7 +854,7 @@ void Binder<arm>::optimizeStub(uint8_t* stubMappedAddress, pint_t stubVMAddress,
 
 
 template <>
-void Binder<x86_64>::optimizeStub(uint8_t* stubMappedAddress, pint_t stubVMAddress, uint32_t stubSize, pint_t lpVMAddr)
+void Binder<x86_64>::switchStubsLazyPointer(uint8_t* stubMappedAddress, pint_t stubVMAddress, uint32_t stubSize, pint_t lpVMAddr)
 {
     if ( stubSize != 6 ) {
         fprintf(stderr, "could not optimize x86_64 stub to resolver function in %s because it is wrong size\n", this->getDylibID());
@@ -1224,7 +871,7 @@ void Binder<x86_64>::optimizeStub(uint8_t* stubMappedAddress, pint_t stubVMAddre
 }
 
 template <typename A>
-void Binder<A>::optimizeStub(uint8_t* stubMappedAddress, pint_t stubVMAddress, uint32_t stubSize, pint_t lpVMAddress)
+void Binder<A>::switchStubsLazyPointer(uint8_t* stubMappedAddress, pint_t stubVMAddress, uint32_t stubSize, pint_t lpVMAddress)
 {
     // Remaining architectures are not optimized
     //fprintf(stderr, "optimize stub at %p in %s to use lazyPointer at 0x%llX\n", stubMappedAddress, this->getDylibID(), (uint64_t)lpVMAddress);
@@ -1232,7 +879,7 @@ void Binder<A>::optimizeStub(uint8_t* stubMappedAddress, pint_t stubVMAddress, u
 
 // search for stub in this image that call target symbol name and then optimize its lazy pointer
 template <typename A>
-void Binder<A>::optimizeStub(const char* stubName, pint_t lpVMAddr)
+void Binder<A>::switchStubToUseSharedLazyPointer(const char* stubName, pint_t lpVMAddr)
 {
 	// find named stub
 	const uint32_t* const indirectTable = (uint32_t*)&this->fLinkEditBase[fDynamicInfo->indirectsymoff()];
@@ -1264,7 +911,7 @@ void Binder<A>::optimizeStub(const char* stubName, pint_t lpVMAddr)
                                    const macho_nlist<P>* sym = &this->fSymbolTable[symbolIndex];
                                    const char* symName = &fStrings[sym->n_strx()];
                                     if ( strcmp(symName, stubName) == 0 ) 
-                                        this->optimizeStub(stubMappedAddr, stubVMAddr, stubSize, lpVMAddr);
+                                        this->switchStubsLazyPointer(stubMappedAddr, stubVMAddr, stubSize, lpVMAddr);
                                 }
  								break;
 						}

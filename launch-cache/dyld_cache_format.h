@@ -44,6 +44,7 @@ struct dyld_cache_header
 	uint64_t	localSymbolsOffset;		// file offset of where local symbols are stored
 	uint64_t	localSymbolsSize;		// size of local symbols information
 	uint8_t		uuid[16];				// unique value for each shared cache file
+	uint64_t	cacheType;				// 1 for development, 0 for optimized
 };
 
 struct dyld_cache_mapping_info {

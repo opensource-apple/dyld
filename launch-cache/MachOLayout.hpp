@@ -38,6 +38,7 @@
 #include <unistd.h>
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
+#include <rootless.h>
 
 #include <vector>
 #include <set>
@@ -69,11 +70,13 @@ public:
 	struct Segment
 	{
 	public:
-					Segment(uint64_t addr, uint64_t vmsize, uint64_t offset, uint64_t file_size, uint64_t align,
-							uint32_t prot, const char* segName) : fOrigAddress(addr), fOrigSize(vmsize),
+					Segment(uint64_t addr, uint64_t vmsize, uint64_t offset, uint64_t file_size, uint64_t sectionsSize,
+							uint64_t sectionsAlignment, uint64_t align,
+							uint32_t prot, uint32_t sectionCount, const char* segName) : fOrigAddress(addr), fOrigSize(vmsize),
 							fOrigFileOffset(offset),  fOrigFileSize(file_size), fOrigPermissions(prot), 
 							fSize(vmsize), fFileOffset(offset), fFileSize(file_size), fAlignment(align),
-							fPermissions(prot), fNewAddress(0), fMappedAddress(NULL) {
+							fPermissions(prot), fSectionCount(sectionCount), fSectionsSize(sectionsSize),
+							fSectionsAlignment(sectionsAlignment), fNewAddress(0), fMappedAddress(NULL) {
 								strlcpy(fOrigName, segName, 16);
 							}
 							
@@ -88,6 +91,9 @@ public:
 		uint64_t	alignment() const	{ return fAlignment; }
 		const char* name() const		{ return fOrigName; }
 		uint64_t	newAddress() const	{ return fNewAddress; }
+		uint32_t	sectionCount() const{ return fSectionCount; }
+		uint64_t	sectionsSize() const{ return fSectionsSize; }
+		uint64_t	sectionsAlignment() const { return fSectionsAlignment; }
 		void*		mappedAddress() const			{ return fMappedAddress; }
 		void		setNewAddress(uint64_t addr)	{ fNewAddress = addr; }
 		void		setMappedAddress(void* addr)	{ fMappedAddress = addr; }
@@ -95,6 +101,7 @@ public:
 		void		setFileOffset(uint64_t new_off)	{ fFileOffset = new_off; }
 		void		setFileSize(uint64_t new_size)	{ fFileSize = new_size; }
 		void		setWritable(bool w)				{ if (w) fPermissions |= VM_PROT_WRITE; else fPermissions &= ~VM_PROT_WRITE; }
+		void		setSectionsAlignment(uint64_t v){ fSectionsAlignment = v; }
 		void		reset()							{ fSize=fOrigSize; fFileOffset=fOrigFileOffset; fFileSize=fOrigFileSize; fPermissions=fOrigPermissions; }
 	private:
 		uint64_t		fOrigAddress;
@@ -108,6 +115,9 @@ public:
 		uint64_t		fFileSize;
 		uint64_t		fAlignment;
 		uint32_t		fPermissions;
+		uint32_t		fSectionCount;
+		uint64_t		fSectionsSize;
+		uint64_t		fSectionsAlignment;
 		uint64_t		fNewAddress;
 		void*			fMappedAddress;
 	};
@@ -130,7 +140,8 @@ public:
 	virtual bool								isDylib() const = 0;
 	virtual bool								isSplitSeg() const = 0;
 	virtual bool								hasSplitSegInfo() const = 0;
-	virtual bool								isRootOwned() const = 0;
+	virtual bool								hasSplitSegInfoV2() const = 0;
+	virtual int									notTrusted() const = 0;
 	virtual bool								inSharableLocation() const = 0;
 	virtual bool								hasDynamicLookupLinkage() const = 0;
 	virtual bool								hasMainExecutableLookupLinkage() const = 0;
@@ -177,8 +188,9 @@ public:
 	virtual	Library								getID() const			{ return fDylibID; }
 	virtual bool								isDylib() const			{ return fIsDylib; }
 	virtual bool								isSplitSeg() const;
-	virtual bool								hasSplitSegInfo() const	{ return fHasSplitSegInfo; }
-	virtual bool								isRootOwned() const		{ return fRootOwned; }
+	virtual bool								hasSplitSegInfo() const	{ return fSplitSegInfo != NULL; }
+	virtual bool								hasSplitSegInfoV2() const{ return fHasSplitSegInfoV2; }
+	virtual int									notTrusted() const		{ return fRootlessErrno; }
 	virtual bool								inSharableLocation() const { return fShareableLocation; }
 	virtual bool								hasDynamicLookupLinkage() const { return fDynamicLookupLinkage; }
 	virtual bool								hasMainExecutableLookupLinkage() const { return fMainExecutableLookupLinkage; }
@@ -212,6 +224,9 @@ private:
 	uint64_t									segmentSize(const macho_segment_command<typename A::P>* segCmd) const;
 	uint64_t									segmentFileSize(const macho_segment_command<typename A::P>* segCmd) const;
 	uint64_t									segmentAlignment(const macho_segment_command<typename A::P>* segCmd) const;
+	uint64_t									sectionsSize(const macho_segment_command<typename A::P>* segCmd) const;
+	uint64_t									sectionsAlignment(const macho_segment_command<typename A::P>* segCmd) const;
+
 	bool										validReadWriteSeg(const Segment& seg) const;
 	
 	static cpu_type_t							arch();
@@ -235,8 +250,9 @@ private:
 	uint64_t									fVMExecutableSize;
 	uint64_t									fVMWritablSize;
 	uint64_t									fVMReadOnlySize;
-	bool										fHasSplitSegInfo;
-	bool										fRootOwned;
+	const macho_linkedit_data_command<P>*		fSplitSegInfo;
+	bool										fHasSplitSegInfoV2;
+	int											fRootlessErrno;
 	bool										fShareableLocation;
 	bool										fDynamicLookupLinkage;
 	bool										fMainExecutableLookupLinkage;
@@ -506,10 +522,41 @@ uint64_t MachOLayout<A>::segmentFileSize(const macho_segment_command<typename A:
 	return segCmd->filesize();
 }
 
+template <typename A>
+uint64_t MachOLayout<A>::sectionsSize(const macho_segment_command<typename A::P>* segCmd) const
+{
+	if ( segCmd->nsects() > 0 ) {
+		const macho_section<P>* const sectionsStart = (macho_section<P>*)((uint8_t*)segCmd + sizeof(macho_segment_command<P>));
+		const macho_section<P>* const lastSection = &sectionsStart[segCmd->nsects()-1];
+		uint64_t endSectAddr = lastSection->addr() + lastSection->size();
+		if ( endSectAddr < (segCmd->vmaddr() + segCmd->vmsize()) ) {
+			uint64_t size =  endSectAddr - segCmd->vmaddr();
+			return size;
+		}
+	}
+	return segCmd->vmsize();
+}
+
+template <typename A>
+uint64_t MachOLayout<A>::sectionsAlignment(const macho_segment_command<typename A::P>* segCmd) const
+{
+	int p2align = 4;
+	if ( hasSplitSegInfoV2() && (segCmd->nsects() > 0) ) {
+		const macho_section<P>* const sectionsStart = (macho_section<P>*)((uint8_t*)segCmd + sizeof(macho_segment_command<P>));
+		const macho_section<P>* const sectionsEnd = &sectionsStart[segCmd->nsects()-1];
+		for (const macho_section<P>*  sect=sectionsStart; sect < sectionsEnd; ++sect) {
+			if ( sect->align() > p2align )
+				p2align = sect->align();
+		}
+	}
+	return (1 << p2align);
+}
+
+
 
 template <typename A>
 MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char* path, ino_t inode, time_t modTime, uid_t uid)
- : fPath(path), fOffset(offset), fArchPair(0,0), fMTime(modTime), fInode(inode), fHasSplitSegInfo(false), fRootOwned(uid==0),
+ : fPath(path), fOffset(offset), fArchPair(0,0), fMTime(modTime), fInode(inode), fSplitSegInfo(NULL), fHasSplitSegInfoV2(false), fRootlessErrno(0),
    fShareableLocation(false), fDynamicLookupLinkage(false), fMainExecutableLookupLinkage(false), fIsDylib(false), 
 	fHasDyldInfo(false), fHasTooManyWritableSegments(false), fDyldInfoExports(NULL)
 {
@@ -537,7 +584,9 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 	fFileType = mh->filetype();
 	fArchPair.arch = mh->cputype();
 	fArchPair.subtype = mh->cpusubtype();
-	
+	if ( rootless_check_trusted(path) != 0 && rootless_protected_volume(path) == 1)
+		fRootlessErrno = errno;
+
 	const macho_dyld_info_command<P>* dyldInfo = NULL;
 	const macho_symtab_command<P>* symbolTableCmd = NULL;
 	const macho_dysymtab_command<P>* dynamicSymbolTableCmd = NULL;
@@ -571,13 +620,15 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 				}
 				break;
 			case LC_SEGMENT_SPLIT_INFO:
-				fHasSplitSegInfo = true;
+				fSplitSegInfo = (macho_linkedit_data_command<P>*)cmd;
 				break;
 			case macho_segment_command<P>::CMD:
 				{
 					const macho_segment_command<P>* segCmd = (macho_segment_command<P>*)cmd;
 					fSegments.push_back(Segment(segCmd->vmaddr(), segmentSize(segCmd), segCmd->fileoff(), 
-								segmentFileSize(segCmd), segmentAlignment(segCmd), segCmd->initprot(), segCmd->segname()));
+								segmentFileSize(segCmd), sectionsSize(segCmd), sectionsAlignment(segCmd),
+								segmentAlignment(segCmd), segCmd->initprot(),
+								segCmd->nsects(), segCmd->segname()));
 				}
 				break;
 			case LC_SYMTAB:
@@ -655,6 +706,18 @@ MachOLayout<A>::MachOLayout(const void* machHeader, uint64_t offset, const char*
 	if ( dyldInfo != NULL ) {
 		if ( dyldInfo->export_off() != 0 ) {
 			fDyldInfoExports = (uint8_t*)machHeader + dyldInfo->export_off();
+		}
+	}
+
+	if ( fSplitSegInfo != NULL ) {
+		const uint8_t* infoStart = (uint8_t*)machHeader + fSplitSegInfo->dataoff();
+		fHasSplitSegInfoV2 = ( *infoStart == DYLD_CACHE_ADJ_V2_FORMAT );
+		if ( !fHasSplitSegInfoV2 ) {
+			// split seg version not known when segments created
+			// v1 does not support packing, so simulate that by forcing alignment
+			for (Segment& seg : fSegments) {
+				seg.setSectionsAlignment(4096);
+			}
 		}
 	}
 

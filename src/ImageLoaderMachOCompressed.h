@@ -39,10 +39,12 @@ class ImageLoaderMachOCompressed : public ImageLoaderMachO {
 public:
 	static ImageLoaderMachOCompressed*	instantiateMainExecutable(const macho_header* mh, uintptr_t slide, const char* path, 
 																	unsigned int segCount, unsigned int libCount, const LinkContext& context);
-	static ImageLoaderMachOCompressed*	instantiateFromFile(const char* path, int fd, const uint8_t* fileData, 
+	static ImageLoaderMachOCompressed*	instantiateFromFile(const char* path, int fd, const uint8_t *fileData, size_t lenFileData,
 															uint64_t offsetInFat, uint64_t lenInFat, const struct stat& info, 
 															unsigned int segCount, unsigned int libCount, 
-															const struct linkedit_data_command* codeSigCmd, const LinkContext& context);
+															const struct linkedit_data_command* codeSigCmd, 
+															const struct encryption_info_command* encryptCmd,
+															const LinkContext& context);
 	static ImageLoaderMachOCompressed*	instantiateFromCache(const macho_header* mh, const char* path, long slide, const struct stat& info,
 																unsigned int segCount, unsigned int libCount, const LinkContext& context);
 	static ImageLoaderMachOCompressed*	instantiateFromMemory(const char* moduleName, const macho_header* mh, uint64_t len, 
@@ -134,7 +136,8 @@ private:
 	static const uint8_t*				trieWalk(const uint8_t* start, const uint8_t* end, const  char* s);
     void                                updateOptimizedLazyPointers(const LinkContext& context);
     void                                updateAlternateLazyPointer(uint8_t* stub, void** originalLazyPointerAddr, const LinkContext& context);
-		
+	void								registerEncryption(const struct encryption_info_command* encryptCmd, const LinkContext& context);
+	
 	const struct dyld_info_command*			fDyldInfo;
 };
 

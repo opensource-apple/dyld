@@ -96,7 +96,23 @@ struct uuid_command {
 
 #ifndef CPU_SUBTYPE_X86_64_H
 	#define CPU_SUBTYPE_X86_64_H		((cpu_subtype_t) 8) 
-#endif	
+#endif
+
+
+#define DYLD_CACHE_ADJ_V2_FORMAT				0x7F
+
+#define DYLD_CACHE_ADJ_V2_POINTER_32			0x01
+#define DYLD_CACHE_ADJ_V2_POINTER_64			0x02
+#define DYLD_CACHE_ADJ_V2_DELTA_32			    0x03
+#define DYLD_CACHE_ADJ_V2_DELTA_64			    0x04
+#define DYLD_CACHE_ADJ_V2_ARM64_ADRP			0x05
+#define DYLD_CACHE_ADJ_V2_ARM64_OFF12			0x06
+#define DYLD_CACHE_ADJ_V2_ARM64_BR26			0x07
+#define DYLD_CACHE_ADJ_V2_ARM_MOVW_MOVT			0x08
+#define DYLD_CACHE_ADJ_V2_ARM_BR24				0x09
+#define DYLD_CACHE_ADJ_V2_THUMB_MOVW_MOVT		0x0A
+#define DYLD_CACHE_ADJ_V2_THUMB_BR22			0x0B
+#define DYLD_CACHE_ADJ_V2_IMAGE_OFF_32			0x0C
 
 
 #include "FileAbstraction.hpp"
@@ -801,7 +817,7 @@ public:
                 const macho_segment_command<P>* segcmd = (macho_segment_command<P>*)cmd;
                 if (0 == strncmp(segname, segcmd->segname(), 16)) {
                     return segcmd;
-                }
+              }
             }
             cmd = (macho_load_command<P>*)(((uint8_t*)cmd)+cmd->cmdsize());
         }
@@ -821,6 +837,8 @@ public:
             }
         }
 
+		if (strcmp(segname, "__DATA") == 0)
+			return getSection("__DATA_CONST", sectname);
         return NULL;
     }
 

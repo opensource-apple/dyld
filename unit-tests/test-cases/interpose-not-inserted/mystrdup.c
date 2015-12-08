@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010 Apple Inc. All rights reserved.
+ * Copyright (c) 2005 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -20,28 +20,13 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-#include <stdio.h>  // fprintf(), NULL
-#include <stdlib.h> // exit(), EXIT_SUCCESS
-#include <dlfcn.h>
+
 #include <string.h>
-#include <stdlib.h> // for atoi()
+#include <mach-o/dyld-interposing.h>
 
-#include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
-
-
-
-extern int foo();
-
-int main(int argc, const char* argv[])
+char* mystrdup(const char* in)
 {
-	int expectedResult = atoi(argv[1]);
-	int actualResult = foo();
-	//fprintf(stderr, "foo() returned %d, expected %d\n", actualResult, expectedResult);
-	if ( actualResult != expectedResult )
-		FAIL("DYLD_VERSIONED_LIBRARY_PATH-basic using wrong dylib. foo() returned %d, expected %d", actualResult, expectedResult);
-	else
-		PASS("DYLD_VERSIONED_LIBRARY_PATH-basic");
-		
-	return EXIT_SUCCESS;
+	return strdup("hello");
 }
 
+DYLD_INTERPOSE(mystrdup, strdup)

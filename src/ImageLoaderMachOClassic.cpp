@@ -97,7 +97,8 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateMainExecutable(cons
 	// for PIE record end of program, to know where to start loading dylibs
 	if ( slide != 0 )
 		fgNextPIEDylibAddress = (uintptr_t)image->getEnd();
-	
+
+	image->disableCoverageCheck();
 	image->instantiateFinish(context);
 	image->setMapped(context);
 
@@ -126,7 +127,7 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateMainExecutable(cons
 }
 
 // create image by mapping in a mach-o file
-ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromFile(const char* path, int fd, const uint8_t* fileData, 
+ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromFile(const char* path, int fd, const uint8_t* fileData, size_t lenFileData,
 															uint64_t offsetInFat, uint64_t lenInFat, const struct stat& info, 
 															unsigned int segCount, unsigned int libCount, 
 															const struct linkedit_data_command* codeSigCmd, const LinkContext& context)
@@ -139,6 +140,9 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromFile(const char
 		// if this image is code signed, let kernel validate signature before mapping any pages from image
 		image->loadCodeSignature(codeSigCmd, fd, offsetInFat, context);
 		
+		// Validate that first data we read with pread actually matches with code signature
+		image->validateFirstPages(codeSigCmd, fd, fileData, lenFileData, offsetInFat, context);
+
 		// mmap segments
 		image->mapSegmentsClassic(fd, offsetInFat, lenInFat, info.st_size, context);
 
@@ -192,6 +196,7 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromCache(const mac
 		// remember this is from shared cache and cannot be unloaded
 		image->fInSharedCache = true;
 		image->setNeverUnload();
+		image->disableCoverageCheck();
 
 		// segments already mapped in cache
 		if ( context.verboseMapping ) {
@@ -229,6 +234,8 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateFromMemory(const ch
 
 		// for compatibility, never unload dylibs loaded from memory
 		image->setNeverUnload();
+
+		image->disableCoverageCheck();
 
 		// bundle loads need path copied
 		if ( moduleName != NULL ) 
@@ -273,7 +280,7 @@ ImageLoaderMachOClassic* ImageLoaderMachOClassic::instantiateStart(const macho_h
 void ImageLoaderMachOClassic::instantiateFinish(const LinkContext& context)
 {
 	// now that segments are mapped in, get real fMachOData, fLinkEditBase, and fSlide
-	this->parseLoadCmds();
+	this->parseLoadCmds(context);
 }
 
 ImageLoaderMachOClassic::~ImageLoaderMachOClassic()

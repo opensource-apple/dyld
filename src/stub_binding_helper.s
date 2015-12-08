@@ -180,9 +180,9 @@ _stub_binding_helper:
 #endif
 
 
-#if __arm__
+#if __arm__ && !__ARM_ARCH_7K__
 /*
- * This is the interface for the stub_binding_helper for ARM:
+ * This is the interface for the old stub_binding_helper for ARM:
  * The caller has pushed the address of the a lazy pointer to be filled in with
  * the value for the defined symbol and pushed the address of the the mach
  * header this pointer comes from.

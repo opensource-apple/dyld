@@ -883,11 +883,10 @@ void ImageLoader::weakBind(const LinkContext& context)
 						}
 					}
 				}
-				if ( context.verboseWeakBind )
-					dyld::log("dyld: weak binding all uses of %s to copy from %s\n", nameToCoalesce, targetImage->getShortName());
-				
 				// tell each to bind to this symbol (unless already bound)
 				if ( targetAddr != 0 ) {
+					if ( context.verboseWeakBind )
+						dyld::log("dyld: weak binding all uses of %s to copy from %s\n", nameToCoalesce, targetImage->getShortName());
 					for(int i=0; i < count; ++i) {
 						if ( strcmp(iterators[i].symbolName, nameToCoalesce) == 0 ) {
 							if ( context.verboseWeakBind )

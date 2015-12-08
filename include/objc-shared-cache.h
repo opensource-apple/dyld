@@ -145,6 +145,9 @@ struct hashstr {
 // (used for selector names and class names)
 typedef std::unordered_map<const char *, uint64_t, hashstr, eqstr> string_map;
 
+// protocol name => protocol vmaddress
+typedef std::unordered_map<const char *, uint64_t, hashstr, eqstr> protocol_map;
+
 // class name => (class vmaddress, header_info vmaddress)
 typedef std::unordered_multimap<const char *, std::pair<uint64_t, uint64_t>, hashstr, eqstr> class_map;
 
@@ -161,8 +164,8 @@ struct objc_stringhash_t {
     uint32_t occupied;
     uint32_t shift;
     uint32_t mask;
-    uint32_t zero;
-    uint32_t unused; // alignment pad
+    uint32_t unused1;  // was zero
+    uint32_t unused2;  // alignment pad
     uint64_t salt;
     
     uint32_t scramble[256];
@@ -221,9 +224,8 @@ struct objc_stringhash_t {
         if (check_fail) return INDEX_NOT_FOUND;
 #endif
 
-        // fixme change &zero to 0 in the next version-breaking update
         objc_stringhash_offset_t offset = offsets()[h];
-        if (offset == offsetof(objc_stringhash_t,zero)) return INDEX_NOT_FOUND;
+        if (offset == 0) return INDEX_NOT_FOUND;
         const char *result = (const char *)this + offset;
         if (0 != strcmp(key, result)) return INDEX_NOT_FOUND;
 
@@ -259,7 +261,6 @@ struct objc_stringhash_t {
         S32(occupied);
         S32(shift);
         S32(mask);
-        S32(zero);
         S64(salt);
     }
 
@@ -284,8 +285,8 @@ struct objc_stringhash_t {
         occupied = phash.occupied;
         shift = phash.shift;
         mask = phash.mask;
-        zero = 0;
-        unused = 0;
+        unused1 = 0;
+        unused2 = 0;
         salt = phash.salt;
 
         if (size() > remaining) {
@@ -300,10 +301,9 @@ struct objc_stringhash_t {
             tab[i] = phash.tab[i];
         }
         
-        // Set offsets to ""
+        // Set offsets to 0
         for (uint32_t i = 0; i < phash.capacity; i++) {
-            offsets()[i] = 
-                (objc_stringhash_offset_t)offsetof(objc_stringhash_t, zero);
+            offsets()[i] = 0;
         }
         // Set checkbytes to 0
         for (uint32_t i = 0; i < phash.capacity; i++) {
@@ -469,12 +469,10 @@ struct objc_clsopt_t : objc_stringhash_t {
             return "selector section too small (metadata not optimized)";
         }
 
-        // Set class offsets to &zero
-        objc_stringhash_offset_t zeroOffset = 
-            (objc_stringhash_offset_t)offsetof(objc_stringhash_t, zero);
+        // Set class offsets to 0
         for (uint32_t i = 0; i < capacity; i++) {
-            classOffsets()[i].clsOffset = zeroOffset;
-            classOffsets()[i].hiOffset = zeroOffset;
+            classOffsets()[i].clsOffset = 0;
+            classOffsets()[i].hiOffset = 0;
         }
         
         // Set real class offsets
@@ -486,7 +484,7 @@ struct objc_clsopt_t : objc_stringhash_t {
                 return "class list busted (metadata not optimized)";
             }
 
-            if (classOffsets()[h].clsOffset != zeroOffset) {
+            if (classOffsets()[h].clsOffset != 0) {
                 // already did this class
                 continue;
             }
@@ -551,6 +549,88 @@ struct objc_clsopt_t : objc_stringhash_t {
 #endif
 };
 
+
+
+struct objc_protocolopt_t : objc_stringhash_t {
+    // ...objc_stringhash_t fields...
+    // uint32_t protocolOffsets[capacity]; /* offsets from &capacity to protocol_t */
+
+    objc_stringhash_offset_t *protocolOffsets() { return (objc_stringhash_offset_t *)&offsets()[capacity]; }
+    const objc_stringhash_offset_t *protocolOffsets() const { return (const objc_stringhash_offset_t *)&offsets()[capacity]; }
+
+    void* getProtocol(const char *key) const 
+    {
+        uint32_t h = getIndex(key);
+        if (h == INDEX_NOT_FOUND) { 
+            return NULL;
+        }
+
+        return (void *)((const char *)this + protocolOffsets()[h]);
+    }
+
+#ifdef SELOPT_WRITE
+
+    size_t size() 
+    {
+        return
+            objc_stringhash_t::size() + capacity * sizeof(objc_stringhash_offset_t);
+    }
+
+    void byteswap(bool little_endian) 
+    {
+        objc_stringhash_offset_t *o;
+        
+        o = protocolOffsets();
+        for (objc_stringhash_offset_t i = 0; i < capacity; i++) {
+            S32(o[i]);
+        }
+
+        objc_stringhash_t::byteswap(little_endian);
+    }
+    
+    const char *write(uint64_t base, size_t remaining, 
+                      string_map& strings, protocol_map& protocols, 
+                      bool verbose)
+    {
+        const char *err;
+        err = objc_stringhash_t::write(base, remaining, strings);
+        if (err) return err;
+
+        if (size() > remaining) {
+            return "selector section too small (metadata not optimized)";
+        }
+
+        // Set protocol offsets to 0
+        for (uint32_t i = 0; i < capacity; i++) {
+            protocolOffsets()[i] = 0;
+        }
+        
+        // Set real protocol offsets
+#       define SHIFT (64 - 8*sizeof(objc_stringhash_offset_t))
+        protocol_map::const_iterator c;
+        for (c = protocols.begin(); c != protocols.end(); ++c) {
+            uint32_t h = getIndex(c->first);
+            if (h == INDEX_NOT_FOUND) {
+                return "protocol list busted (metadata not optimized)";
+            }
+
+            int64_t offset = c->second - base;
+            if ((offset<<SHIFT)>>SHIFT != offset) {
+                return "protocol offset too big (metadata not optimized)";
+            }
+
+            protocolOffsets()[h] = (objc_stringhash_offset_t)offset;
+        }
+#       undef SHIFT
+        
+        return NULL;
+    }
+
+// SELOPT_WRITE
+#endif
+};
+
+
 // Precomputed image list.
 struct objc_headeropt_t;
 
@@ -558,15 +638,16 @@ struct objc_headeropt_t;
 struct objc_clsopt_t;
 
 // Edit objc-sel-table.s if you change this value.
-enum { VERSION = 12 };
+enum { VERSION = 13 };
 
 // Top-level optimization structure.
 // Edit objc-sel-table.s and OPT_INITIALIZER if you change this structure.
-struct objc_opt_t {
+struct alignas(alignof(void*)) objc_opt_t {
     uint32_t version;
     int32_t selopt_offset;
     int32_t headeropt_offset;
     int32_t clsopt_offset;
+    int32_t protocolopt_offset;
 
     const objc_selopt_t* selopt() const { 
         if (selopt_offset == 0) return NULL;
@@ -586,6 +667,11 @@ struct objc_opt_t {
         if (clsopt_offset == 0) return NULL;
         return (objc_clsopt_t *)((uint8_t *)this + clsopt_offset);
     }
+
+    struct objc_protocolopt_t* protocolopt() const { 
+        if (protocolopt_offset == 0) return NULL;
+        return (objc_protocolopt_t *)((uint8_t *)this + protocolopt_offset);
+    }
 };
 
 // sizeof(objc_opt_t) must be pointer-aligned
@@ -602,7 +688,16 @@ STATIC_ASSERT(sizeof(objc_opt_t) % sizeof(void*) == 0);
         4, 4, 63, 3, 0, 0, 0,0, X256(0), 0, 0, 16, 16, 16, 16       \
         /* no objc_headeropt_t */                                   \
         /* no objc_clsopt_t */                                      \
+        /* no objc_protocolopt_t */                                 \
 }
+
+
+// List of offsets in libobjc that the shared cache optimization needs to use.
+template <typename T>
+struct objc_opt_pointerlist_tt {
+    T protocolClass;
+};
+typedef struct objc_opt_pointerlist_tt<uintptr_t> objc_opt_pointerlist_t;
 
 
 /*

@@ -83,6 +83,16 @@ class NotReExportSymbol {
 public:
 	NotReExportSymbol(const std::set<int> &rd) :_reexportDeps(rd) {}
 	bool operator()(const mach_o::trie::Entry &entry) const {
+		bool result = isSymbolReExport(entry);
+		if (result) {
+			// <rdar://problem/17671438> Xcode 6 leaks in dyld_shared_cache_extract_dylibs
+			::free((void*)entry.name);
+			const_cast<mach_o::trie::Entry*>(&entry)->name = NULL;
+		}
+		return result;
+	}
+private:
+	bool isSymbolReExport(const mach_o::trie::Entry &entry) const {
 		if ( (entry.flags & EXPORT_SYMBOL_FLAGS_KIND_MASK) != EXPORT_SYMBOL_FLAGS_KIND_REGULAR )
 			return true;
 		if ( (entry.flags & EXPORT_SYMBOL_FLAGS_REEXPORT) == 0 )
@@ -92,7 +102,6 @@ public:
 			return true;
 		return false;
 	}
-private:
 	const std::set<int> &_reexportDeps;
 };
 
@@ -356,6 +365,12 @@ int optimize_linkedit(macho_header<typename A::P>* mh, uint64_t textOffsetInCach
 	
 	// return new size
 	*newSize = (symtab->stroff()+symtab->strsize()+4095) & (-4096);
+	
+	// <rdar://problem/17671438> Xcode 6 leaks in dyld_shared_cache_extract_dylibs
+	for (std::vector<mach_o::trie::Entry>::iterator it = exports.begin(); it != exports.end(); ++it) {
+		::free((void*)(it->name));
+	}
+	
 	
 	return 0;
 }

@@ -68,6 +68,10 @@ void* malloc(size_t size)
 		return p;
 	}
 	else {
+		if ( size > DYLD_POOL_CHUNK_SIZE ) {
+			dyld::log("dyld malloc overflow: size=%zu\n", size);
+			exit(1);
+		}
 		size = (size+sizeof(void*)-1) & (-sizeof(void*)); // pointer align
 		uint8_t* result = currentPool->current;
 		currentPool->current += size;
@@ -128,7 +132,13 @@ void* calloc(size_t count, size_t size)
 		return result;
 	}
 	else {
-		return malloc(count*size);
+		// Check for overflow of integer multiplication
+		size_t total = count * size;
+		if ( total/count != size ) {
+			dyld::log("dyld calloc overflow: count=%zu, size=%zu\n", count, size);
+			exit(1);
+		}
+		return malloc(total);
 	}
 }
 

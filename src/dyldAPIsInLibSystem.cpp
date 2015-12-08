@@ -58,6 +58,14 @@ extern "C" void __cxa_finalize_ranges(const struct __cxa_range_t ranges[], int c
 	#define LC_VERSION_MIN_IPHONEOS 0x25
 #endif
 
+#ifndef LC_VERSION_MIN_TVOS
+	#define LC_VERSION_MIN_TVOS 0x2F
+#endif
+
+#ifndef LC_VERSION_MIN_WATCHOS
+	#define LC_VERSION_MIN_WATCHOS 0x30
+#endif
+
 
 #ifndef LC_LOAD_UPWARD_DYLIB
 	#define	LC_LOAD_UPWARD_DYLIB (0x23|LC_REQ_DYLD)	/* load of dylib whose initializers run later */
@@ -412,19 +420,46 @@ int32_t NSVersionOfRunTimeLibrary(const char* libraryName)
 	return (-1);
 }
 
+
 #define PACKED_VERSION(major, minor, tiny) ((((major) & 0xffff) << 16) | (((minor) & 0xff) << 8) | ((tiny) & 0xff))
 
 
-/*
- * Returns the sdk version (encode as nibble XXXX.YY.ZZ) the
- * specified binary was built against.
- *
- * First looks for LC_VERSION_MIN_MACOSX/LC_VERSION_MIN_IPHONEOS
- * in binary and if sdk field is not zero, return that value.
- * Otherwise, looks for the libSystem.B.dylib the binary linked
- * against and uses a table to convert that to an sdk version.
- */
-uint32_t dyld_get_sdk_version(const mach_header* mh)
+static bool getVersionLoadCommandInfo(const mach_header* mh, uint32_t* loadCommand, uint32_t* minOS, uint32_t* sdk)
+{
+	const load_command* startCmds = NULL;
+	if ( mh->magic == MH_MAGIC_64 )
+		startCmds = (load_command*)((char *)mh + sizeof(mach_header_64));
+	else if ( mh->magic == MH_MAGIC )
+		startCmds = (load_command*)((char *)mh + sizeof(mach_header));
+	else
+		return false;  // not a mach-o file, or wrong endianness
+		
+	const load_command* const cmdsEnd = (load_command*)((char*)startCmds + mh->sizeofcmds);
+	const load_command* cmd = startCmds;
+	for(uint32_t i = 0; i < mh->ncmds; ++i) {
+	    const load_command* nextCmd = (load_command*)((char *)cmd + cmd->cmdsize);
+		if ( (cmd->cmdsize < 8) || (nextCmd > cmdsEnd) || (nextCmd < startCmds)) {
+			return 0;
+		}
+		const version_min_command* versCmd;
+		switch ( cmd->cmd ) {
+			case LC_VERSION_MIN_IPHONEOS:
+			case LC_VERSION_MIN_MACOSX:
+			case LC_VERSION_MIN_TVOS:
+			case LC_VERSION_MIN_WATCHOS:
+				versCmd = (version_min_command*)cmd;
+				*loadCommand = versCmd->cmd;
+				*minOS = versCmd->version;
+				*sdk = versCmd->sdk;
+				return true;
+		}
+		cmd = nextCmd;
+	}
+	return false;
+}
+
+#if !__WATCH_OS_VERSION_MIN_REQUIRED && !__TV_OS_VERSION_MIN_REQUIRED
+static uint32_t deriveSDKVersFromDylibs(const mach_header* mh)
 {
 	const load_command* startCmds = NULL;
 	if ( mh->magic == MH_MAGIC_64 )
@@ -435,15 +470,14 @@ uint32_t dyld_get_sdk_version(const mach_header* mh)
 		return 0;  // not a mach-o file, or wrong endianness
 		
 	const load_command* const cmdsEnd = (load_command*)((char*)startCmds + mh->sizeofcmds);
-	const version_min_command* versCmd;
 	const dylib_command* dylibCmd;
 	const load_command* cmd = startCmds;
 	const char* dylibName;
-#if __IPHONE_OS_VERSION_MIN_REQUIRED 
+  #if __IPHONE_OS_VERSION_MIN_REQUIRED
 	uint32_t foundationVers = 0;
-#else
+  #else
 	uint32_t libSystemVers = 0;
-#endif
+  #endif
 	for(uint32_t i = 0; i < mh->ncmds; ++i) {
 	    const load_command* nextCmd = (load_command*)((char *)cmd + cmd->cmdsize);
 		// <rdar://problem/14381579&16050962> sanity check size of command
@@ -451,20 +485,6 @@ uint32_t dyld_get_sdk_version(const mach_header* mh)
 			return 0;
 		}
 		switch ( cmd->cmd ) {
-#if __IPHONE_OS_VERSION_MIN_REQUIRED 
-			case LC_VERSION_MIN_IPHONEOS:
-#else
-			case LC_VERSION_MIN_MACOSX:
-#endif
-				versCmd = (version_min_command*)cmd;
-#ifdef DICE_KIND_DATA
-				if ( versCmd->sdk != 0 )
-					return versCmd->sdk;	// found explicit SDK version
-#else
-				if ( versCmd->reserved != 0 )
-					return versCmd->reserved;	// found explicit SDK version
-#endif
-				break;
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
 			case LC_LOAD_UPWARD_DYLIB:
@@ -473,13 +493,13 @@ uint32_t dyld_get_sdk_version(const mach_header* mh)
 				if ( dylibCmd->dylib.name.offset > cmd->cmdsize )
 					return 0;
 				dylibName = (char*)dylibCmd + dylibCmd->dylib.name.offset;
-#if __IPHONE_OS_VERSION_MIN_REQUIRED          
+  #if __IPHONE_OS_VERSION_MIN_REQUIRED
 				if ( strcmp(dylibName, "/System/Library/Frameworks/Foundation.framework/Foundation") == 0 )
 					foundationVers = dylibCmd->dylib.current_version;
-#else
+  #else
 				if ( strcmp(dylibName, "/usr/lib/libSystem.B.dylib") == 0 )
 					libSystemVers = dylibCmd->dylib.current_version;
-#endif
+  #endif
 				break;
 		}
 		cmd = nextCmd;
@@ -490,7 +510,7 @@ uint32_t dyld_get_sdk_version(const mach_header* mh)
 		uint32_t osVersion;
 	};
 	
-#if __IPHONE_OS_VERSION_MIN_REQUIRED
+  #if __IPHONE_OS_VERSION_MIN_REQUIRED
 	static const DylibToOSMapping foundationMapping[] = {
 		{ PACKED_VERSION(678,24,0), DYLD_IOS_VERSION_2_0 },
 		{ PACKED_VERSION(678,26,0), DYLD_IOS_VERSION_2_1 },
@@ -506,8 +526,10 @@ uint32_t dyld_get_sdk_version(const mach_header* mh)
 		{ PACKED_VERSION(890,1,0),  DYLD_IOS_VERSION_5_1 },
 		{ PACKED_VERSION(992,0,0),  DYLD_IOS_VERSION_6_0 },
 		{ PACKED_VERSION(993,0,0),  DYLD_IOS_VERSION_6_1 },  
-		{ PACKED_VERSION(1038,14,0),DYLD_IOS_VERSION_7_0 }, // check final
-		{ PACKED_VERSION(0,0,0),    DYLD_IOS_VERSION_7_0 } 
+		{ PACKED_VERSION(1038,14,0),DYLD_IOS_VERSION_7_0 },
+		{ PACKED_VERSION(0,0,0),    DYLD_IOS_VERSION_7_0 }
+		// We don't need to expand this table because all recent
+		// binaries have LC_VERSION_MIN_ load command.
 	};
 
 	if ( foundationVers != 0 ) {
@@ -521,7 +543,7 @@ uint32_t dyld_get_sdk_version(const mach_header* mh)
 		}
 	}
 
-#else
+  #else
 	// Note: versions are for the GM release.  The last entry should
 	// always be zero.  At the start of the next major version,
 	// a new last entry needs to be added and the previous zero
@@ -534,6 +556,8 @@ uint32_t dyld_get_sdk_version(const mach_header* mh)
 		{ PACKED_VERSION(169,3,0),  DYLD_MACOSX_VERSION_10_8 },
 		{ PACKED_VERSION(1197,0,0), DYLD_MACOSX_VERSION_10_9 },
 		{ PACKED_VERSION(0,0,0),    DYLD_MACOSX_VERSION_10_9 }
+		// We don't need to expand this table because all recent
+		// binaries have LC_VERSION_MIN_ load command.
 	};
 
 	if ( libSystemVers != 0 ) {
@@ -546,9 +570,82 @@ uint32_t dyld_get_sdk_version(const mach_header* mh)
 			lastOsVersion = p->osVersion;
 		}
 	}
+  #endif
+  return 0;
+}
 #endif
-	
+
+
+#if __WATCH_OS_VERSION_MIN_REQUIRED
+static uint32_t watchVersToIOSVers(uint32_t vers)
+{
+	return vers + 0x00070000;
+}
+
+uint32_t dyld_get_program_sdk_watch_os_version()
+{
+	const mach_header* mh = (mach_header*)_NSGetMachExecuteHeader();
+	uint32_t loadCommand;
+	uint32_t minOS;
+	uint32_t sdk;
+
+	if ( getVersionLoadCommandInfo(mh, &loadCommand, &minOS, &sdk) ) {
+		if ( loadCommand == LC_VERSION_MIN_WATCHOS )
+				return sdk;
+	}
 	return 0;
+}
+#endif
+
+/*
+ * Returns the sdk version (encode as nibble XXXX.YY.ZZ) the
+ * specified binary was built against.
+ *
+ * First looks for LC_VERSION_MIN_* in binary and if sdk field is 
+ * not zero, return that value.
+ * Otherwise, looks for the libSystem.B.dylib the binary linked
+ * against and uses a table to convert that to an sdk version.
+ */
+uint32_t dyld_get_sdk_version(const mach_header* mh)
+{
+	uint32_t loadCommand;
+	uint32_t minOS;
+	uint32_t sdk;
+
+	if ( getVersionLoadCommandInfo(mh, &loadCommand, &minOS, &sdk) ) {
+		switch (loadCommand) {
+#if __WATCH_OS_VERSION_MIN_REQUIRED
+			case LC_VERSION_MIN_WATCHOS:
+				// new binary. sdk version looks like "2.0" but API wants "9.0"
+				return watchVersToIOSVers(sdk);
+			case LC_VERSION_MIN_IPHONEOS:
+				// old binary. sdk matches API semantics so can return directly.
+				return sdk;
+#elif __TV_OS_VERSION_MIN_REQUIRED
+			case LC_VERSION_MIN_TVOS:
+			case LC_VERSION_MIN_IPHONEOS:
+				return sdk;
+#elif __IPHONE_OS_VERSION_MIN_REQUIRED
+			case LC_VERSION_MIN_IPHONEOS:
+				if ( sdk != 0 )	// old binaries might not have SDK set
+					return sdk;
+				break;
+#else
+			case LC_VERSION_MIN_MACOSX:
+				if ( sdk != 0 )	// old binaries might not have SDK set
+					return sdk;
+				break;
+#endif
+		}
+	}
+
+#if __WATCH_OS_VERSION_MIN_REQUIRED ||__TV_OS_VERSION_MIN_REQUIRED
+	// All WatchOS and tv OS binaries should have version load command.
+	return 0;
+#else
+	// MacOSX and iOS have old binaries without version load commmand.
+	return deriveSDKVersFromDylibs(mh);
+#endif
 }
 
 uint32_t dyld_get_program_sdk_version()
@@ -558,34 +655,31 @@ uint32_t dyld_get_program_sdk_version()
 
 uint32_t dyld_get_min_os_version(const struct mach_header* mh)
 {
-	const load_command* startCmds = NULL;
-	if ( mh->magic == MH_MAGIC_64 )
-		startCmds = (load_command*)((char *)mh + sizeof(mach_header_64));
-	else if ( mh->magic == MH_MAGIC )
-		startCmds = (load_command*)((char *)mh + sizeof(mach_header));
-	else
-		return 0;  // not a mach-o file, or wrong endianness
-		
-	const load_command* const cmdsEnd = (load_command*)((char*)startCmds + mh->sizeofcmds);
-	const version_min_command* versCmd;
-	const load_command* cmd = startCmds;
-	for(uint32_t i = 0; i < mh->ncmds; ++i) {
-	    const load_command* nextCmd = (load_command*)((char *)cmd + cmd->cmdsize);
-		// <rdar://problem/14381579&16050962> sanity check size of command
-		if ( (cmd->cmdsize < 8) || (nextCmd > cmdsEnd) || (nextCmd < startCmds)) {
-			return 0;
-		}
-		switch ( cmd->cmd ) {
-#if __IPHONE_OS_VERSION_MIN_REQUIRED          
+	uint32_t loadCommand;
+	uint32_t minOS;
+	uint32_t sdk;
+
+	if ( getVersionLoadCommandInfo(mh, &loadCommand, &minOS, &sdk) ) {
+		switch (loadCommand) {
+#if __WATCH_OS_VERSION_MIN_REQUIRED
+			case LC_VERSION_MIN_WATCHOS:
+				// new binary. OS version looks like "2.0" but API wants "9.0"
+				return watchVersToIOSVers(minOS);
 			case LC_VERSION_MIN_IPHONEOS:
+				// old binary. OS matches API semantics so can return directly.
+				return minOS;
+#elif __TV_OS_VERSION_MIN_REQUIRED
+			case LC_VERSION_MIN_TVOS:
+			case LC_VERSION_MIN_IPHONEOS:
+				return minOS;
+#elif __IPHONE_OS_VERSION_MIN_REQUIRED
+			case LC_VERSION_MIN_IPHONEOS:
+				return minOS;
 #else
 			case LC_VERSION_MIN_MACOSX:
+				return minOS;
 #endif
-				versCmd = (version_min_command*)cmd;
-				return versCmd->version;	// found explicit min OS version
-				break;
 		}
-		cmd = nextCmd;
 	}
 	return 0;
 }
@@ -1448,6 +1542,17 @@ const char* dyld_image_path_containing_address(const void* addr)
 	return p(addr);
 }
 
+const struct mach_header* dyld_image_header_containing_address(const void* addr)
+{
+	DYLD_NO_LOCK_THIS_BLOCK;
+    static const mach_header* (*p)(const void*) = NULL;
+
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_get_image_header_containing_address", (void**)&p);
+	return p(addr);
+}
+
+
 bool dyld_shared_cache_some_image_overridden()
 {
 	DYLD_NO_LOCK_THIS_BLOCK;
@@ -1469,6 +1574,17 @@ bool dyld_process_is_restricted()
 	return p();
 }
 
+#if DYLD_SHARED_CACHE_SUPPORT
+const char* dyld_shared_cache_file_path()
+{
+	DYLD_NO_LOCK_THIS_BLOCK;
+    static const char* (*p)() = NULL;
+	
+	if(p == NULL)
+	    _dyld_func_lookup("__dyld_shared_cache_file_path", (void**)&p);
+	return p();
+}
+#endif
 
 void dyld_dynamic_interpose(const struct mach_header* mh, const struct dyld_interpose_tuple array[], size_t count)
 {

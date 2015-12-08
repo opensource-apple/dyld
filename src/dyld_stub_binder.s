@@ -270,12 +270,14 @@ dyld_stub_binder:
 
 #if __ARM_ARCH_7K__
 	vpush	{d0, d1, d2, d3, d4, d5, d6, d7}
+	sub	sp, sp, #8			// Align stack to 16 bytes.
 #endif
 	// call dyld::fastBindLazySymbol(loadercache, lazyinfo)
 	bl	__Z21_dyld_fast_stub_entryPvl
 	mov	ip, r0				// move the symbol`s address into ip
 
 #if __ARM_ARCH_7K__
+	add	sp, sp, #8
 	vpop	{d0, d1, d2, d3, d4, d5, d6, d7}
 #endif
 

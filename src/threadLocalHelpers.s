@@ -280,24 +280,34 @@ LlazyAllocate:
 
 #endif
 
-#if 0
 #if __arm__
 	// returns address of TLV in r0, all other registers preserved
 	.globl _tlv_get_addr
 	.private_extern _tlv_get_addr
 _tlv_get_addr:
-	push	{r1,r2,r3,r7,lr}				
-	mov		r7,r0							// save descriptor in r7
+	push	{r1,r2,r3,r7,lr}
+#if __ARM_ARCH_7K__
+	sub		sp, sp, #12						// align stack to 16 bytes
+#endif
+	mov		r7, r0							// save descriptor in r7
 	ldr		r0, [r7, #4]					// get key from descriptor
 	bl		_pthread_getspecific			// get thread value
 	cmp		r0, #0
 	bne		L2								// if NULL, lazily allocate
+#if __ARM_ARCH_7K__
+	vpush	{d0, d1, d2, d3, d4, d5, d6, d7}
+#endif
 	ldr		r0, [r7, #4]					// get key from descriptor
 	bl		_tlv_allocate_and_initialize_for_key
+#if __ARM_ARCH_7K__
+	vpop	{d0, d1, d2, d3, d4, d5, d6, d7}
+#endif
 L2:	ldr		r1, [r7, #8]					// get offset from descriptor
 	add		r0, r1, r0						// add offset into allocation block
-	pop		{r1,r2,r3,r7,pc}
+#if __ARM_ARCH_7K__
+	add		sp, sp, #12
 #endif
+	pop		{r1,r2,r3,r7,pc}
 #endif
 
 	.subsections_via_symbols

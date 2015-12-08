@@ -46,6 +46,7 @@
 	#include "dyld_images.h"
 	#include <mach-o/loader.h>
 	#include <mach-o/nlist.h>
+	#include <mach/kern_return.h>
 	#if __LP64__
 		#define LC_SEGMENT_COMMAND			LC_SEGMENT_64
 		typedef struct segment_command_64	macho_segment_command;
@@ -339,6 +340,9 @@ int _ZN4dyld7my_openEPKcii(const char* path, int flag, int other)
 //
 
 #if TARGET_IPHONE_SIMULATOR
+
+#include <coreSymbolicationDyldSupport.h>
+
 int myopen(const char* path, int oflag, int extra) __asm("_open");
 int myopen(const char* path, int oflag, int extra) {
 	return gSyscallHelpers->open(path, oflag, extra);
@@ -463,6 +467,13 @@ uint64_t mach_absolute_time(void) {
 	return gSyscallHelpers->mach_absolute_time();
 } 
 
+kern_return_t thread_switch(mach_port_name_t thread_name,
+							int option, mach_msg_timeout_t option_time) {
+	if ( gSyscallHelpers->version < 2 )
+		return KERN_FAILURE;
+	return gSyscallHelpers->thread_switch(thread_name, option, option_time);
+}
+
 DIR* opendir(const char* path) {
 	if ( gSyscallHelpers->version < 3 )
 		return NULL;
@@ -481,15 +492,61 @@ int closedir(DIR* dirp) {
 	return gSyscallHelpers->closedir(dirp);
 }
 
+#define SUPPORT_HOST_10_10  1
 
-typedef void (*LoadFuncPtr)(void* shm, void* image, uint64_t timestamp);
-typedef void (*UnloadFuncPtr)(void* shm, void* image);
+#if SUPPORT_HOST_10_10
+typedef int               (*FuncPtr_nanosleep)(const struct timespec*, struct timespec*);
+typedef kern_return_t     (*FuncPtr_mach_port_allocate)(ipc_space_t, mach_port_right_t, mach_port_name_t*);
+typedef mach_msg_return_t (*FuncPtr_mach_msg)(mach_msg_header_t *, mach_msg_option_t , mach_msg_size_t , mach_msg_size_t , mach_port_name_t , mach_msg_timeout_t , mach_port_name_t);
+typedef int               (*FuncPtr_kill)(pid_t pid, int sig);
+typedef pid_t             (*FuncPtr_getpid)();
+typedef bool              (*FuncPtr_OSAtomicCompareAndSwap32)(int32_t, int32_t, volatile int32_t*);
 
-static LoadFuncPtr   sLoadPtr = NULL;
-static UnloadFuncPtr sUnloadPtr = NULL;
+static FuncPtr_nanosleep                 proc_nanosleep = NULL;
+static FuncPtr_mach_port_allocate        proc_mach_port_allocate = NULL;
+static FuncPtr_mach_msg                  proc_mach_msg = NULL;
+static FuncPtr_kill                      proc_kill = NULL;
+static FuncPtr_getpid                    proc_getpid = NULL;
+static FuncPtr_OSAtomicCompareAndSwap32  proc_OSAtomicCompareAndSwap32 = NULL;
 
-// Lookup of coresymbolication functions in host dyld.
-static void findCSProcs() {
+
+int nanosleep(const struct timespec* p1, struct timespec* p2)
+{
+	return (*proc_nanosleep)(p1, p2);
+}
+
+kern_return_t mach_port_allocate(ipc_space_t p1, mach_port_right_t p2, mach_port_name_t* p3)
+{
+	return (*proc_mach_port_allocate)(p1, p2, p3);
+}
+
+mach_msg_return_t mach_msg(mach_msg_header_t* p1, mach_msg_option_t p2, mach_msg_size_t p3, mach_msg_size_t p4, mach_port_name_t p5, mach_msg_timeout_t p6, mach_port_name_t p7)
+{
+	return (*proc_mach_msg)(p1, p2, p3, p4, p5, p6, p7);
+}
+
+int kill(pid_t p1, int p2)
+{
+	return (*proc_kill)(p1, p2);
+}
+
+pid_t getpid()
+{
+	return (*proc_getpid)();
+}
+
+bool OSAtomicCompareAndSwap32(int32_t p1, int32_t p2, volatile int32_t* p3)
+{
+	return (*proc_OSAtomicCompareAndSwap32)(p1, p2, p3);
+}
+
+
+// Look up sycalls in host dyld needed by coresymbolication_ routines in dyld_sim
+static void findHostFunctions() {
+	// Only look up symbols once
+	if ( proc_nanosleep != NULL )
+		return;
+
 	struct dyld_all_image_infos* imageInfo = (struct dyld_all_image_infos*)(gSyscallHelpers->getProcessInfo());
 	const struct mach_header* hostDyldMH = imageInfo->dyldImageLoadAddress;
 
@@ -539,30 +596,45 @@ static void findCSProcs() {
 	for (const macho_nlist* s = localsStart; s < localsEnd; ++s) {
  		if ( ((s->n_type & N_TYPE) == N_SECT) && ((s->n_type & N_STAB) == 0) ) {
 			const char* name = &symbolTableStrings[s->n_un.n_strx];
-			if ( strcmp(name, "__Z28coresymbolication_load_imageP25CSCppDyldSharedMemoryPagePK11ImageLoadery") == 0 )
-				sLoadPtr = (LoadFuncPtr)(s->n_value + slide);
-			else if ( strcmp(name, "__Z30coresymbolication_unload_imageP25CSCppDyldSharedMemoryPagePK11ImageLoader") == 0 )
-				sUnloadPtr = (UnloadFuncPtr)(s->n_value + slide);
+			if ( strcmp(name, "_nanosleep") == 0 )
+				proc_nanosleep = (FuncPtr_nanosleep)(s->n_value + slide);
+			else if ( strcmp(name, "_mach_port_allocate") == 0 )
+				proc_mach_port_allocate = (FuncPtr_mach_port_allocate)(s->n_value + slide);
+			else if ( strcmp(name, "_mach_msg") == 0 )
+				proc_mach_msg = (FuncPtr_mach_msg)(s->n_value + slide);
+			else if ( strcmp(name, "_kill") == 0 )
+				proc_kill = (FuncPtr_kill)(s->n_value + slide);
+			else if ( strcmp(name, "_getpid") == 0 )
+				proc_getpid = (FuncPtr_getpid)(s->n_value + slide);
+			else if ( strcmp(name, "_OSAtomicCompareAndSwap32") == 0 )
+				proc_OSAtomicCompareAndSwap32 = (FuncPtr_OSAtomicCompareAndSwap32)(s->n_value + slide);
 		}
 	}
 }
+#endif
 
-//void coresymbolication_unload_image(void*, const ImageLoader*);
-void _Z28coresymbolication_load_imagePvPK11ImageLoadery(void* shm, void* image, uint64_t time) {
-	// look up function in host dyld just once
-	if ( sLoadPtr == NULL ) 
-		findCSProcs();
-	if ( sLoadPtr != NULL ) 
-		(*sLoadPtr)(shm, image, time);
-} 
+void xcoresymbolication_load_notifier(void* connection, uint64_t timestamp, const char* path, const struct mach_header* mh)
+{
+	// if host dyld supports this notifier, call into host dyld
+	if ( gSyscallHelpers->version >= 4 )
+		return gSyscallHelpers->coresymbolication_load_notifier(connection, timestamp, path, mh);
+#if SUPPORT_HOST_10_10
+	// otherwise use notifier code in dyld_sim
+	findHostFunctions();
+	coresymbolication_load_notifier(connection, timestamp, path, mh);
+#endif
+}
 
-//void coresymbolication_load_image(void**, const ImageLoader*, uint64_t);
-void _Z30coresymbolication_unload_imagePvPK11ImageLoader(void* shm, void* image) {
-	// look up function in host dyld just once
-	if ( sUnloadPtr == NULL ) 
-		findCSProcs();
-	if ( sUnloadPtr != NULL ) 
-		(*sUnloadPtr)(shm, image);
+void xcoresymbolication_unload_notifier(void* connection, uint64_t timestamp, const char* path, const struct mach_header* mh)
+{
+	// if host dyld supports this notifier, call into host dyld
+	if ( gSyscallHelpers->version >= 4 )
+		return gSyscallHelpers->coresymbolication_unload_notifier(connection, timestamp, path, mh);
+#if SUPPORT_HOST_10_10
+	// otherwise use notifier code in dyld_sim
+	findHostFunctions();
+	coresymbolication_unload_notifier(connection, timestamp, path, mh);
+#endif
 }
 
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010 Apple Inc. All rights reserved.
+ * Copyright (c) 2005-2007 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -22,42 +22,21 @@
  */
 #include <stdio.h>  // fprintf(), NULL
 #include <stdlib.h> // exit(), EXIT_SUCCESS
-#include <dlfcn.h>
 #include <string.h>
-#include <stdlib.h> // for atoi()
-#include <mach-o/dyld.h>
+#include <dlfcn.h>
 
 #include "test.h" // PASS(), FAIL(), XPASS(), XFAIL()
 
+extern char* wrap_strdup(const char*);
 
-
-extern int foo();
-
-int main(int argc, const char* argv[])
+int main()
 {
-	if ( argc > 2 ) {
-		bool found = false;
-		uint32_t count = _dyld_image_count();
-		for(uint32_t i=0; i < count; ++i) {
-			const char*  name = _dyld_get_image_name(i);
-			if ( strstr(name, argv[2]) != NULL )
-				found = true;
-			//fprintf(stderr, "image[%d]=%s\n", i, name);
-		}
-		if ( !found ) {
-			FAIL("DYLD_VERSIONED_FRAMEWORK_PATH-basic dylib has wrong path");
-			return EXIT_SUCCESS;
-		}
-	}
-	
-	int expectedResult = atoi(argv[1]);
-	int actualResult = foo();
-	//fprintf(stderr, "foo() returned %d, expected %d\n", actualResult, expectedResult);
-	if ( actualResult != expectedResult )
-		FAIL("DYLD_VERSIONED_FRAMEWORK_PATH-basic using wrong dylib. foo() returned %d, expected %d", actualResult, expectedResult);
+	const char* x = strdup("123");
+	const char* y = wrap_strdup("456");
+  
+	if ( (strcmp(x, "hello") == 0) && (strcmp(y, "hello") == 0) )
+		PASS("interpose-not-inserted");
 	else
-		PASS("DYLD_VERSIONED_FRAMEWORK_PATH-basic");
-		
+		FAIL("interpose-not-inserted");
 	return EXIT_SUCCESS;
 }
-

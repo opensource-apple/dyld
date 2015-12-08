@@ -108,6 +108,8 @@ namespace dyld {
 				segInfo.name = segCmd->segname();
 				segInfo.fileOffset = fileOffset;
 				segInfo.fileSize = sizem;
+				if ( segCmd->filesize() > segCmd->vmsize() )
+					return -1;
 				segInfo.address = segCmd->vmaddr();
 				callback(&dylibInfo, &segInfo);
 			}

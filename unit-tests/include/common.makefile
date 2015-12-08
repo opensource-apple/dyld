@@ -24,15 +24,18 @@ IOSROOT	=
 
 ifeq "$(OS_NAME)" "iPhoneOS"
 	#IOSROOT		= $(shell xcodebuild -version -sdk iphoneos.internal Path)
-	IOSROOT		= /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS8.0.Internal.sdk
+	IOSROOT		= /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS9.0.Internal.sdk
 	CC			= $(shell xcrun -sdk iphoneos.internal -find cc)  -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot $(IOSROOT)
 	CXX			= $(shell xcrun -sdk iphoneos.internal -find c++) -arch ${ARCH} -miphoneos-version-min=$(OS_VERSION) -isysroot $(IOSROOT)
 	LIPO		= $(shell xcrun -sdk iphoneos.internal -find lipo)
 	STRIP		= $(shell xcrun -sdk iphoneos.internal -find strip)
 	INSTALL_NAME_TOOL = $(shell xcrun -sdk iphoneos.internal -find install_name_tool)
 else
-	CC			= $(shell xcrun -find cc)  -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION)
-	CXX			= $(shell xcrun -find c++) -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION)
+  ifeq "$(OSX_SDK_ROOT)" ""
+    OSX_SDK_ROOT		= $(shell xcodebuild -version -sdk macosx.internal Path)
+  endif
+	CC			= $(shell xcrun -find cc)  -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION) -isysroot $(OSX_SDK_ROOT)
+	CXX			= $(shell xcrun -find c++) -arch ${ARCH} -mmacosx-version-min=$(OS_VERSION) -isysroot $(OSX_SDK_ROOT)
 	LIPO		= $(shell xcrun -find lipo)
 	STRIP		= $(shell xcrun -find strip)
 	INSTALL_NAME_TOOL = $(shell xcrun -find install_name_tool)

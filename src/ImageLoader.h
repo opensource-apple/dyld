@@ -104,8 +104,8 @@
 	#define TEXT_RELOC_SUPPORT				__i386__
 	#define DYLD_SHARED_CACHE_SUPPORT		(__arm__ || __arm64__)
 	#define SUPPORT_OLD_CRT_INITIALIZATION	0
-	#define SUPPORT_LC_DYLD_ENVIRONMENT		0
-	#define SUPPORT_VERSIONED_PATHS			0
+	#define SUPPORT_LC_DYLD_ENVIRONMENT		1
+	#define SUPPORT_VERSIONED_PATHS			1
 	#define SUPPORT_CLASSIC_MACHO			__arm__
 	#define SUPPORT_ZERO_COST_EXCEPTIONS	(!__USING_SJLJ_EXCEPTIONS__)
 	#define INITIAL_IMAGE_COUNT				256
@@ -291,6 +291,7 @@ public:
 		bool			linkingMainExecutable;
 		bool			startedInitializingMainExecutable;
 		bool			processIsRestricted;
+		bool			processRequiresLibraryValidation;
 		bool			verboseOpts;
 		bool			verboseEnv;
 		bool			verboseMapping;

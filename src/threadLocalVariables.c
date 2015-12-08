@@ -78,7 +78,7 @@ typedef void (*TermFunc)(void*);
 
 
 
-#if __has_feature(tls) || __arm64__
+#if __has_feature(tls) || __arm64__ || __arm__
 
 typedef struct TLVHandler {
 	struct TLVHandler *next;

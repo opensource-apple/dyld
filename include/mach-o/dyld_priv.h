@@ -171,6 +171,14 @@ extern bool _dyld_find_unwind_sections(void* addr, struct dyld_unwind_sections* 
 extern const char* dyld_image_path_containing_address(const void* addr);
 
 
+//
+// This is an optimized form of dladdr() that only returns the dli_fbase field.
+// Return NULL, if address is not in any image tracked by dyld.
+//
+// Exists in Mac OS X 10.11 and later
+extern const struct mach_header* dyld_image_header_containing_address(const void* addr);
+
+
 
 // Convienence constants for return values from dyld_get_sdk_version() and friends.
 #define DYLD_MACOSX_VERSION_10_4		0x000A0400
@@ -180,6 +188,7 @@ extern const char* dyld_image_path_containing_address(const void* addr);
 #define DYLD_MACOSX_VERSION_10_8		0x000A0800
 #define DYLD_MACOSX_VERSION_10_9		0x000A0900
 #define DYLD_MACOSX_VERSION_10_10		0x000A0A00
+#define DYLD_MACOSX_VERSION_10_11		0x000A0B00
 
 #define DYLD_IOS_VERSION_2_0		0x00020000
 #define DYLD_IOS_VERSION_2_1		0x00020100
@@ -198,9 +207,13 @@ extern const char* dyld_image_path_containing_address(const void* addr);
 #define DYLD_IOS_VERSION_7_0		0x00070000
 #define DYLD_IOS_VERSION_7_1		0x00070100
 #define DYLD_IOS_VERSION_8_0		0x00080000
+#define DYLD_IOS_VERSION_8_1		0x00080100
+#define DYLD_IOS_VERSION_8_2		0x00080200
+#define DYLD_IOS_VERSION_9_0		0x00090000
+
 
 //
-// This is finds the SDK version a binary was built against.
+// This finds the SDK version a binary was built against.
 // Returns zero on error, or if SDK version could not be determined.
 //
 // Exists in Mac OS X 10.8 and later 
@@ -209,16 +222,26 @@ extern uint32_t dyld_get_sdk_version(const struct mach_header* mh);
 
 
 //
-// This is finds the SDK version the main executable was built against.
+// This finds the SDK version that the main executable was built against.
 // Returns zero on error, or if SDK version could not be determined.
+//
+// Note on WatchOS, this returns the equivalent iOS SDK version number
+// (i.e an app built against WatchOS 2.0 SDK returne 9.0).  To see the
+// platform specific sdk version use dyld_get_program_sdk_watch_os_version().
 //
 // Exists in Mac OS X 10.8 and later 
 // Exists in iOS 6.0 and later
 extern uint32_t dyld_get_program_sdk_version();
 
 
+// Watch OS only.
+// This finds the Watch OS SDK version that the main executable was built against.
+// Exists in Watch OS 2.0 and later
+extern uint32_t dyld_get_program_sdk_watch_os_version(); // __WATCHOS_AVAILABLE(2.0);
+
+
 //
-// This is finds the min OS version a binary was built to run on.
+// This finds the min OS version a binary was built to run on.
 // Returns zero on error, or if no min OS recorded in binary.
 //
 // Exists in Mac OS X 10.8 and later 
@@ -227,7 +250,7 @@ extern uint32_t dyld_get_min_os_version(const struct mach_header* mh);
 
 
 //
-// This is finds the min OS version the main executable was built to run on.
+// This finds the min OS version the main executable was built to run on.
 // Returns zero on error, or if no min OS recorded in binary.
 //
 // Exists in Mac OS X 10.8 and later 
@@ -251,6 +274,15 @@ extern bool dyld_shared_cache_some_image_overridden();
 //
 // Exists in Mac OS X 10.9 and later
 extern bool dyld_process_is_restricted();
+
+
+
+//
+// Returns path used by dyld for standard dyld shared cache file for the current arch.
+//
+// Exists in Mac OS X 10.11 and later
+extern const char* dyld_shared_cache_file_path();
+
 
 
 //

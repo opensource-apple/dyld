@@ -41,13 +41,15 @@
 class ImageLoaderMachO : public ImageLoader {
 public:
 	static ImageLoader*					instantiateMainExecutable(const macho_header* mh, uintptr_t slide, const char* path, const LinkContext& context);
-	static ImageLoader*					instantiateFromFile(const char* path, int fd, const uint8_t firstPage[4096], uint64_t offsetInFat, 
+	static ImageLoader*					instantiateFromFile(const char* path, int fd, const uint8_t firstPages[4096], uint64_t offsetInFat,
 															uint64_t lenInFat, const struct stat& info, const LinkContext& context);
 	static ImageLoader*					instantiateFromCache(const macho_header* mh, const char* path, long slide, const struct stat& info, const LinkContext& context);
 	static ImageLoader*					instantiateFromMemory(const char* moduleName, const macho_header* mh, uint64_t len, const LinkContext& context);
 
 
 	bool								inSharedCache() const { return fInSharedCache; }
+	void								disableCoverageCheck() { fCoveredCodeLength = UINT64_MAX; }
+
 	const char*							getInstallPath() const;
 	virtual void*						getMain() const;
 	virtual void*						getThreadPC() const;
@@ -156,13 +158,15 @@ protected:
 protected:
 
 			void		destroy();
-	static void			sniffLoadCommands(const macho_header* mh, const char* path, bool* compressed,
+	static void			sniffLoadCommands(const macho_header* mh, const char* path, bool inCache, bool* compressed,
 											unsigned int* segCount, unsigned int* libCount, const LinkContext& context,
-											const linkedit_data_command** codeSigCmd);
+											const linkedit_data_command** codeSigCmd,
+											const encryption_info_command** encryptCmd);
 	static bool			needsAddedLibSystemDepency(unsigned int libCount, const macho_header* mh);
 			void		loadCodeSignature(const struct linkedit_data_command* codeSigCmd, int fd, uint64_t offsetInFatFile, const LinkContext& context);
+			void		validateFirstPages(const struct linkedit_data_command* codeSigCmd, int fd, const uint8_t *fileData, size_t lenFileData, off_t offsetInFat, const LinkContext& context);
 			const struct macho_segment_command* segLoadCommand(unsigned int segIndex) const;
-			void		parseLoadCmds();
+			void		parseLoadCmds(const ImageLoader::LinkContext& context);
 			int 		crashIfInvalidCodeSignature();
 			bool		segHasRebaseFixUps(unsigned int) const;
 			bool		segHasBindFixUps(unsigned int) const;
@@ -198,7 +202,8 @@ protected:
 										const LinkContext& context, bool runResolver) const;
 			
 	static uintptr_t			bindLazySymbol(const mach_header*, uintptr_t* lazyPointer);
-protected:			
+protected:
+	uint64_t								fCoveredCodeLength;
 	const uint8_t*							fMachOData;
 	const uint8_t*							fLinkEditBase; // add any internal "offset" to this to get mapped address
 	uintptr_t								fSlide;
