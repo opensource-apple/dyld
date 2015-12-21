@@ -1618,12 +1618,15 @@ static void checkLoadCommandEnvironmentVariables()
 						if ( strncmp(&equals[-5], "_PATH", 5) == 0 ) {
 							const char* value = &equals[1];
 							const size_t keyLen = equals-keyEqualsValue;
-							char key[keyLen+1];
-							strncpy(key, keyEqualsValue, keyLen);
-							key[keyLen] = '\0';
-							//dyld::log("processing: %s\n", keyEqualsValue);
-							//dyld::log("mainExecutableDir: %s\n", mainExecutableDir);
-							processDyldEnvironmentVariable(key, value, mainExecutableDir);
+							// <rdar://problem/22799635> don't let malformed load command overflow stack
+							if ( keyLen < 40 ) {
+								char key[keyLen+1];
+								strncpy(key, keyEqualsValue, keyLen);
+								key[keyLen] = '\0';
+								//dyld::log("processing: %s\n", keyEqualsValue);
+								//dyld::log("mainExecutableDir: %s\n", mainExecutableDir);
+								processDyldEnvironmentVariable(key, value, mainExecutableDir);
+							}
 						}
 					}
 				}
